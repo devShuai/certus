@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" role="img" aria-label="certus 统一认证中心">
+  <path d="M44 17.5 A20 20 0 1 0 51.6 39" fill="none" stroke="#14161F" stroke-width="4.5" stroke-linecap="round"></path>
+  <path d="M23 32 L31 40 L52 17" fill="none" stroke="#C98A1E" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>
+  <text x="82" y="30" fill="#14161F" font-family="system-ui, -apple-system, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="23" font-weight="700" letter-spacing="-0.2">cert<tspan fill="#C98A1E">us</tspan></text>
+  <text x="82" y="48" fill="#6B6E7B" font-family="system-ui, -apple-system, &#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="500" letter-spacing="0.18em">统一认证中心</text>
+</svg>

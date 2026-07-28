@@ -1,0 +1,68 @@
+package oauth
+
+import (
+	"errors"
+	"net/url"
+	"strings"
+
+	"certus/internal/client"
+)
+
+type AuthorizationRequest struct {
+	ClientID            string
+	RedirectURI         string
+	Scope               []string
+	State               string
+	Nonce               string
+	CodeChallenge       string
+	CodeChallengeMethod string
+}
+
+func ParseAuthorizationRequest(values url.Values, registered client.Client) (AuthorizationRequest, error) {
+	if !registered.Enabled {
+		return AuthorizationRequest{}, errors.New("client is disabled")
+	}
+	if values.Get("client_id") != registered.ID {
+		return AuthorizationRequest{}, errors.New("invalid client_id")
+	}
+	if values.Get("response_type") != "code" {
+		return AuthorizationRequest{}, errors.New("response_type must be code")
+	}
+	redirectURI := values.Get("redirect_uri")
+	if !registered.AllowsRedirectURI(redirectURI) {
+		return AuthorizationRequest{}, errors.New("invalid redirect_uri")
+	}
+	if values.Get("code_challenge_method") != "S256" {
+		return AuthorizationRequest{}, errors.New("code_challenge_method must be S256")
+	}
+	challenge := values.Get("code_challenge")
+	if len(challenge) < 43 || len(challenge) > 128 {
+		return AuthorizationRequest{}, errors.New("invalid code_challenge")
+	}
+	state := values.Get("state")
+	if state == "" {
+		return AuthorizationRequest{}, errors.New("state is required")
+	}
+	scopes := strings.Fields(values.Get("scope"))
+	if !contains(scopes, "openid") {
+		return AuthorizationRequest{}, errors.New("openid scope is required")
+	}
+	return AuthorizationRequest{
+		ClientID:            registered.ID,
+		RedirectURI:         redirectURI,
+		Scope:               scopes,
+		State:               state,
+		Nonce:               values.Get("nonce"),
+		CodeChallenge:       challenge,
+		CodeChallengeMethod: "S256",
+	}, nil
+}
+
+func contains(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
