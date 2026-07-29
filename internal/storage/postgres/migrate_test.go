@@ -71,3 +71,13 @@ func TestCASProxyMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenRevocationMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/007_token_revocation.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "ADD COLUMN refresh_family_id") {
+		t.Fatal("token revocation migration does not link access tokens to refresh families")
+	}
+}

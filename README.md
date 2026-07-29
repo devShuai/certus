@@ -21,6 +21,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - LDAP TLS/StartTLS 登录与外部身份自动映射
 - 外部 OIDC Discovery、授权码 + PKCE、state/nonce 校验与账号自动建档
 - OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
+- RFC 7662 Token Introspection 与 RFC 7009 访问/刷新令牌撤销
 - OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS 和 UserInfo
 - OAuth 设备授权码、浏览器确认和标准轮询错误
 - CAS 1.0/2.0/3.0 Service Ticket 校验、PGT/PT 代理认证、Gateway、Renew 和后端单点登出
@@ -227,6 +228,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
     "client_authentication_method": "client_secret_basic",
     "authorization_endpoint": "https://auth.example.com/oauth2/authorize",
     "token_endpoint": "https://auth.example.com/oauth2/token",
+    "introspection_endpoint": "https://auth.example.com/oauth2/introspect",
+    "revocation_endpoint": "https://auth.example.com/oauth2/revoke",
     "userinfo_endpoint": "https://auth.example.com/oauth2/userinfo",
     "jwks_uri": "https://auth.example.com/oauth2/jwks",
     "redirect_uris": [
@@ -273,6 +276,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
 
 - OAuth 2.0：授权码 + PKCE、刷新令牌、客户端凭据、设备码
 - OAuth 2.1：授权码 + PKCE、刷新令牌、客户端凭据、设备码
+- OAuth 令牌管理：受客户端认证保护的 Introspection 与幂等 Revocation
 - OpenID Connect：通过 `openid` scope 为 OAuth 登录提供用户身份
 - CAS 1.0、2.0、3.0：Service Ticket 校验参数
 - CAS 2.0/3.0：代理认证

@@ -36,6 +36,7 @@ type AccessToken struct {
 	Hash      []byte
 	ClientID  string
 	UserID    string
+	FamilyID  string
 	Scope     []string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
@@ -79,8 +80,11 @@ type Repository interface {
 	ConsumeAuthorizationCode(context.Context, []byte, string, string, string, time.Time) (AuthorizationCode, error)
 	SaveAccessToken(context.Context, AccessToken) error
 	FindAccessToken(context.Context, []byte, time.Time) (AccessToken, error)
+	RevokeAccessToken(context.Context, []byte, string, time.Time) error
 	SaveRefreshToken(context.Context, RefreshToken) error
+	FindRefreshToken(context.Context, []byte, time.Time) (RefreshToken, error)
 	RotateRefreshToken(context.Context, []byte, RefreshToken, time.Time) (RefreshToken, error)
+	RevokeRefreshToken(context.Context, []byte, string, time.Time) error
 	SaveDeviceAuthorization(context.Context, DeviceAuthorization) error
 	FindDeviceByUserCode(context.Context, []byte, time.Time) (DeviceAuthorization, error)
 	DecideDeviceAuthorization(context.Context, []byte, string, time.Time, bool, time.Time) error
@@ -98,10 +102,15 @@ type memoryRefreshToken struct {
 	revokedAt  *time.Time
 }
 
+type memoryAccessToken struct {
+	AccessToken
+	revokedAt *time.Time
+}
+
 type MemoryRepository struct {
 	mu           sync.Mutex
 	codes        []memoryAuthorizationCode
-	accessTokens []AccessToken
+	accessTokens []memoryAccessToken
 	refresh      []memoryRefreshToken
 	devices      []DeviceAuthorization
 }
@@ -147,21 +156,37 @@ func (r *MemoryRepository) SaveAccessToken(_ context.Context, value AccessToken)
 	defer r.mu.Unlock()
 	value.Hash = cloneBytes(value.Hash)
 	value.Scope = append([]string(nil), value.Scope...)
-	r.accessTokens = append(r.accessTokens, value)
+	r.accessTokens = append(r.accessTokens, memoryAccessToken{AccessToken: value})
 	return nil
 }
 
 func (r *MemoryRepository) FindAccessToken(_ context.Context, hash []byte, now time.Time) (AccessToken, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, value := range r.accessTokens {
-		if bytes.Equal(value.Hash, hash) && value.ExpiresAt.After(now) {
+	for _, record := range r.accessTokens {
+		if bytes.Equal(record.Hash, hash) && record.revokedAt == nil && record.ExpiresAt.After(now) {
+			value := record.AccessToken
 			value.Hash = cloneBytes(value.Hash)
 			value.Scope = append([]string(nil), value.Scope...)
 			return value, nil
 		}
 	}
 	return AccessToken{}, ErrGrantNotFound
+}
+
+func (r *MemoryRepository) RevokeAccessToken(_ context.Context, hash []byte, clientID string, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.accessTokens {
+		record := &r.accessTokens[index]
+		if bytes.Equal(record.Hash, hash) && record.ClientID == clientID {
+			if record.revokedAt == nil {
+				record.revokedAt = &now
+			}
+			return nil
+		}
+	}
+	return ErrGrantNotFound
 }
 
 func (r *MemoryRepository) SaveRefreshToken(_ context.Context, value RefreshToken) error {
@@ -171,6 +196,23 @@ func (r *MemoryRepository) SaveRefreshToken(_ context.Context, value RefreshToke
 	value.Scope = append([]string(nil), value.Scope...)
 	r.refresh = append(r.refresh, memoryRefreshToken{RefreshToken: value})
 	return nil
+}
+
+func (r *MemoryRepository) FindRefreshToken(_ context.Context, hash []byte, now time.Time) (RefreshToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, record := range r.refresh {
+		if bytes.Equal(record.Hash, hash) &&
+			record.consumedAt == nil &&
+			record.revokedAt == nil &&
+			record.ExpiresAt.After(now) {
+			value := record.RefreshToken
+			value.Hash = cloneBytes(value.Hash)
+			value.Scope = append([]string(nil), value.Scope...)
+			return value, nil
+		}
+	}
+	return RefreshToken{}, ErrGrantNotFound
 }
 
 func (r *MemoryRepository) RotateRefreshToken(_ context.Context, hash []byte, replacement RefreshToken, now time.Time) (RefreshToken, error) {
@@ -208,6 +250,30 @@ func (r *MemoryRepository) RotateRefreshToken(_ context.Context, hash []byte, re
 		return value, nil
 	}
 	return RefreshToken{}, ErrGrantNotFound
+}
+
+func (r *MemoryRepository) RevokeRefreshToken(_ context.Context, hash []byte, clientID string, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, record := range r.refresh {
+		if !bytes.Equal(record.Hash, hash) || record.ClientID != clientID {
+			continue
+		}
+		for index := range r.refresh {
+			if r.refresh[index].FamilyID == record.FamilyID {
+				value := now
+				r.refresh[index].revokedAt = &value
+			}
+		}
+		for index := range r.accessTokens {
+			if r.accessTokens[index].FamilyID == record.FamilyID {
+				value := now
+				r.accessTokens[index].revokedAt = &value
+			}
+		}
+		return nil
+	}
+	return ErrGrantNotFound
 }
 
 func (r *MemoryRepository) SaveDeviceAuthorization(_ context.Context, value DeviceAuthorization) error {

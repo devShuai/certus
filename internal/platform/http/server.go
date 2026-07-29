@@ -168,6 +168,8 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(http.HandlerFunc(s.getClientIntegration)))
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
 	mux.HandleFunc("POST /oauth2/token", s.token)
+	mux.HandleFunc("POST /oauth2/introspect", s.introspect)
+	mux.HandleFunc("POST /oauth2/revoke", s.revokeToken)
 	mux.HandleFunc("POST /oauth2/device_authorization", s.deviceAuthorization)
 	mux.HandleFunc("GET /oauth2/userinfo", s.userinfo)
 	mux.HandleFunc("POST /oauth2/userinfo", s.userinfo)

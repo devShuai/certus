@@ -21,6 +21,8 @@ type integrationParameters struct {
 	ClientAuthenticationMethod  string             `json:"client_authentication_method,omitempty"`
 	AuthorizationEndpoint       string             `json:"authorization_endpoint,omitempty"`
 	TokenEndpoint               string             `json:"token_endpoint,omitempty"`
+	IntrospectionEndpoint       string             `json:"introspection_endpoint,omitempty"`
+	RevocationEndpoint          string             `json:"revocation_endpoint,omitempty"`
 	DeviceAuthorizationEndpoint string             `json:"device_authorization_endpoint,omitempty"`
 	UserInfoEndpoint            string             `json:"userinfo_endpoint,omitempty"`
 	JWKSURI                     string             `json:"jwks_uri,omitempty"`
@@ -126,6 +128,8 @@ func (s *server) integrationParameters(item client.Client, secret string) integr
 		parameters.DiscoveryURL = s.cfg.Issuer + "/.well-known/openid-configuration"
 		parameters.AuthorizationEndpoint = s.cfg.Issuer + "/oauth2/authorize"
 		parameters.TokenEndpoint = s.cfg.Issuer + "/oauth2/token"
+		parameters.IntrospectionEndpoint = s.cfg.Issuer + "/oauth2/introspect"
+		parameters.RevocationEndpoint = s.cfg.Issuer + "/oauth2/revoke"
 		parameters.UserInfoEndpoint = s.cfg.Issuer + "/oauth2/userinfo"
 		parameters.JWKSURI = s.cfg.Issuer + "/oauth2/jwks"
 		parameters.RedirectURIs = item.RedirectURIs

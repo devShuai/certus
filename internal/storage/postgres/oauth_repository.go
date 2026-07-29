@@ -70,10 +70,16 @@ func (r *OAuthRepository) SaveAccessToken(ctx context.Context, value oauth.Acces
 	if value.UserID != "" {
 		userID = value.UserID
 	}
+	var familyID any
+	if value.FamilyID != "" {
+		familyID = value.FamilyID
+	}
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO oauth_access_tokens (token_hash, client_id, user_id, scope, issued_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		value.Hash, value.ClientID, userID, value.Scope, value.IssuedAt, value.ExpiresAt,
+		INSERT INTO oauth_access_tokens (
+			token_hash, client_id, user_id, refresh_family_id, scope, issued_at, expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		value.Hash, value.ClientID, userID, familyID, value.Scope, value.IssuedAt, value.ExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert access token: %w", err)
@@ -84,14 +90,15 @@ func (r *OAuthRepository) SaveAccessToken(ctx context.Context, value oauth.Acces
 func (r *OAuthRepository) FindAccessToken(ctx context.Context, hash []byte, now time.Time) (oauth.AccessToken, error) {
 	var value oauth.AccessToken
 	var userID pgtype.Text
+	var familyID pgtype.Text
 	err := r.pool.QueryRow(ctx, `
-		SELECT token_hash, client_id, user_id::text, scope, issued_at, expires_at
+		SELECT token_hash, client_id, user_id::text, refresh_family_id::text, scope, issued_at, expires_at
 		FROM oauth_access_tokens
 		WHERE token_hash = $1
 		  AND revoked_at IS NULL
 		  AND expires_at > $2`,
 		hash, now,
-	).Scan(&value.Hash, &value.ClientID, &userID, &value.Scope, &value.IssuedAt, &value.ExpiresAt)
+	).Scan(&value.Hash, &value.ClientID, &userID, &familyID, &value.Scope, &value.IssuedAt, &value.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return oauth.AccessToken{}, oauth.ErrGrantNotFound
 	}
@@ -101,7 +108,26 @@ func (r *OAuthRepository) FindAccessToken(ctx context.Context, hash []byte, now 
 	if userID.Valid {
 		value.UserID = userID.String
 	}
+	if familyID.Valid {
+		value.FamilyID = familyID.String
+	}
 	return value, nil
+}
+
+func (r *OAuthRepository) RevokeAccessToken(ctx context.Context, hash []byte, clientID string, now time.Time) error {
+	command, err := r.pool.Exec(ctx, `
+		UPDATE oauth_access_tokens
+		SET revoked_at = coalesce(revoked_at, $3)
+		WHERE token_hash = $1 AND client_id = $2`,
+		hash, clientID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke access token: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return oauth.ErrGrantNotFound
+	}
+	return nil
 }
 
 func (r *OAuthRepository) SaveRefreshToken(ctx context.Context, value oauth.RefreshToken) error {
@@ -116,6 +142,29 @@ func (r *OAuthRepository) SaveRefreshToken(ctx context.Context, value oauth.Refr
 		return fmt.Errorf("insert refresh token: %w", err)
 	}
 	return nil
+}
+
+func (r *OAuthRepository) FindRefreshToken(ctx context.Context, hash []byte, now time.Time) (oauth.RefreshToken, error) {
+	var value oauth.RefreshToken
+	err := r.pool.QueryRow(ctx, `
+		SELECT token_hash, family_id::text, client_id, user_id::text, scope, issued_at, expires_at
+		FROM oauth_refresh_tokens
+		WHERE token_hash = $1
+		  AND consumed_at IS NULL
+		  AND revoked_at IS NULL
+		  AND expires_at > $2`,
+		hash, now,
+	).Scan(
+		&value.Hash, &value.FamilyID, &value.ClientID, &value.UserID, &value.Scope,
+		&value.IssuedAt, &value.ExpiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oauth.RefreshToken{}, oauth.ErrGrantNotFound
+	}
+	if err != nil {
+		return oauth.RefreshToken{}, fmt.Errorf("find refresh token: %w", err)
+	}
+	return value, nil
 }
 
 func (r *OAuthRepository) RotateRefreshToken(ctx context.Context, hash []byte, replacement oauth.RefreshToken, now time.Time) (oauth.RefreshToken, error) {
@@ -195,6 +244,50 @@ func (r *OAuthRepository) RotateRefreshToken(ctx context.Context, hash []byte, r
 		return oauth.RefreshToken{}, fmt.Errorf("commit refresh rotation: %w", err)
 	}
 	return current, nil
+}
+
+func (r *OAuthRepository) RevokeRefreshToken(ctx context.Context, hash []byte, clientID string, now time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin refresh token revocation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var familyID string
+	if err := tx.QueryRow(ctx, `
+		SELECT family_id::text
+		FROM oauth_refresh_tokens
+		WHERE token_hash = $1 AND client_id = $2
+		FOR UPDATE`,
+		hash, clientID,
+	).Scan(&familyID); errors.Is(err, pgx.ErrNoRows) {
+		return oauth.ErrGrantNotFound
+	} else if err != nil {
+		return fmt.Errorf("find refresh token family: %w", err)
+	}
+	command, err := tx.Exec(ctx, `
+		UPDATE oauth_refresh_tokens
+		SET revoked_at = coalesce(revoked_at, $3)
+		WHERE family_id = $1 AND client_id = $2`,
+		familyID, clientID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke refresh token family: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return errors.New("revoke refresh token family: no row updated")
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE oauth_access_tokens
+		SET revoked_at = coalesce(revoked_at, $2)
+		WHERE refresh_family_id = $1`,
+		familyID, now,
+	); err != nil {
+		return fmt.Errorf("revoke access tokens for refresh family: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit refresh token revocation: %w", err)
+	}
+	return nil
 }
 
 func (r *OAuthRepository) SaveDeviceAuthorization(ctx context.Context, value oauth.DeviceAuthorization) error {

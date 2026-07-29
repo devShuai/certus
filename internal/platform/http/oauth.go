@@ -172,7 +172,7 @@ func (s *server) refreshToken(w http.ResponseWriter, r *http.Request, registered
 	if replacement.FamilyID == "" {
 		replacement.FamilyID = current.FamilyID
 	}
-	response, err := s.issueAccessToken(r, registered.ID, current.UserID, current.Scope)
+	response, err := s.issueAccessToken(r, registered.ID, current.UserID, current.FamilyID, current.Scope)
 	if err != nil {
 		s.logger.Error("issue refreshed access token", "error", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
@@ -207,7 +207,7 @@ func (s *server) clientCredentialsToken(w http.ResponseWriter, r *http.Request, 
 		writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "openid is not valid with client_credentials")
 		return
 	}
-	response, err := s.issueAccessToken(r, registered.ID, "", scopes)
+	response, err := s.issueAccessToken(r, registered.ID, "", "", scopes)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
 		return
@@ -220,22 +220,25 @@ func (s *server) issueUserTokens(r *http.Request, registered client.Client, user
 	if err != nil || user.Status != identity.UserActive {
 		return nil, errors.New("user is unavailable")
 	}
-	response, err := s.issueAccessToken(r, registered.ID, userID, scopes)
+	var refreshRaw, familyID string
+	if allowRefresh && registered.SupportsGrant(client.GrantRefreshToken) {
+		refreshRaw, err = security.RandomToken(48)
+		if err != nil {
+			return nil, err
+		}
+		familyID, err = security.RandomUUID()
+		if err != nil {
+			return nil, err
+		}
+	}
+	response, err := s.issueAccessToken(r, registered.ID, userID, familyID, scopes)
 	if err != nil {
 		return nil, err
 	}
-	if allowRefresh && registered.SupportsGrant(client.GrantRefreshToken) {
-		raw, err := security.RandomToken(48)
-		if err != nil {
-			return nil, err
-		}
-		familyID, err := security.RandomUUID()
-		if err != nil {
-			return nil, err
-		}
+	if refreshRaw != "" {
 		now := s.now().UTC()
 		if err := s.oauth.SaveRefreshToken(r.Context(), oauth.RefreshToken{
-			Hash:      security.HashToken(raw),
+			Hash:      security.HashToken(refreshRaw),
 			FamilyID:  familyID,
 			ClientID:  registered.ID,
 			UserID:    userID,
@@ -245,7 +248,7 @@ func (s *server) issueUserTokens(r *http.Request, registered client.Client, user
 		}); err != nil {
 			return nil, err
 		}
-		response["refresh_token"] = raw
+		response["refresh_token"] = refreshRaw
 	}
 	if slices.Contains(scopes, "openid") {
 		now := s.now().UTC()
@@ -276,7 +279,7 @@ func (s *server) issueUserTokens(r *http.Request, registered client.Client, user
 	return response, nil
 }
 
-func (s *server) issueAccessToken(r *http.Request, clientID, userID string, scopes []string) (map[string]any, error) {
+func (s *server) issueAccessToken(r *http.Request, clientID, userID, familyID string, scopes []string) (map[string]any, error) {
 	raw, err := security.RandomToken(48)
 	if err != nil {
 		return nil, err
@@ -286,6 +289,7 @@ func (s *server) issueAccessToken(r *http.Request, clientID, userID string, scop
 		Hash:      security.HashToken(raw),
 		ClientID:  clientID,
 		UserID:    userID,
+		FamilyID:  familyID,
 		Scope:     scopes,
 		IssuedAt:  now,
 		ExpiresAt: now.Add(accessTokenLifetime),
@@ -327,6 +331,143 @@ func (s *server) authenticateOAuthClient(w http.ResponseWriter, r *http.Request)
 		return client.Client{}, false
 	}
 	return registered, true
+}
+
+func (s *server) authenticateConfidentialOAuthClient(w http.ResponseWriter, r *http.Request) (client.Client, bool) {
+	registered, ok := s.authenticateOAuthClient(w, r)
+	if !ok {
+		return client.Client{}, false
+	}
+	if registered.ApplicationType != client.ApplicationConfidential {
+		w.Header().Set("WWW-Authenticate", `Basic realm="certus-token-metadata"`)
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "confidential client authentication is required")
+		return client.Client{}, false
+	}
+	return registered, true
+}
+
+func (s *server) introspect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "Content-Type must be application/x-www-form-urlencoded")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
+		return
+	}
+	registered, ok := s.authenticateConfidentialOAuthClient(w, r)
+	if !ok {
+		return
+	}
+	raw := r.Form.Get("token")
+	if raw == "" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "token is required")
+		return
+	}
+	hash := security.HashToken(raw)
+	now := s.now().UTC()
+	hint := r.Form.Get("token_type_hint")
+	if hint != "refresh_token" {
+		if token, err := s.oauth.FindAccessToken(r.Context(), hash, now); err == nil && token.ClientID == registered.ID {
+			s.writeAccessTokenIntrospection(w, r, token)
+			return
+		}
+	}
+	if token, err := s.oauth.FindRefreshToken(r.Context(), hash, now); err == nil && token.ClientID == registered.ID {
+		s.writeRefreshTokenIntrospection(w, r, token)
+		return
+	}
+	if hint == "refresh_token" {
+		if token, err := s.oauth.FindAccessToken(r.Context(), hash, now); err == nil && token.ClientID == registered.ID {
+			s.writeAccessTokenIntrospection(w, r, token)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"active": false})
+}
+
+func (s *server) writeAccessTokenIntrospection(w http.ResponseWriter, r *http.Request, token oauth.AccessToken) {
+	response := map[string]any{
+		"active":     true,
+		"scope":      strings.Join(token.Scope, " "),
+		"client_id":  token.ClientID,
+		"token_type": "Bearer",
+		"exp":        token.ExpiresAt.Unix(),
+		"iat":        token.IssuedAt.Unix(),
+		"iss":        s.cfg.Issuer,
+	}
+	if token.UserID != "" {
+		user, err := s.users.Find(r.Context(), token.UserID)
+		if err != nil || user.Status != identity.UserActive {
+			writeJSON(w, http.StatusOK, map[string]bool{"active": false})
+			return
+		}
+		response["sub"] = user.ID
+		response["username"] = user.Username
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *server) writeRefreshTokenIntrospection(w http.ResponseWriter, r *http.Request, token oauth.RefreshToken) {
+	user, err := s.users.Find(r.Context(), token.UserID)
+	if err != nil || user.Status != identity.UserActive {
+		writeJSON(w, http.StatusOK, map[string]bool{"active": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"active":    true,
+		"scope":     strings.Join(token.Scope, " "),
+		"client_id": token.ClientID,
+		"username":  user.Username,
+		"sub":       user.ID,
+		"exp":       token.ExpiresAt.Unix(),
+		"iat":       token.IssuedAt.Unix(),
+		"iss":       s.cfg.Issuer,
+	})
+}
+
+func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "Content-Type must be application/x-www-form-urlencoded")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
+		return
+	}
+	registered, ok := s.authenticateOAuthClient(w, r)
+	if !ok {
+		return
+	}
+	raw := r.Form.Get("token")
+	if raw == "" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "token is required")
+		return
+	}
+	hash := security.HashToken(raw)
+	now := s.now().UTC()
+	hint := r.Form.Get("token_type_hint")
+	if hint == "refresh_token" {
+		if err := s.oauth.RevokeRefreshToken(r.Context(), hash, registered.ID, now); err == nil {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = s.oauth.RevokeAccessToken(r.Context(), hash, registered.ID, now)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := s.oauth.RevokeAccessToken(r.Context(), hash, registered.ID, now); err == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_ = s.oauth.RevokeRefreshToken(r.Context(), hash, registered.ID, now)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *server) userinfo(w http.ResponseWriter, r *http.Request) {
@@ -371,19 +512,23 @@ func (s *server) jwks(w http.ResponseWriter, _ *http.Request) {
 
 func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                s.cfg.Issuer,
-		"authorization_endpoint":                s.cfg.Issuer + "/oauth2/authorize",
-		"token_endpoint":                        s.cfg.Issuer + "/oauth2/token",
-		"device_authorization_endpoint":         s.cfg.Issuer + "/oauth2/device_authorization",
-		"userinfo_endpoint":                     s.cfg.Issuer + "/oauth2/userinfo",
-		"jwks_uri":                              s.cfg.Issuer + "/oauth2/jwks",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{string(client.GrantAuthorizationCode), string(client.GrantRefreshToken), string(client.GrantClientCredentials), string(client.GrantDeviceCode)},
-		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "none"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"scopes_supported":                      []string{"openid", "profile", "email"},
-		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{"RS256"},
+		"issuer":                                        s.cfg.Issuer,
+		"authorization_endpoint":                        s.cfg.Issuer + "/oauth2/authorize",
+		"token_endpoint":                                s.cfg.Issuer + "/oauth2/token",
+		"introspection_endpoint":                        s.cfg.Issuer + "/oauth2/introspect",
+		"revocation_endpoint":                           s.cfg.Issuer + "/oauth2/revoke",
+		"device_authorization_endpoint":                 s.cfg.Issuer + "/oauth2/device_authorization",
+		"userinfo_endpoint":                             s.cfg.Issuer + "/oauth2/userinfo",
+		"jwks_uri":                                      s.cfg.Issuer + "/oauth2/jwks",
+		"response_types_supported":                      []string{"code"},
+		"grant_types_supported":                         []string{string(client.GrantAuthorizationCode), string(client.GrantRefreshToken), string(client.GrantClientCredentials), string(client.GrantDeviceCode)},
+		"token_endpoint_auth_methods_supported":         []string{"client_secret_basic", "none"},
+		"introspection_endpoint_auth_methods_supported": []string{"client_secret_basic"},
+		"revocation_endpoint_auth_methods_supported":    []string{"client_secret_basic", "none"},
+		"code_challenge_methods_supported":              []string{"S256"},
+		"scopes_supported":                              []string{"openid", "profile", "email"},
+		"subject_types_supported":                       []string{"public"},
+		"id_token_signing_alg_values_supported":         []string{"RS256"},
 	})
 }
 
