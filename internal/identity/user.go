@@ -65,6 +65,7 @@ type UserPage struct {
 type UserRepository interface {
 	List(context.Context, UserFilter) (UserPage, error)
 	Find(context.Context, string) (User, error)
+	FindByUsername(context.Context, string) (User, error)
 	Create(context.Context, User) (User, error)
 	Replace(context.Context, User) (User, error)
 }

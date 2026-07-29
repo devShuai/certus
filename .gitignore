@@ -1,5 +1,6 @@
 .env
 .cache/
+.gocache/
 .idea/
 bin/
 dist/

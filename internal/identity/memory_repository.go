@@ -5,19 +5,35 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type MemoryUserRepository struct {
-	mu    sync.RWMutex
-	users map[string]User
+	mu          sync.RWMutex
+	users       map[string]User
+	credentials map[string]PasswordCredential
 }
 
 func NewMemoryUserRepository(users ...User) *MemoryUserRepository {
-	repository := &MemoryUserRepository{users: make(map[string]User, len(users))}
+	repository := &MemoryUserRepository{
+		users:       make(map[string]User, len(users)),
+		credentials: make(map[string]PasswordCredential),
+	}
 	for _, user := range users {
 		repository.users[user.ID] = cloneUser(user)
 	}
 	return repository
+}
+
+func (r *MemoryUserRepository) FindByUsername(_ context.Context, username string) (User, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, user := range r.users {
+		if strings.EqualFold(user.Username, username) {
+			return cloneUser(user), nil
+		}
+	}
+	return User{}, ErrNotFound
 }
 
 func (r *MemoryUserRepository) List(_ context.Context, filter UserFilter) (UserPage, error) {
@@ -86,6 +102,61 @@ func (r *MemoryUserRepository) Replace(_ context.Context, user User) (User, erro
 	}
 	r.users[user.ID] = cloneUser(user)
 	return cloneUser(user), nil
+}
+
+func (r *MemoryUserRepository) SetPassword(_ context.Context, userID, hash string, _ time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.users[userID]; !ok {
+		return ErrNotFound
+	}
+	r.credentials[userID] = PasswordCredential{UserID: userID, Hash: hash}
+	return nil
+}
+
+func (r *MemoryUserRepository) FindPasswordByUsername(_ context.Context, username string) (User, PasswordCredential, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, user := range r.users {
+		if !strings.EqualFold(user.Username, username) {
+			continue
+		}
+		credential, ok := r.credentials[user.ID]
+		if !ok {
+			return User{}, PasswordCredential{}, ErrNotFound
+		}
+		return cloneUser(user), credential, nil
+	}
+	return User{}, PasswordCredential{}, ErrNotFound
+}
+
+func (r *MemoryUserRepository) RecordPasswordFailure(_ context.Context, userID string, _ time.Time, attempts int, lockedUntil time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	credential, ok := r.credentials[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	credential.FailedAttempts = attempts
+	if !lockedUntil.IsZero() {
+		value := lockedUntil
+		credential.LockedUntil = &value
+	}
+	r.credentials[userID] = credential
+	return nil
+}
+
+func (r *MemoryUserRepository) RecordPasswordSuccess(_ context.Context, userID string, _ time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	credential, ok := r.credentials[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	credential.FailedAttempts = 0
+	credential.LockedUntil = nil
+	r.credentials[userID] = credential
+	return nil
 }
 
 func cloneUser(user User) User {
