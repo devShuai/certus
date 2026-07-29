@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -9,6 +10,21 @@ func TestLoadRejectsShortAdminToken(t *testing.T) {
 	t.Setenv("CERTUS_ADMIN_TOKEN", "too-short")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "at least 32") {
 		t.Fatalf("expected short token error, got %v", err)
+	}
+}
+
+func TestLoadMFAEncryptionKey(t *testing.T) {
+	t.Setenv("CERTUS_MFA_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.MFAEncryptionKey) != 32 {
+		t.Fatalf("unexpected MFA key length: %d", len(cfg.MFAEncryptionKey))
+	}
+	t.Setenv("CERTUS_MFA_ENCRYPTION_KEY", "not-a-key")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "32 bytes") {
+		t.Fatalf("expected invalid MFA key error, got %v", err)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"certus/internal/config"
 	"certus/internal/federation"
 	"certus/internal/identity"
+	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
 	"certus/internal/session"
@@ -36,6 +37,7 @@ type server struct {
 	cas              cas.Repository
 	accessControl    access.Repository
 	audit            audit.Repository
+	mfa              *mfa.Service
 	signer           *oidc.Signer
 	outbound         *http.Client
 	ldap             *federation.LDAPAuthenticator
@@ -95,6 +97,7 @@ type Dependencies struct {
 	CAS                cas.Repository
 	Access             access.Repository
 	Audit              audit.Repository
+	MFA                mfa.Repository
 	Keys               oidc.KeyRepository
 	OutboundHTTPClient *http.Client
 }
@@ -118,6 +121,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	}
 	if dependencies.Audit == nil {
 		dependencies.Audit = audit.NewMemoryRepository()
+	}
+	if dependencies.MFA == nil {
+		dependencies.MFA = mfa.NewMemoryRepository()
 	}
 	outbound := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -145,6 +151,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		cas:           dependencies.CAS,
 		accessControl: dependencies.Access,
 		audit:         dependencies.Audit,
+		mfa:           mfa.NewService(dependencies.MFA, cfg.MFAEncryptionKey, "Certus"),
 		signer:        signer,
 		outbound:      outbound,
 		ldap:          federation.NewLDAPAuthenticator(cfg.LDAP),
@@ -166,6 +173,8 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("POST /login/ldap", s.loginLDAP)
 	mux.HandleFunc("GET /login/oidc", s.loginOIDC)
 	mux.HandleFunc("GET /login/oidc/callback", s.loginOIDCCallback)
+	mux.HandleFunc("GET /login/mfa", s.mfaLoginPage)
+	mux.HandleFunc("POST /login/mfa", s.mfaLoginVerify)
 	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /portal", s.portal)
 	mux.HandleFunc("GET /admin/clients", s.adminClientsPage)
@@ -180,6 +189,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/users/{userID}/sessions", s.requireAdmin(http.HandlerFunc(s.listAdminUserSessions)))
 	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions", s.requireAdmin(http.HandlerFunc(s.revokeAllAdminUserSessions)))
 	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions/{sessionID}", s.requireAdmin(http.HandlerFunc(s.revokeAdminUserSession)))
+	mux.Handle("DELETE /api/v1/admin/users/{userID}/mfa", s.requireAdmin(http.HandlerFunc(s.resetAdminUserMFA)))
 	mux.Handle("GET /api/v1/admin/audit-events", s.requireAdmin(http.HandlerFunc(s.listAuditEvents)))
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.listAdminClients)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.createClient)))
@@ -201,6 +211,10 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("DELETE /api/v1/account/sessions/{sessionID}", s.revokeAccountSession)
 	mux.HandleFunc("PUT /api/v1/account/password", s.changeAccountPassword)
 	mux.HandleFunc("POST /api/v1/account/password/reset", s.resetAccountPassword)
+	mux.HandleFunc("GET /api/v1/account/mfa", s.getAccountMFA)
+	mux.HandleFunc("POST /api/v1/account/mfa/totp/setup", s.setupAccountMFA)
+	mux.HandleFunc("POST /api/v1/account/mfa/totp/enable", s.enableAccountMFA)
+	mux.HandleFunc("DELETE /api/v1/account/mfa/totp", s.disableAccountMFA)
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
 	mux.HandleFunc("POST /oauth2/token", s.token)
 	mux.HandleFunc("POST /oauth2/introspect", s.introspect)

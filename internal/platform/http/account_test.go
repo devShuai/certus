@@ -74,7 +74,9 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 		`{"current_password":"initial-password-123","new_password":"changed-password-456"}`,
 	))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", strings.Repeat("c", 32))
 	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: currentToken})
+	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: strings.Repeat("c", 32)})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {

@@ -30,12 +30,15 @@ func (s *server) listAccountSessions(w http.ResponseWriter, r *http.Request) {
 	for _, item := range items {
 		response = append(response, accountSession{Session: item, Current: item.ID == current.ID})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": response})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":      response,
+		"csrf_token": s.ensureCSRF(w, r),
+	})
 }
 
 func (s *server) revokeAccountSession(w http.ResponseWriter, r *http.Request) {
 	current, ok := s.requireCurrentSession(w, r)
-	if !ok {
+	if !ok || !s.requireAccountCSRF(w, r) {
 		return
 	}
 	sessionID := r.PathValue("sessionID")
@@ -62,7 +65,7 @@ func (s *server) revokeAccountSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) changeAccountPassword(w http.ResponseWriter, r *http.Request) {
 	current, ok := s.requireCurrentSession(w, r)
-	if !ok {
+	if !ok || !s.requireAccountCSRF(w, r) {
 		return
 	}
 	user, err := s.users.Find(r.Context(), current.UserID)

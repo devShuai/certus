@@ -28,6 +28,8 @@ type AuthorizationCode struct {
 	Nonce           string
 	CodeChallenge   string
 	AuthenticatedAt time.Time
+	AuthMethods     []string
+	AssuranceLevel  string
 	CreatedAt       time.Time
 	ExpiresAt       time.Time
 }
@@ -69,6 +71,8 @@ type DeviceAuthorization struct {
 	Scope           []string
 	Status          DeviceStatus
 	AuthenticatedAt time.Time
+	AuthMethods     []string
+	AssuranceLevel  string
 	CreatedAt       time.Time
 	ExpiresAt       time.Time
 	Interval        time.Duration
@@ -87,7 +91,7 @@ type Repository interface {
 	RevokeRefreshToken(context.Context, []byte, string, time.Time) error
 	SaveDeviceAuthorization(context.Context, DeviceAuthorization) error
 	FindDeviceByUserCode(context.Context, []byte, time.Time) (DeviceAuthorization, error)
-	DecideDeviceAuthorization(context.Context, []byte, string, time.Time, bool, time.Time) error
+	DecideDeviceAuthorization(context.Context, []byte, string, time.Time, []string, string, bool, time.Time) error
 	PollDeviceAuthorization(context.Context, []byte, string, time.Time) (DeviceAuthorization, error)
 }
 
@@ -124,6 +128,7 @@ func (r *MemoryRepository) SaveAuthorizationCode(_ context.Context, value Author
 	defer r.mu.Unlock()
 	value.Hash = cloneBytes(value.Hash)
 	value.Scope = append([]string(nil), value.Scope...)
+	value.AuthMethods = append([]string(nil), value.AuthMethods...)
 	r.codes = append(r.codes, memoryAuthorizationCode{AuthorizationCode: value})
 	return nil
 }
@@ -297,7 +302,16 @@ func (r *MemoryRepository) FindDeviceByUserCode(_ context.Context, hash []byte, 
 	return DeviceAuthorization{}, ErrGrantNotFound
 }
 
-func (r *MemoryRepository) DecideDeviceAuthorization(_ context.Context, userHash []byte, userID string, authenticatedAt time.Time, approve bool, now time.Time) error {
+func (r *MemoryRepository) DecideDeviceAuthorization(
+	_ context.Context,
+	userHash []byte,
+	userID string,
+	authenticatedAt time.Time,
+	authMethods []string,
+	assuranceLevel string,
+	approve bool,
+	now time.Time,
+) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for index := range r.devices {
@@ -305,6 +319,8 @@ func (r *MemoryRepository) DecideDeviceAuthorization(_ context.Context, userHash
 		if bytes.Equal(value.UserHash, userHash) && value.ExpiresAt.After(now) && value.Status == DevicePending {
 			value.UserID = userID
 			value.AuthenticatedAt = authenticatedAt
+			value.AuthMethods = append([]string(nil), authMethods...)
+			value.AssuranceLevel = assuranceLevel
 			if approve {
 				value.Status = DeviceApproved
 			} else {
@@ -355,6 +371,7 @@ func cloneBytes(value []byte) []byte {
 func cloneAuthorizationCode(value AuthorizationCode) AuthorizationCode {
 	value.Hash = cloneBytes(value.Hash)
 	value.Scope = append([]string(nil), value.Scope...)
+	value.AuthMethods = append([]string(nil), value.AuthMethods...)
 	return value
 }
 
@@ -362,5 +379,6 @@ func cloneDevice(value DeviceAuthorization) DeviceAuthorization {
 	value.DeviceHash = cloneBytes(value.DeviceHash)
 	value.UserHash = cloneBytes(value.UserHash)
 	value.Scope = append([]string(nil), value.Scope...)
+	value.AuthMethods = append([]string(nil), value.AuthMethods...)
 	return value
 }

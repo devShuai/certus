@@ -25,11 +25,13 @@ func (r *OAuthRepository) SaveAuthorizationCode(ctx context.Context, value oauth
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO oauth_authorization_codes (
 			code_hash, client_id, user_id, session_id, redirect_uri, scope, nonce,
-			code_challenge, code_challenge_method, authenticated_at, created_at, expires_at
+			code_challenge, code_challenge_method, authenticated_at,
+			authentication_methods, assurance_level, created_at, expires_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'S256', $9, $10, $11)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'S256', $9, $10, $11, $12, $13)`,
 		value.Hash, value.ClientID, value.UserID, value.SessionID, value.RedirectURI, value.Scope,
-		value.Nonce, value.CodeChallenge, value.AuthenticatedAt, value.CreatedAt, value.ExpiresAt,
+		value.Nonce, value.CodeChallenge, value.AuthenticatedAt, value.AuthMethods,
+		value.AssuranceLevel, value.CreatedAt, value.ExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert authorization code: %w", err)
@@ -49,12 +51,13 @@ func (r *OAuthRepository) ConsumeAuthorizationCode(ctx context.Context, hash []b
 		  AND consumed_at IS NULL
 		  AND expires_at > $2
 		RETURNING code_hash, client_id, user_id::text, session_id::text, redirect_uri, scope, nonce,
-		          code_challenge, authenticated_at, created_at, expires_at`,
+		          code_challenge, authenticated_at, authentication_methods, assurance_level,
+		          created_at, expires_at`,
 		hash, now, clientID, redirectURI, codeChallenge,
 	).Scan(
 		&value.Hash, &value.ClientID, &value.UserID, &value.SessionID, &value.RedirectURI,
 		&value.Scope, &value.Nonce, &value.CodeChallenge, &value.AuthenticatedAt,
-		&value.CreatedAt, &value.ExpiresAt,
+		&value.AuthMethods, &value.AssuranceLevel, &value.CreatedAt, &value.ExpiresAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return oauth.AuthorizationCode{}, oauth.ErrGrantNotFound
@@ -309,7 +312,8 @@ func (r *OAuthRepository) SaveDeviceAuthorization(ctx context.Context, value oau
 func (r *OAuthRepository) FindDeviceByUserCode(ctx context.Context, hash []byte, now time.Time) (oauth.DeviceAuthorization, error) {
 	value, err := scanDevice(r.pool.QueryRow(ctx, `
 		SELECT device_code_hash, user_code_hash, client_id, user_id::text, scope, status,
-		       authenticated_at, created_at, expires_at, interval_seconds, last_poll_at
+		       authenticated_at, authentication_methods, assurance_level,
+		       created_at, expires_at, interval_seconds, last_poll_at
 		FROM oauth_device_authorizations
 		WHERE user_code_hash = $1
 		  AND status = 'pending'
@@ -325,18 +329,28 @@ func (r *OAuthRepository) FindDeviceByUserCode(ctx context.Context, hash []byte,
 	return value, nil
 }
 
-func (r *OAuthRepository) DecideDeviceAuthorization(ctx context.Context, userHash []byte, userID string, authenticatedAt time.Time, approve bool, now time.Time) error {
+func (r *OAuthRepository) DecideDeviceAuthorization(
+	ctx context.Context,
+	userHash []byte,
+	userID string,
+	authenticatedAt time.Time,
+	authMethods []string,
+	assuranceLevel string,
+	approve bool,
+	now time.Time,
+) error {
 	status := oauth.DeviceDenied
 	if approve {
 		status = oauth.DeviceApproved
 	}
 	command, err := r.pool.Exec(ctx, `
 		UPDATE oauth_device_authorizations
-		SET user_id = $2, authenticated_at = $3, status = $4, decided_at = $5
+		SET user_id = $2, authenticated_at = $3, authentication_methods = $4,
+		    assurance_level = $5, status = $6, decided_at = $7
 		WHERE user_code_hash = $1
 		  AND status = 'pending'
-		  AND expires_at > $5`,
-		userHash, userID, authenticatedAt, status, now,
+		  AND expires_at > $7`,
+		userHash, userID, authenticatedAt, authMethods, assuranceLevel, status, now,
 	)
 	if err != nil {
 		return fmt.Errorf("decide device authorization: %w", err)
@@ -356,7 +370,8 @@ func (r *OAuthRepository) PollDeviceAuthorization(ctx context.Context, deviceHas
 
 	value, err := scanDevice(tx.QueryRow(ctx, `
 		SELECT device_code_hash, user_code_hash, client_id, user_id::text, scope, status,
-		       authenticated_at, created_at, expires_at, interval_seconds, last_poll_at
+		       authenticated_at, authentication_methods, assurance_level,
+		       created_at, expires_at, interval_seconds, last_poll_at
 		FROM oauth_device_authorizations
 		WHERE device_code_hash = $1 AND client_id = $2
 		FOR UPDATE`,
@@ -440,7 +455,8 @@ func scanDevice(scanner deviceScanner) (oauth.DeviceAuthorization, error) {
 	var lastPoll pgtype.Timestamptz
 	err := scanner.Scan(
 		&value.DeviceHash, &value.UserHash, &value.ClientID, &userID, &value.Scope,
-		&value.Status, &authenticatedAt, &value.CreatedAt, &value.ExpiresAt, &intervalSeconds, &lastPoll,
+		&value.Status, &authenticatedAt, &value.AuthMethods, &value.AssuranceLevel,
+		&value.CreatedAt, &value.ExpiresAt, &intervalSeconds, &lastPoll,
 	)
 	if err != nil {
 		return oauth.DeviceAuthorization{}, err

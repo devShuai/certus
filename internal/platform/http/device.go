@@ -158,6 +158,8 @@ func (s *server) deviceDecision(w http.ResponseWriter, r *http.Request) {
 		security.HashToken(normalizeUserCode(userCode)),
 		current.UserID,
 		current.AuthenticatedAt,
+		current.AuthMethods,
+		current.AssuranceLevel,
 		approve,
 		s.now().UTC(),
 	); err != nil {
@@ -214,7 +216,10 @@ func (s *server) deviceCodeToken(w http.ResponseWriter, r *http.Request, registe
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the device code is invalid or already used")
 		return
 	}
-	response, err := s.issueUserTokens(r, registered, record.UserID, record.Scope, "", record.AuthenticatedAt, true)
+	response, err := s.issueUserTokens(
+		r, registered, record.UserID, record.Scope, "",
+		record.AuthenticatedAt, record.AuthMethods, record.AssuranceLevel, true,
+	)
 	if err != nil {
 		s.logger.Error("issue device tokens", "error", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")

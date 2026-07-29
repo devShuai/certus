@@ -111,6 +111,7 @@ func (r *MemoryRepository) RevokeAll(_ context.Context, userID, exceptID string,
 }
 
 func cloneSession(value Session) Session {
+	value.AuthMethods = append([]string(nil), value.AuthMethods...)
 	if value.RevokedAt != nil {
 		revokedAt := *value.RevokedAt
 		value.RevokedAt = &revokedAt

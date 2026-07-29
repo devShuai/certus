@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"certus/internal/mfa"
 )
 
 type Config struct {
@@ -14,6 +16,7 @@ type Config struct {
 	Environment       string
 	DatabaseURL       string
 	AdminToken        string
+	MFAEncryptionKey  []byte
 	LDAP              LDAPConfig
 	ExternalOIDC      ExternalOIDCConfig
 	ReadHeaderTimeout time.Duration
@@ -86,6 +89,10 @@ func Load() (Config, error) {
 	}
 	if cfg.AdminToken != "" && len(cfg.AdminToken) < 32 {
 		return Config{}, fmt.Errorf("CERTUS_ADMIN_TOKEN must contain at least 32 characters")
+	}
+	cfg.MFAEncryptionKey, err = mfa.DecodeEncryptionKey(os.Getenv("CERTUS_MFA_ENCRYPTION_KEY"))
+	if err != nil {
+		return Config{}, fmt.Errorf("CERTUS_MFA_ENCRYPTION_KEY: %w", err)
 	}
 	issuer, err := url.Parse(cfg.Issuer)
 	if err != nil || issuer.Scheme == "" || issuer.Host == "" {

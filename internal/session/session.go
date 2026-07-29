@@ -20,6 +20,8 @@ type Session struct {
 	IPAddress       string     `json:"ip_address,omitempty"`
 	UserAgent       string     `json:"user_agent,omitempty"`
 	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
+	AuthMethods     []string   `json:"authentication_methods"`
+	AssuranceLevel  string     `json:"assurance_level"`
 }
 
 type Repository interface {
@@ -45,6 +47,15 @@ func NewService(repository Repository, lifetime time.Duration) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, userID, ipAddress, userAgent string) (Session, string, error) {
+	return s.CreateWithMethods(ctx, userID, ipAddress, userAgent, nil, "urn:certus:aal:1")
+}
+
+func (s *Service) CreateWithMethods(
+	ctx context.Context,
+	userID, ipAddress, userAgent string,
+	authMethods []string,
+	assuranceLevel string,
+) (Session, string, error) {
 	token, err := security.RandomToken(32)
 	if err != nil {
 		return Session{}, "", err
@@ -57,6 +68,8 @@ func (s *Service) Create(ctx context.Context, userID, ipAddress, userAgent strin
 		LastSeenAt:      now,
 		IPAddress:       ipAddress,
 		UserAgent:       userAgent,
+		AuthMethods:     append([]string(nil), authMethods...),
+		AssuranceLevel:  assuranceLevel,
 	}, security.HashToken(token), ipAddress, userAgent)
 	if err != nil {
 		return Session{}, "", fmt.Errorf("create session: %w", err)

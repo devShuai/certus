@@ -22,6 +22,7 @@ const (
 	sessionCookieName      = "certus_session"
 	csrfCookieName         = "certus_csrf"
 	externalOIDCCookieName = "certus_oidc_transaction"
+	mfaCookieName          = "certus_mfa_transaction"
 )
 
 type loginPageData struct {
@@ -347,8 +348,40 @@ func (s *server) renderLoginError(w http.ResponseWriter, r *http.Request, return
 }
 
 func (s *server) completeLogin(w http.ResponseWriter, r *http.Request, user identity.User, returnTo, method, clientID string) {
+	required, err := s.mfa.RequiresChallenge(r.Context(), user.ID)
+	if err != nil {
+		s.recordAudit(r, audit.Event{
+			ActorUserID: auditActor(user.ID),
+			EventType:   "login." + method,
+			ClientID:    auditClient(clientID),
+			Outcome:     audit.OutcomeFailure,
+			Details:     map[string]any{"reason": "mfa_unavailable"},
+		})
+		s.logger.Error("read MFA login requirement", "user_id", user.ID, "error", err)
+		writeProblem(w, http.StatusServiceUnavailable, "mfa_unavailable", "多因素认证暂时不可用，已拒绝降级登录")
+		return
+	}
+	if required {
+		s.beginMFAChallenge(w, r, user.ID, returnTo, method, clientID)
+		return
+	}
+	s.createLoginSession(w, r, user, returnTo, method, clientID, false)
+}
+
+func (s *server) createLoginSession(w http.ResponseWriter, r *http.Request, user identity.User, returnTo, method, clientID string, mfaVerified bool) {
 	ipAddress, _, _ := net.SplitHostPort(r.RemoteAddr)
-	_, token, err := s.sessions.Create(r.Context(), user.ID, ipAddress, r.UserAgent())
+	authMethods := []string{"pwd"}
+	if method == "oidc" {
+		authMethods = []string{"federated"}
+	}
+	assuranceLevel := "urn:certus:aal:1"
+	if mfaVerified {
+		authMethods = append(authMethods, "otp")
+		assuranceLevel = "urn:certus:aal:2"
+	}
+	_, token, err := s.sessions.CreateWithMethods(
+		r.Context(), user.ID, ipAddress, r.UserAgent(), authMethods, assuranceLevel,
+	)
 	if err != nil {
 		s.recordAudit(r, audit.Event{
 			ActorUserID: auditActor(user.ID),
@@ -468,7 +501,7 @@ func (s *server) ensureCSRF(w http.ResponseWriter, r *http.Request) string {
 
 func (s *server) validCSRF(supplied string, r *http.Request) bool {
 	cookie, err := r.Cookie(csrfCookieName)
-	if err != nil || supplied == "" || len(cookie.Value) != len(supplied) {
+	if err != nil || len(supplied) < 32 || len(cookie.Value) != len(supplied) {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(supplied)) == 1

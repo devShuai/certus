@@ -111,6 +111,7 @@ POST /api/v1/admin/users/{user_id}/password-reset
 GET  /api/v1/admin/users/{user_id}/sessions
 DELETE /api/v1/admin/users/{user_id}/sessions
 DELETE /api/v1/admin/users/{user_id}/sessions/{session_id}
+DELETE /api/v1/admin/users/{user_id}/mfa
 GET  /api/v1/admin/audit-events
 ```
 
@@ -147,6 +148,27 @@ POST   /api/v1/account/password/reset
 ```
 
 用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话；一次性重置成功后撤销全部会话。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
+
+### TOTP 多因素认证
+
+生产环境先配置独立的 32 字节主密钥（Base64 编码），用于 AES-GCM 加密每个用户独立生成的 TOTP 密钥：
+
+```powershell
+$env:CERTUS_MFA_ENCRYPTION_KEY='<Base64 编码的 32 字节随机值>'
+```
+
+账号安全 API：
+
+```text
+GET    /api/v1/account/mfa
+POST   /api/v1/account/mfa/totp/setup
+POST   /api/v1/account/mfa/totp/enable
+DELETE /api/v1/account/mfa/totp
+```
+
+`GET` 响应中的 `csrf_token` 必须通过 `X-CSRF-Token` 请求头传给所有账号安全写接口，并同时携带登录会话 Cookie。注册 TOTP 前还会重新验证当前密码；`setup` 返回 `otpauth_uri`、Base32 密钥和 10 枚仅显示一次的高熵恢复码。
+
+TOTP 使用 RFC 6238 的 30 秒时间步与 HMAC-SHA-1 兼容模式，允许前后各一个时间步的时钟偏差。服务端原子记录最后成功时间步，拒绝同一动态口令重放；恢复码仅存 SHA-256 哈希且成功后立即作废。启用 MFA 的账号在密码、LDAP 或外部 OIDC 主认证后都必须完成第二步验证；若主密钥缺失或密文无法解密，Certus 会拒绝降级登录。OIDC ID Token 同时下发 `amr` 与 `acr`（`urn:certus:aal:1` / `urn:certus:aal:2`）。
 
 ### LDAP 与外部 OIDC
 

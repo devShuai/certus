@@ -88,7 +88,9 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 	idTokenClaims, err := base64.RawURLEncoding.DecodeString(idTokenParts[1])
 	if err != nil ||
 		!strings.Contains(string(idTokenClaims), `"roles":["approver"]`) ||
-		!strings.Contains(string(idTokenClaims), `"permissions":["invoice.approve"]`) {
+		!strings.Contains(string(idTokenClaims), `"permissions":["invoice.approve"]`) ||
+		!strings.Contains(string(idTokenClaims), `"amr":["pwd"]`) ||
+		!strings.Contains(string(idTokenClaims), `"acr":"urn:certus:aal:1"`) {
 		t.Fatalf("ID Token missing access claims: %s %v", idTokenClaims, err)
 	}
 	userinfo := httptest.NewRequest(http.MethodGet, "/oauth2/userinfo", nil)

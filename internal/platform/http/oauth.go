@@ -63,6 +63,8 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 		Nonce:           request.Nonce,
 		CodeChallenge:   request.CodeChallenge,
 		AuthenticatedAt: current.AuthenticatedAt,
+		AuthMethods:     current.AuthMethods,
+		AssuranceLevel:  current.AssuranceLevel,
 		CreatedAt:       now,
 		ExpiresAt:       now.Add(authorizationCodeLifetime),
 	}); err != nil {
@@ -134,7 +136,10 @@ func (s *server) authorizationCodeToken(w http.ResponseWriter, r *http.Request, 
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "authorization code is invalid or expired")
 		return
 	}
-	response, err := s.issueUserTokens(r, registered, record.UserID, record.Scope, record.Nonce, record.AuthenticatedAt, true)
+	response, err := s.issueUserTokens(
+		r, registered, record.UserID, record.Scope, record.Nonce,
+		record.AuthenticatedAt, record.AuthMethods, record.AssuranceLevel, true,
+	)
 	if err != nil {
 		s.logger.Error("issue authorization code tokens", "error", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
@@ -220,7 +225,17 @@ func (s *server) clientCredentialsToken(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *server) issueUserTokens(r *http.Request, registered client.Client, userID string, scopes []string, nonce string, authenticatedAt time.Time, allowRefresh bool) (map[string]any, error) {
+func (s *server) issueUserTokens(
+	r *http.Request,
+	registered client.Client,
+	userID string,
+	scopes []string,
+	nonce string,
+	authenticatedAt time.Time,
+	authMethods []string,
+	assuranceLevel string,
+	allowRefresh bool,
+) (map[string]any, error) {
 	user, err := s.users.Find(r.Context(), userID)
 	if err != nil || user.Status != identity.UserActive {
 		return nil, errors.New("user is unavailable")
@@ -264,6 +279,8 @@ func (s *server) issueUserTokens(r *http.Request, registered client.Client, user
 			"exp":       now.Add(accessTokenLifetime).Unix(),
 			"iat":       now.Unix(),
 			"auth_time": authenticatedAt.Unix(),
+			"amr":       authMethods,
+			"acr":       assuranceLevel,
 		}
 		if nonce != "" {
 			claims["nonce"] = nonce
@@ -566,6 +583,8 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"scopes_supported":                              []string{"openid", "profile", "email", "roles"},
 		"subject_types_supported":                       []string{"public"},
 		"id_token_signing_alg_values_supported":         []string{"RS256"},
+		"acr_values_supported":                          []string{"urn:certus:aal:1", "urn:certus:aal:2"},
+		"claims_supported":                              []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "name", "preferred_username", "email", "roles", "permissions"},
 	})
 }
 

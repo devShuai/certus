@@ -28,10 +28,14 @@ func (r *SessionRepository) Create(ctx context.Context, value session.Session, h
 		ip = parsed.String()
 	}
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO sessions (user_id, token_hash, authenticated_at, expires_at, last_seen_at, ip_address, user_agent)
-		VALUES ($1, $2, $3, $4, $3, $5, $6)
+		INSERT INTO sessions (
+			user_id, token_hash, authenticated_at, expires_at, last_seen_at,
+			ip_address, user_agent, authentication_methods, assurance_level
+		)
+		VALUES ($1, $2, $3, $4, $3, $5, $6, $7, $8)
 		RETURNING id::text, last_seen_at`,
 		value.UserID, hash, value.AuthenticatedAt, value.ExpiresAt, ip, userAgent,
+		value.AuthMethods, value.AssuranceLevel,
 	).Scan(&value.ID, &value.LastSeenAt)
 	if err != nil {
 		return session.Session{}, fmt.Errorf("insert session: %w", err)
@@ -48,11 +52,13 @@ func (r *SessionRepository) Find(ctx context.Context, hash []byte, now time.Time
 		  AND revoked_at IS NULL
 		  AND expires_at > $2
 		RETURNING id::text, user_id::text, authenticated_at, expires_at, last_seen_at,
-		          coalesce(host(ip_address), ''), user_agent, revoked_at`,
+		          coalesce(host(ip_address), ''), user_agent, revoked_at,
+		          authentication_methods, assurance_level`,
 		hash, now,
 	).Scan(
 		&value.ID, &value.UserID, &value.AuthenticatedAt, &value.ExpiresAt,
 		&value.LastSeenAt, &value.IPAddress, &value.UserAgent, &value.RevokedAt,
+		&value.AuthMethods, &value.AssuranceLevel,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return session.Session{}, session.ErrNotFound
@@ -66,7 +72,8 @@ func (r *SessionRepository) Find(ctx context.Context, hash []byte, now time.Time
 func (r *SessionRepository) ListByUser(ctx context.Context, userID string, now time.Time) ([]session.Session, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id::text, user_id::text, authenticated_at, expires_at, last_seen_at,
-		       coalesce(host(ip_address), ''), user_agent, revoked_at
+		       coalesce(host(ip_address), ''), user_agent, revoked_at,
+		       authentication_methods, assurance_level
 		FROM sessions
 		WHERE user_id = $1
 		  AND revoked_at IS NULL
@@ -84,6 +91,7 @@ func (r *SessionRepository) ListByUser(ctx context.Context, userID string, now t
 		if err := rows.Scan(
 			&value.ID, &value.UserID, &value.AuthenticatedAt, &value.ExpiresAt,
 			&value.LastSeenAt, &value.IPAddress, &value.UserAgent, &value.RevokedAt,
+			&value.AuthMethods, &value.AssuranceLevel,
 		); err != nil {
 			return nil, fmt.Errorf("scan user session: %w", err)
 		}

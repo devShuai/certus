@@ -16,6 +16,7 @@ import (
 	"certus/internal/client"
 	"certus/internal/config"
 	"certus/internal/identity"
+	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
 	httpserver "certus/internal/platform/http"
@@ -53,6 +54,7 @@ func main() {
 	var casRepository cas.Repository = cas.NewMemoryRepository()
 	var accessRepository access.Repository = access.NewMemoryRepository()
 	var auditRepository audit.Repository = audit.NewMemoryRepository()
+	var mfaRepository mfa.Repository = mfa.NewMemoryRepository()
 	var keys oidc.KeyRepository = &oidc.MemoryKeyRepository{}
 	if cfg.DatabaseURL != "" {
 		pool, err := postgres.Open(ctx, cfg.DatabaseURL)
@@ -74,6 +76,7 @@ func main() {
 		casRepository = postgres.NewCASRepository(pool)
 		accessRepository = postgres.NewAccessRepository(pool)
 		auditRepository = postgres.NewAuditRepository(pool)
+		mfaRepository = postgres.NewMFARepository(pool)
 		keys = postgres.NewOIDCKeyRepository(pool)
 		logger.Info("postgres storage enabled")
 	} else {
@@ -89,6 +92,7 @@ func main() {
 		CAS:       casRepository,
 		Access:    accessRepository,
 		Audit:     auditRepository,
+		MFA:       mfaRepository,
 		Keys:      keys,
 	})
 	if err != nil {

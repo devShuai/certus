@@ -119,3 +119,30 @@ func TestPasswordResetMigration(t *testing.T) {
 		t.Fatal("password reset migration does not create one-time reset tokens")
 	}
 }
+
+func TestTOTPMFAMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/011_totp_mfa.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"mfa_totp_credentials", "mfa_recovery_codes"} {
+		if !strings.Contains(string(content), "CREATE TABLE "+table) {
+			t.Errorf("TOTP MFA migration does not create %s", table)
+		}
+	}
+	if !strings.Contains(string(content), "last_used_step") {
+		t.Fatal("TOTP MFA migration does not store replay protection state")
+	}
+}
+
+func TestAuthenticationContextMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/012_authentication_context.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"authentication_methods", "assurance_level"} {
+		if !strings.Contains(string(content), column) {
+			t.Errorf("authentication context migration does not add %s", column)
+		}
+	}
+}
