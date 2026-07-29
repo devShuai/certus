@@ -11,12 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"certus/internal/security"
+
 	"golang.org/x/crypto/argon2"
 )
 
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrCredentialLocked   = errors.New("credential temporarily locked")
+	ErrInvalidResetToken  = errors.New("invalid or expired password reset token")
 )
 
 const (
@@ -41,24 +44,84 @@ type PasswordRepository interface {
 	RecordPasswordSuccess(context.Context, string, time.Time) error
 }
 
+type PasswordResetToken struct {
+	UserID    string
+	Hash      []byte
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+type PasswordResetRepository interface {
+	SavePasswordReset(context.Context, PasswordResetToken) error
+	ConsumePasswordReset(context.Context, []byte, time.Time) (string, error)
+}
+
 type PasswordService struct {
 	repository PasswordRepository
+	resets     PasswordResetRepository
 	now        func() time.Time
 }
 
 func NewPasswordService(repository PasswordRepository) *PasswordService {
-	return &PasswordService{repository: repository, now: time.Now}
+	resets, _ := repository.(PasswordResetRepository)
+	return &PasswordService{repository: repository, resets: resets, now: time.Now}
 }
 
 func (s *PasswordService) Set(ctx context.Context, userID, password string) error {
-	if len(password) < 12 || len(password) > 1024 {
-		return errors.New("password must contain 12-1024 characters")
-	}
-	hash, err := hashPassword(password)
+	hash, err := validateAndHashPassword(password)
 	if err != nil {
 		return err
 	}
 	return s.repository.SetPassword(ctx, userID, hash, s.now().UTC())
+}
+
+func (s *PasswordService) Change(ctx context.Context, userID, username, currentPassword, newPassword string) error {
+	user, err := s.Authenticate(ctx, username, currentPassword)
+	if err != nil || user.ID != userID {
+		return ErrInvalidCredentials
+	}
+	return s.Set(ctx, userID, newPassword)
+}
+
+func (s *PasswordService) IssueReset(ctx context.Context, userID string, lifetime time.Duration) (string, error) {
+	if s.resets == nil {
+		return "", errors.New("password reset repository is unavailable")
+	}
+	if lifetime <= 0 {
+		lifetime = 30 * time.Minute
+	}
+	raw, err := security.RandomToken(32)
+	if err != nil {
+		return "", err
+	}
+	now := s.now().UTC()
+	if err := s.resets.SavePasswordReset(ctx, PasswordResetToken{
+		UserID:    userID,
+		Hash:      security.HashToken(raw),
+		CreatedAt: now,
+		ExpiresAt: now.Add(lifetime),
+	}); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+func (s *PasswordService) Reset(ctx context.Context, token, newPassword string) (string, error) {
+	if s.resets == nil || strings.TrimSpace(token) == "" {
+		return "", ErrInvalidResetToken
+	}
+	hash, err := validateAndHashPassword(newPassword)
+	if err != nil {
+		return "", err
+	}
+	userID, err := s.resets.ConsumePasswordReset(ctx, security.HashToken(token), s.now().UTC())
+	if err != nil {
+		return "", ErrInvalidResetToken
+	}
+	if err := s.repository.SetPassword(ctx, userID, hash, s.now().UTC()); err != nil {
+		return "", err
+	}
+	return userID, nil
 }
 
 func (s *PasswordService) Authenticate(ctx context.Context, username, password string) (User, error) {
@@ -115,6 +178,13 @@ func hashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(salt),
 		base64.RawStdEncoding.EncodeToString(key),
 	), nil
+}
+
+func validateAndHashPassword(password string) (string, error) {
+	if len(password) < 12 || len(password) > 1024 {
+		return "", errors.New("password must contain 12-1024 characters")
+	}
+	return hashPassword(password)
 }
 
 func verifyPassword(encoded, password string) (bool, error) {

@@ -107,6 +107,11 @@ POST /api/v1/admin/users
 GET  /api/v1/admin/users/{user_id}
 PUT  /api/v1/admin/users/{user_id}
 PUT  /api/v1/admin/users/{user_id}/password
+POST /api/v1/admin/users/{user_id}/password-reset
+GET  /api/v1/admin/users/{user_id}/sessions
+DELETE /api/v1/admin/users/{user_id}/sessions
+DELETE /api/v1/admin/users/{user_id}/sessions/{session_id}
+GET  /api/v1/admin/audit-events
 ```
 
 创建用户：
@@ -131,6 +136,17 @@ PUT  /api/v1/admin/users/{user_id}/password
 ```
 
 服务端只保存 Argon2id 哈希；连续失败 5 次会锁定凭据 15 分钟。
+
+管理员密码重置接口返回一个仅显示一次、30 分钟有效的 `reset_token`，交付通道由部署方接入邮件或工单系统。账号自助接口使用当前登录会话：
+
+```text
+GET    /api/v1/account/sessions
+DELETE /api/v1/account/sessions/{session_id}
+PUT    /api/v1/account/password
+POST   /api/v1/account/password/reset
+```
+
+用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话；一次性重置成功后撤销全部会话。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
 
 ### LDAP 与外部 OIDC
 

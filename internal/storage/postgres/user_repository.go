@@ -344,6 +344,52 @@ func (r *UserRepository) RecordPasswordSuccess(ctx context.Context, userID strin
 	return nil
 }
 
+func (r *UserRepository) SavePasswordReset(ctx context.Context, token identity.PasswordResetToken) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin password reset creation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM password_reset_tokens WHERE user_id = $1`, token.UserID); err != nil {
+		return fmt.Errorf("invalidate password reset tokens: %w", err)
+	}
+	command, err := tx.Exec(ctx, `
+		INSERT INTO password_reset_tokens (token_hash, user_id, created_at, expires_at)
+		VALUES ($1, $2, $3, $4)`,
+		token.Hash, token.UserID, token.CreatedAt, token.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("save password reset token: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return identity.ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit password reset creation: %w", err)
+	}
+	return nil
+}
+
+func (r *UserRepository) ConsumePasswordReset(ctx context.Context, hash []byte, now time.Time) (string, error) {
+	var userID string
+	err := r.pool.QueryRow(ctx, `
+		UPDATE password_reset_tokens
+		SET consumed_at = $2
+		WHERE token_hash = $1
+		  AND consumed_at IS NULL
+		  AND expires_at > $2
+		RETURNING user_id::text`,
+		hash, now,
+	).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", identity.ErrInvalidResetToken
+	}
+	if err != nil {
+		return "", fmt.Errorf("consume password reset token: %w", err)
+	}
+	return userID, nil
+}
+
 type userScanner interface {
 	Scan(...any) error
 }

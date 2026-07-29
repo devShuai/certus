@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strings"
@@ -9,22 +10,52 @@ import (
 )
 
 type MemoryUserRepository struct {
-	mu          sync.RWMutex
-	users       map[string]User
-	credentials map[string]PasswordCredential
-	external    map[string]string
+	mu             sync.RWMutex
+	users          map[string]User
+	credentials    map[string]PasswordCredential
+	external       map[string]string
+	passwordResets map[string]PasswordResetToken
 }
 
 func NewMemoryUserRepository(users ...User) *MemoryUserRepository {
 	repository := &MemoryUserRepository{
-		users:       make(map[string]User, len(users)),
-		credentials: make(map[string]PasswordCredential),
-		external:    make(map[string]string),
+		users:          make(map[string]User, len(users)),
+		credentials:    make(map[string]PasswordCredential),
+		external:       make(map[string]string),
+		passwordResets: make(map[string]PasswordResetToken),
 	}
 	for _, user := range users {
 		repository.users[user.ID] = cloneUser(user)
 	}
 	return repository
+}
+
+func (r *MemoryUserRepository) SavePasswordReset(_ context.Context, token PasswordResetToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.users[token.UserID]; !ok {
+		return ErrNotFound
+	}
+	for key, current := range r.passwordResets {
+		if current.UserID == token.UserID {
+			delete(r.passwordResets, key)
+		}
+	}
+	token.Hash = append([]byte(nil), token.Hash...)
+	r.passwordResets[string(token.Hash)] = token
+	return nil
+}
+
+func (r *MemoryUserRepository) ConsumePasswordReset(_ context.Context, hash []byte, now time.Time) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, token := range r.passwordResets {
+		if bytes.Equal(token.Hash, hash) && token.ExpiresAt.After(now) {
+			delete(r.passwordResets, key)
+			return token.UserID, nil
+		}
+	}
+	return "", ErrInvalidResetToken
 }
 
 func (r *MemoryUserRepository) ResolveExternalIdentity(_ context.Context, profile ExternalProfile, now time.Time) (User, error) {

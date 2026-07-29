@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"certus/internal/audit"
 	"certus/internal/client"
 	"certus/internal/federation"
 	"certus/internal/identity"
@@ -116,12 +117,25 @@ func (s *server) loginPassword(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_csrf", "登录页面已失效，请刷新后重试")
 		return
 	}
-	if registered, ok := s.loginClient(r, returnTo); ok && !slices.Contains(registered.LoginMethods, client.LoginPassword) {
-		writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用账号密码登录")
-		return
+	clientID := ""
+	if registered, ok := s.loginClient(r, returnTo); ok {
+		clientID = registered.ID
+		if !slices.Contains(registered.LoginMethods, client.LoginPassword) {
+			writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用账号密码登录")
+			return
+		}
 	}
 	user, err := s.passwords.Authenticate(r.Context(), r.Form.Get("username"), r.Form.Get("password"))
 	if err != nil {
+		s.recordAudit(r, audit.Event{
+			EventType: "login.password",
+			ClientID:  auditClient(clientID),
+			Outcome:   audit.OutcomeFailure,
+			Details: map[string]any{
+				"username": strings.ToLower(strings.TrimSpace(r.Form.Get("username"))),
+				"locked":   errors.Is(err, identity.ErrCredentialLocked),
+			},
+		})
 		message := "用户名或密码不正确"
 		if errors.Is(err, identity.ErrCredentialLocked) {
 			message = "登录失败次数过多，请稍后重试"
@@ -129,7 +143,7 @@ func (s *server) loginPassword(w http.ResponseWriter, r *http.Request) {
 		s.renderLoginError(w, r, returnTo, message)
 		return
 	}
-	s.completeLogin(w, r, user, returnTo)
+	s.completeLogin(w, r, user, returnTo, "password", clientID)
 }
 
 func (s *server) loginLDAP(w http.ResponseWriter, r *http.Request) {
@@ -151,12 +165,22 @@ func (s *server) loginLDAP(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusServiceUnavailable, "login_method_unavailable", "LDAP 身份源尚未配置")
 		return
 	}
-	if registered, ok := s.loginClient(r, returnTo); ok && !slices.Contains(registered.LoginMethods, client.LoginLDAP) {
-		writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用 LDAP 登录")
-		return
+	clientID := ""
+	if registered, ok := s.loginClient(r, returnTo); ok {
+		clientID = registered.ID
+		if !slices.Contains(registered.LoginMethods, client.LoginLDAP) {
+			writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用 LDAP 登录")
+			return
+		}
 	}
 	profile, err := s.ldap.Authenticate(r.Context(), r.Form.Get("username"), r.Form.Get("password"))
 	if err != nil {
+		s.recordAudit(r, audit.Event{
+			EventType: "login.ldap",
+			ClientID:  auditClient(clientID),
+			Outcome:   audit.OutcomeFailure,
+			Details:   map[string]any{"username": strings.TrimSpace(r.Form.Get("username"))},
+		})
 		if errors.Is(err, federation.ErrUnavailable) {
 			s.logger.Warn("LDAP login unavailable", "error", err)
 			s.renderLoginError(w, r, returnTo, "LDAP 身份源暂时不可用，请稍后重试")
@@ -175,7 +199,7 @@ func (s *server) loginLDAP(w http.ResponseWriter, r *http.Request) {
 		s.renderLoginError(w, r, returnTo, "账号当前不可登录")
 		return
 	}
-	s.completeLogin(w, r, user, returnTo)
+	s.completeLogin(w, r, user, returnTo, "ldap", clientID)
 }
 
 func (s *server) loginOIDC(w http.ResponseWriter, r *http.Request) {
@@ -275,7 +299,11 @@ func (s *server) loginOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderLoginError(w, r, returnTo, "账号当前不可登录")
 		return
 	}
-	s.completeLogin(w, r, user, returnTo)
+	clientID := ""
+	if registered, ok := s.loginClient(r, returnTo); ok {
+		clientID = registered.ID
+	}
+	s.completeLogin(w, r, user, returnTo, "oidc", clientID)
 }
 
 func (s *server) validExternalOIDCClaims(claims map[string]any, state string) bool {
@@ -318,10 +346,17 @@ func (s *server) renderLoginError(w http.ResponseWriter, r *http.Request, return
 	s.render(w, "login.html", page)
 }
 
-func (s *server) completeLogin(w http.ResponseWriter, r *http.Request, user identity.User, returnTo string) {
+func (s *server) completeLogin(w http.ResponseWriter, r *http.Request, user identity.User, returnTo, method, clientID string) {
 	ipAddress, _, _ := net.SplitHostPort(r.RemoteAddr)
 	_, token, err := s.sessions.Create(r.Context(), user.ID, ipAddress, r.UserAgent())
 	if err != nil {
+		s.recordAudit(r, audit.Event{
+			ActorUserID: auditActor(user.ID),
+			EventType:   "login." + method,
+			ClientID:    auditClient(clientID),
+			Outcome:     audit.OutcomeFailure,
+			Details:     map[string]any{"reason": "session_creation_failed"},
+		})
 		s.logger.Error("create login session", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "server_error", "创建登录会话失败")
 		return
@@ -334,6 +369,12 @@ func (s *server) completeLogin(w http.ResponseWriter, r *http.Request, user iden
 		HttpOnly: true,
 		Secure:   s.secureCookies(),
 		SameSite: http.SameSiteLaxMode,
+	})
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(user.ID),
+		EventType:   "login." + method,
+		ClientID:    auditClient(clientID),
+		Outcome:     audit.OutcomeSuccess,
 	})
 	http.Redirect(w, r, returnTo, http.StatusSeeOther)
 }
@@ -366,6 +407,12 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	if current, ok := s.currentSession(r); ok {
 		_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
 		_ = s.sessions.Revoke(r.Context(), current.ID)
+		s.recordAudit(r, audit.Event{
+			ActorUserID: auditActor(current.UserID),
+			EventType:   "logout",
+			Outcome:     audit.OutcomeSuccess,
+			Details:     map[string]any{"session_id": current.ID},
+		})
 	}
 	s.clearSessionCookie(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -471,5 +518,14 @@ func (s *server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_password", err.Error())
 		return
 	}
+	revoked, err := s.sessions.RevokeAll(r.Context(), userID, "")
+	if err != nil {
+		s.logger.Error("revoke sessions after admin password update", "error", err)
+	}
+	s.recordAudit(r, audit.Event{
+		EventType: "password.set_by_admin",
+		Outcome:   audit.OutcomeSuccess,
+		Details:   map[string]any{"user_id": userID, "sessions_revoked": revoked},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }

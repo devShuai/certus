@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"certus/internal/access"
+	"certus/internal/audit"
 	"certus/internal/cas"
 	"certus/internal/client"
 	"certus/internal/config"
@@ -34,6 +35,7 @@ type server struct {
 	oauth            oauth.Repository
 	cas              cas.Repository
 	accessControl    access.Repository
+	audit            audit.Repository
 	signer           *oidc.Signer
 	outbound         *http.Client
 	ldap             *federation.LDAPAuthenticator
@@ -92,6 +94,7 @@ type Dependencies struct {
 	OAuth              oauth.Repository
 	CAS                cas.Repository
 	Access             access.Repository
+	Audit              audit.Repository
 	Keys               oidc.KeyRepository
 	OutboundHTTPClient *http.Client
 }
@@ -112,6 +115,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	}
 	if dependencies.Access == nil {
 		dependencies.Access = access.NewMemoryRepository()
+	}
+	if dependencies.Audit == nil {
+		dependencies.Audit = audit.NewMemoryRepository()
 	}
 	outbound := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -138,6 +144,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		oauth:         dependencies.OAuth,
 		cas:           dependencies.CAS,
 		accessControl: dependencies.Access,
+		audit:         dependencies.Audit,
 		signer:        signer,
 		outbound:      outbound,
 		ldap:          federation.NewLDAPAuthenticator(cfg.LDAP),
@@ -169,6 +176,11 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.getUser)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.replaceUser)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}/password", s.requireAdmin(http.HandlerFunc(s.setUserPassword)))
+	mux.Handle("POST /api/v1/admin/users/{userID}/password-reset", s.requireAdmin(http.HandlerFunc(s.issueUserPasswordReset)))
+	mux.Handle("GET /api/v1/admin/users/{userID}/sessions", s.requireAdmin(http.HandlerFunc(s.listAdminUserSessions)))
+	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions", s.requireAdmin(http.HandlerFunc(s.revokeAllAdminUserSessions)))
+	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions/{sessionID}", s.requireAdmin(http.HandlerFunc(s.revokeAdminUserSession)))
+	mux.Handle("GET /api/v1/admin/audit-events", s.requireAdmin(http.HandlerFunc(s.listAuditEvents)))
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.listAdminClients)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.createClient)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.getAdminClient)))
@@ -185,6 +197,10 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.listUserRoles)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.replaceUserRoles)))
 	mux.HandleFunc("GET /api/v1/access/users/{userID}", s.getEffectiveAccess)
+	mux.HandleFunc("GET /api/v1/account/sessions", s.listAccountSessions)
+	mux.HandleFunc("DELETE /api/v1/account/sessions/{sessionID}", s.revokeAccountSession)
+	mux.HandleFunc("PUT /api/v1/account/password", s.changeAccountPassword)
+	mux.HandleFunc("POST /api/v1/account/password/reset", s.resetAccountPassword)
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
 	mux.HandleFunc("POST /oauth2/token", s.token)
 	mux.HandleFunc("POST /oauth2/introspect", s.introspect)
@@ -211,7 +227,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		panic(err)
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(assets)))
-	return requestID(logging(securityHeaders(mux, s.secureCookies()), logger)), nil
+	return requestID(logging(securityHeaders(s.auditMutations(mux), s.secureCookies()), logger)), nil
 }
 
 func (s *server) render(w http.ResponseWriter, name string, data any) {

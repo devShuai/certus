@@ -1,11 +1,16 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
+	"strings"
 )
+
+type requestIDContextKey struct{}
 
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -17,8 +22,25 @@ func requestID(next http.Handler) http.Handler {
 			}
 		}
 		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, id)))
 	})
+}
+
+func requestIDValue(r *http.Request) string {
+	value, _ := r.Context().Value(requestIDContextKey{}).(string)
+	return value
+}
+
+func requestIPAddress(r *http.Request) string {
+	address := strings.TrimSpace(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(address)
+	if err == nil {
+		return host
+	}
+	if net.ParseIP(address) != nil {
+		return address
+	}
+	return ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

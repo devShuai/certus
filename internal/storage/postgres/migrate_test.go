@@ -108,3 +108,14 @@ func TestAccessControlMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestPasswordResetMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/010_password_resets.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "CREATE TABLE password_reset_tokens") ||
+		!strings.Contains(string(content), "consumed_at") {
+		t.Fatal("password reset migration does not create one-time reset tokens")
+	}
+}

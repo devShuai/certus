@@ -12,16 +12,23 @@ import (
 var ErrNotFound = errors.New("session not found")
 
 type Session struct {
-	ID              string
-	UserID          string
-	AuthenticatedAt time.Time
-	ExpiresAt       time.Time
+	ID              string     `json:"id"`
+	UserID          string     `json:"user_id"`
+	AuthenticatedAt time.Time  `json:"authenticated_at"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	LastSeenAt      time.Time  `json:"last_seen_at"`
+	IPAddress       string     `json:"ip_address,omitempty"`
+	UserAgent       string     `json:"user_agent,omitempty"`
+	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
 }
 
 type Repository interface {
 	Create(context.Context, Session, []byte, string, string) (Session, error)
 	Find(context.Context, []byte, time.Time) (Session, error)
+	ListByUser(context.Context, string, time.Time) ([]Session, error)
 	Revoke(context.Context, string, time.Time) error
+	RevokeForUser(context.Context, string, string, time.Time) error
+	RevokeAll(context.Context, string, string, time.Time) (int64, error)
 }
 
 type Service struct {
@@ -47,6 +54,9 @@ func (s *Service) Create(ctx context.Context, userID, ipAddress, userAgent strin
 		UserID:          userID,
 		AuthenticatedAt: now,
 		ExpiresAt:       now.Add(s.lifetime),
+		LastSeenAt:      now,
+		IPAddress:       ipAddress,
+		UserAgent:       userAgent,
 	}, security.HashToken(token), ipAddress, userAgent)
 	if err != nil {
 		return Session{}, "", fmt.Errorf("create session: %w", err)
@@ -66,4 +76,22 @@ func (s *Service) Revoke(ctx context.Context, id string) error {
 		return nil
 	}
 	return s.repository.Revoke(ctx, id, s.now().UTC())
+}
+
+func (s *Service) ListByUser(ctx context.Context, userID string) ([]Session, error) {
+	return s.repository.ListByUser(ctx, userID, s.now().UTC())
+}
+
+func (s *Service) RevokeForUser(ctx context.Context, userID, id string) error {
+	if userID == "" || id == "" {
+		return ErrNotFound
+	}
+	return s.repository.RevokeForUser(ctx, userID, id, s.now().UTC())
+}
+
+func (s *Service) RevokeAll(ctx context.Context, userID, exceptID string) (int64, error) {
+	if userID == "" {
+		return 0, ErrNotFound
+	}
+	return s.repository.RevokeAll(ctx, userID, exceptID, s.now().UTC())
 }
