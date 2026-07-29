@@ -52,3 +52,31 @@ func TestSignerPersistsKeyAndProducesVerifiableJWT(t *testing.T) {
 		t.Fatalf("signing key was not persisted: %s != %s", reloaded.kid, signer.kid)
 	}
 }
+
+func TestSignerRotationKeepsRetiredVerificationKey(t *testing.T) {
+	ctx := context.Background()
+	repository := &MemoryKeyRepository{}
+	signer, err := NewSigner(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToken, err := signer.Sign(map[string]any{"purpose": "rotation-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKID := signer.kid
+	newKID, err := signer.Rotate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newKID == oldKID {
+		t.Fatal("rotation did not replace the active key")
+	}
+	if _, err := signer.Verify(oldToken); err != nil {
+		t.Fatalf("retired key no longer verifies an unexpired token: %v", err)
+	}
+	keys, _ := signer.JWKS()["keys"].([]map[string]string)
+	if len(keys) != 2 || keys[0]["kid"] != newKID {
+		t.Fatalf("JWKS does not publish active and retired keys: %#v", keys)
+	}
+}

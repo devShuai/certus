@@ -559,8 +559,11 @@ func (s *server) addEntitlementClaims(ctx context.Context, claims map[string]any
 	return nil
 }
 
-func (s *server) jwks(w http.ResponseWriter, _ *http.Request) {
+func (s *server) jwks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=300")
+	if err := s.signer.Refresh(r.Context()); err != nil {
+		s.logger.Warn("refresh signing keys for JWKS", "error", err)
+	}
 	writeJSON(w, http.StatusOK, s.signer.JWKS())
 }
 

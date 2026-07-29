@@ -28,6 +28,23 @@ func TestLoadMFAEncryptionKey(t *testing.T) {
 	}
 }
 
+func TestLoadMaintenanceRetention(t *testing.T) {
+	t.Setenv("CERTUS_CLEANUP_INTERVAL", "30m")
+	t.Setenv("CERTUS_AUDIT_RETENTION", "720h")
+	t.Setenv("CERTUS_SIGNING_KEY_RETENTION", "2h")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CleanupInterval.String() != "30m0s" || cfg.SigningKeyRetention.String() != "2h0m0s" {
+		t.Fatalf("unexpected maintenance configuration: %#v", cfg)
+	}
+	t.Setenv("CERTUS_SIGNING_KEY_RETENTION", "30m")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "at least 1h") {
+		t.Fatalf("expected signing key retention error, got %v", err)
+	}
+}
+
 func TestLoadAcceptsStrongAdminToken(t *testing.T) {
 	t.Setenv("CERTUS_ADMIN_TOKEN", strings.Repeat("a", 32))
 	cfg, err := Load()

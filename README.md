@@ -113,6 +113,9 @@ DELETE /api/v1/admin/users/{user_id}/sessions
 DELETE /api/v1/admin/users/{user_id}/sessions/{session_id}
 DELETE /api/v1/admin/users/{user_id}/mfa
 GET  /api/v1/admin/audit-events
+GET  /api/v1/admin/signing-keys
+POST /api/v1/admin/signing-keys/rotate
+POST /api/v1/admin/maintenance/cleanup
 ```
 
 创建用户：
@@ -364,6 +367,18 @@ GET /api/v1/access/users/{user_id}
 
 OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开放 OAuth implicit 和 resource owner password grant；OAuth Security BCP 已明确不应使用这些遗留流程。
 
+## 运维与密钥轮换
+
+PostgreSQL 模式默认启动时执行一次清理，之后每 15 分钟清理过期或已消费的 OAuth、CAS、会话、密码重置数据；审计默认保留 90 天。管理员也可调用 `POST /api/v1/admin/maintenance/cleanup` 立即执行并取得各表删除计数。
+
+```powershell
+$env:CERTUS_CLEANUP_INTERVAL='15m'       # 设为 0 关闭定时清理
+$env:CERTUS_AUDIT_RETENTION='2160h'      # 90 天
+$env:CERTUS_SIGNING_KEY_RETENTION='24h'  # 不得少于 1 小时
+```
+
+`POST /api/v1/admin/signing-keys/rotate` 原子退役当前 RS256 密钥并生成新密钥；`GET /api/v1/admin/signing-keys` 只返回元数据，不返回私钥。退役公钥在保留期内继续发布到 JWKS，用于验证尚未过期的 ID Token 和登录事务。多实例每 30 秒自动收敛到数据库中的活动密钥；保留期应长于系统允许的最长签名令牌寿命与 JWKS 缓存时间之和。
+
 ## 构建与发布
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) 支持两种触发方式：
@@ -371,7 +386,7 @@ OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开�
 - 在 GitHub Actions 页面使用 `workflow_dispatch` 手动执行，可指定版本并选择是否推送镜像。
 - 向 `release` 分支提交代码时自动执行。
 
-每次运行都会先执行测试与静态检查，然后生成以下服务端包：
+每次运行都会先在独立 PostgreSQL 服务和随机测试 schema 中执行真实迁移/仓储集成测试及静态检查，然后生成以下服务端包：
 
 ```text
 Linux   amd64 / arm64
@@ -412,6 +427,8 @@ internal/client            接入系统及登录方式配置
 internal/access            角色、权限与访问策略
 internal/session           登录会话
 internal/audit             审计事件
+internal/mfa               TOTP 与恢复码
+internal/maintenance       数据保留与清理
 web                        登录页和中间落地页
 ```
 

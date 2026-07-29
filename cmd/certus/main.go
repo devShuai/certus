@@ -16,6 +16,7 @@ import (
 	"certus/internal/client"
 	"certus/internal/config"
 	"certus/internal/identity"
+	"certus/internal/maintenance"
 	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
@@ -55,7 +56,9 @@ func main() {
 	var accessRepository access.Repository = access.NewMemoryRepository()
 	var auditRepository audit.Repository = audit.NewMemoryRepository()
 	var mfaRepository mfa.Repository = mfa.NewMemoryRepository()
+	var maintenanceRepository maintenance.Repository
 	var keys oidc.KeyRepository = &oidc.MemoryKeyRepository{}
+	maintenanceRepository = maintenance.NewMemoryRepository(keys)
 	if cfg.DatabaseURL != "" {
 		pool, err := postgres.Open(ctx, cfg.DatabaseURL)
 		if err != nil {
@@ -78,22 +81,31 @@ func main() {
 		auditRepository = postgres.NewAuditRepository(pool)
 		mfaRepository = postgres.NewMFARepository(pool)
 		keys = postgres.NewOIDCKeyRepository(pool)
+		maintenanceRepository = postgres.NewMaintenanceRepository(pool)
 		logger.Info("postgres storage enabled")
 	} else {
 		logger.Warn("in-memory storage enabled; data will not persist")
 	}
 
+	maintenanceService := maintenance.NewService(
+		maintenanceRepository,
+		cfg.AuditRetention,
+		cfg.SigningKeyRetention,
+	)
+	go maintenanceService.Run(ctx, cfg.CleanupInterval, logger)
+
 	handler, err := httpserver.NewWithDependencies(ctx, cfg, logger, httpserver.Dependencies{
-		Clients:   clients,
-		Users:     users,
-		Passwords: passwords,
-		Sessions:  sessions,
-		OAuth:     oauthRepository,
-		CAS:       casRepository,
-		Access:    accessRepository,
-		Audit:     auditRepository,
-		MFA:       mfaRepository,
-		Keys:      keys,
+		Clients:     clients,
+		Users:       users,
+		Passwords:   passwords,
+		Sessions:    sessions,
+		OAuth:       oauthRepository,
+		CAS:         casRepository,
+		Access:      accessRepository,
+		Audit:       auditRepository,
+		MFA:         mfaRepository,
+		Maintenance: maintenanceService,
+		Keys:        keys,
 	})
 	if err != nil {
 		logger.Error("initialize protocol execution", "error", err)

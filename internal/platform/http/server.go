@@ -17,6 +17,7 @@ import (
 	"certus/internal/config"
 	"certus/internal/federation"
 	"certus/internal/identity"
+	"certus/internal/maintenance"
 	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
@@ -38,6 +39,7 @@ type server struct {
 	accessControl    access.Repository
 	audit            audit.Repository
 	mfa              *mfa.Service
+	maintenance      *maintenance.Service
 	signer           *oidc.Signer
 	outbound         *http.Client
 	ldap             *federation.LDAPAuthenticator
@@ -98,6 +100,7 @@ type Dependencies struct {
 	Access             access.Repository
 	Audit              audit.Repository
 	MFA                mfa.Repository
+	Maintenance        *maintenance.Service
 	Keys               oidc.KeyRepository
 	OutboundHTTPClient *http.Client
 }
@@ -124,6 +127,13 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	}
 	if dependencies.MFA == nil {
 		dependencies.MFA = mfa.NewMemoryRepository()
+	}
+	if dependencies.Maintenance == nil {
+		dependencies.Maintenance = maintenance.NewService(
+			maintenance.NewMemoryRepository(dependencies.Keys),
+			cfg.AuditRetention,
+			cfg.SigningKeyRetention,
+		)
 	}
 	outbound := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -152,6 +162,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		accessControl: dependencies.Access,
 		audit:         dependencies.Audit,
 		mfa:           mfa.NewService(dependencies.MFA, cfg.MFAEncryptionKey, "Certus"),
+		maintenance:   dependencies.Maintenance,
 		signer:        signer,
 		outbound:      outbound,
 		ldap:          federation.NewLDAPAuthenticator(cfg.LDAP),
@@ -191,6 +202,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions/{sessionID}", s.requireAdmin(http.HandlerFunc(s.revokeAdminUserSession)))
 	mux.Handle("DELETE /api/v1/admin/users/{userID}/mfa", s.requireAdmin(http.HandlerFunc(s.resetAdminUserMFA)))
 	mux.Handle("GET /api/v1/admin/audit-events", s.requireAdmin(http.HandlerFunc(s.listAuditEvents)))
+	mux.Handle("GET /api/v1/admin/signing-keys", s.requireAdmin(http.HandlerFunc(s.listSigningKeys)))
+	mux.Handle("POST /api/v1/admin/signing-keys/rotate", s.requireAdmin(http.HandlerFunc(s.rotateSigningKey)))
+	mux.Handle("POST /api/v1/admin/maintenance/cleanup", s.requireAdmin(http.HandlerFunc(s.runMaintenance)))
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.listAdminClients)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.createClient)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.getAdminClient)))

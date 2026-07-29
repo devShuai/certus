@@ -11,17 +11,20 @@ import (
 )
 
 type Config struct {
-	Address           string
-	Issuer            string
-	Environment       string
-	DatabaseURL       string
-	AdminToken        string
-	MFAEncryptionKey  []byte
-	LDAP              LDAPConfig
-	ExternalOIDC      ExternalOIDCConfig
-	ReadHeaderTimeout time.Duration
-	IdleTimeout       time.Duration
-	ShutdownTimeout   time.Duration
+	Address             string
+	Issuer              string
+	Environment         string
+	DatabaseURL         string
+	AdminToken          string
+	MFAEncryptionKey    []byte
+	LDAP                LDAPConfig
+	ExternalOIDC        ExternalOIDCConfig
+	ReadHeaderTimeout   time.Duration
+	IdleTimeout         time.Duration
+	ShutdownTimeout     time.Duration
+	CleanupInterval     time.Duration
+	AuditRetention      time.Duration
+	SigningKeyRetention time.Duration
 }
 
 type LDAPConfig struct {
@@ -86,6 +89,18 @@ func Load() (Config, error) {
 	cfg.ShutdownTimeout, err = duration("CERTUS_SHUTDOWN_TIMEOUT", 10*time.Second)
 	if err != nil {
 		return Config{}, err
+	}
+	cfg.CleanupInterval, err = duration("CERTUS_CLEANUP_INTERVAL", 15*time.Minute)
+	if err != nil || cfg.CleanupInterval < 0 {
+		return Config{}, fmt.Errorf("CERTUS_CLEANUP_INTERVAL must be a non-negative duration")
+	}
+	cfg.AuditRetention, err = duration("CERTUS_AUDIT_RETENTION", 90*24*time.Hour)
+	if err != nil || cfg.AuditRetention <= 0 {
+		return Config{}, fmt.Errorf("CERTUS_AUDIT_RETENTION must be a positive duration")
+	}
+	cfg.SigningKeyRetention, err = duration("CERTUS_SIGNING_KEY_RETENTION", 24*time.Hour)
+	if err != nil || cfg.SigningKeyRetention < time.Hour {
+		return Config{}, fmt.Errorf("CERTUS_SIGNING_KEY_RETENTION must be at least 1h")
 	}
 	if cfg.AdminToken != "" && len(cfg.AdminToken) < 32 {
 		return Config{}, fmt.Errorf("CERTUS_ADMIN_TOKEN must contain at least 32 characters")

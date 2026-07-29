@@ -28,6 +28,22 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: certus_test
+          POSTGRES_USER: certus
+          POSTGRES_PASSWORD: certus-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U certus -d certus_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CERTUS_TEST_DATABASE_URL: postgres://certus:certus-test-password@localhost:5432/certus_test?sslmode=disable
     steps:
       - name: Check out source
         uses: actions/checkout@v6
