@@ -7,21 +7,24 @@
 
 Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、OAuth 2.1、OpenID Connect、令牌和权限管理场景。
 
-## 当前骨架
+适用场景判断与协议详解见 [docs/auth-center-guide.md](docs/auth-center-guide.md)。
+
+## 当前能力
 
 - 可优雅关闭的 HTTP 服务
 - 环境变量配置与结构化日志
 - 健康检查、请求 ID 和基础安全响应头
+- 账号密码登录、Argon2id 凭据、失败锁定和安全 Cookie 会话
 - 登录页与认证后的中间落地页
 - 接入系统领域模型、内存仓储与只读查询 API
 - 按接入系统动态展示登录方式
-- OAuth 2.1 授权请求入口校验（精确回调地址、state、OIDC scope、PKCE S256）
-- OpenID Connect Discovery 元数据
+- OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
+- OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS 和 UserInfo
+- OAuth 设备授权码、浏览器确认和标准轮询错误
+- CAS 1.0/2.0/3.0 Service Ticket 校验、Gateway、Renew 和后端单点登出
 - 可选 PostgreSQL 连接池与内嵌、带校验和的自动迁移
-- PostgreSQL 客户端仓储；未配置数据库时自动使用开发内存仓储
-- 无第三方依赖的基础测试
-
-Discovery 中声明的令牌和 JWKS 端点是后续实现目标；在完成密钥与授权码服务前，不会签发令牌。
+- PostgreSQL 全协议仓储；未配置数据库时自动使用开发内存仓储
+- 协议闭环端到端测试
 
 ## 本地运行
 
@@ -70,6 +73,8 @@ go run ./cmd/certus
 - OAuth 授权码和支持轮换检测的刷新令牌族
 - 审计事件
 
+增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话，以及 OIDC 持久化签名密钥。
+
 迁移文件已嵌入可执行文件，并在 `certus_schema_migrations` 中记录版本与 SHA-256 校验和；已执行的 migration 被修改时，服务会拒绝启动。
 
 ## 统一用户管理
@@ -97,6 +102,7 @@ GET  /api/v1/admin/users?q=&status=&limit=20&offset=0
 POST /api/v1/admin/users
 GET  /api/v1/admin/users/{user_id}
 PUT  /api/v1/admin/users/{user_id}
+PUT  /api/v1/admin/users/{user_id}/password
 ```
 
 创建用户：
@@ -111,6 +117,16 @@ PUT  /api/v1/admin/users/{user_id}
 ```
 
 更新采用完整替换语义，用户名保持不可变；将状态改为 `disabled` 代替物理删除，以保留历史授权与审计引用。
+
+密码通过独立端点设置：
+
+```json
+{
+  "password": "至少 12 个字符的新密码"
+}
+```
+
+服务端只保存 Argon2id 哈希；连续失败 5 次会锁定凭据 15 分钟。
 
 ## 配置跳转登录系统
 
@@ -273,7 +289,7 @@ docker run --rm -p 8080:8080 \
   ghcr.io/devshuai/certus:release
 ```
 
-## 规划中的模块边界
+## 模块边界
 
 ```text
 cmd/certus                 服务入口
@@ -288,4 +304,4 @@ internal/audit             审计事件
 web                        登录页和中间落地页
 ```
 
-下一阶段继续实现协议执行层：账号登录、授权码和令牌签发、设备码，以及 CAS Service Ticket 与单点登出。
+协议执行数据默认持久化到 PostgreSQL；未设置数据库地址时使用仅供开发和测试的内存实现。
