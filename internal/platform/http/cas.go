@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +19,11 @@ import (
 	"certus/internal/security"
 )
 
-const serviceTicketLifetime = 2 * time.Minute
+const (
+	serviceTicketLifetime       = 2 * time.Minute
+	proxyTicketLifetime         = 2 * time.Minute
+	proxyGrantingTicketLifetime = 8 * time.Hour
+)
 
 func (s *server) casLogin(w http.ResponseWriter, r *http.Request) {
 	serviceURL := r.URL.Query().Get("service")
@@ -109,7 +114,8 @@ func (s *server) casServiceValidate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	serviceURL := r.URL.Query().Get("service")
-	if _, ok := s.findCASClient(r.Context(), serviceURL); !ok {
+	registered, ok := s.findCASClient(r.Context(), serviceURL)
+	if !ok {
 		writeCASFailure(w, "INVALID_SERVICE", "service is not registered")
 		return
 	}
@@ -129,12 +135,221 @@ func (s *server) casServiceValidate(w http.ResponseWriter, r *http.Request) {
 		writeCASFailure(w, "INVALID_TICKET", "ticket user is unavailable")
 		return
 	}
+	pgtIOU, err := s.issueProxyGrantingTicket(r, registered, cas.ProxyGrantingTicket{
+		ClientID:           ticket.ClientID,
+		UserID:             ticket.UserID,
+		SessionID:          ticket.SessionID,
+		PrimaryCredentials: ticket.PrimaryCredentials,
+	}, r.URL.Query().Get("pgtUrl"))
+	if err != nil {
+		writeCASFailure(w, "INVALID_PROXY_CALLBACK", err.Error())
+		return
+	}
+	writeCASSuccess(w, user, r.URL.Path == "/cas/p3/serviceValidate", pgtIOU, nil)
+}
+
+func (s *server) casProxyValidate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	serviceURL := r.URL.Query().Get("service")
+	registered, ok := s.findCASClient(r.Context(), serviceURL)
+	if !ok {
+		writeCASFailure(w, "INVALID_SERVICE", "service is not registered")
+		return
+	}
+	rawTicket := r.URL.Query().Get("ticket")
+	requirePrimary := r.URL.Query().Get("renew") == "true"
+	now := s.now().UTC()
+	var (
+		userID             string
+		sessionID          string
+		primaryCredentials bool
+		proxies            []string
+	)
+	if strings.HasPrefix(rawTicket, "PT-") {
+		ticket, err := s.cas.ConsumeProxyTicket(
+			r.Context(),
+			security.HashToken(rawTicket),
+			serviceURL,
+			requirePrimary,
+			now,
+		)
+		if err != nil {
+			writeCASFailure(w, "INVALID_TICKET", "ticket is invalid, expired, or already used")
+			return
+		}
+		userID = ticket.UserID
+		sessionID = ticket.SessionID
+		primaryCredentials = ticket.PrimaryCredentials
+		proxies = ticket.Proxies
+	} else {
+		ticket, err := s.cas.ConsumeServiceTicket(
+			r.Context(),
+			security.HashToken(rawTicket),
+			serviceURL,
+			requirePrimary,
+			now,
+		)
+		if err != nil {
+			writeCASFailure(w, "INVALID_TICKET", "ticket is invalid, expired, or already used")
+			return
+		}
+		userID = ticket.UserID
+		sessionID = ticket.SessionID
+		primaryCredentials = ticket.PrimaryCredentials
+	}
+	user, err := s.users.Find(r.Context(), userID)
+	if err != nil || user.Status != identity.UserActive {
+		writeCASFailure(w, "INVALID_TICKET", "ticket user is unavailable")
+		return
+	}
+	pgtIOU, err := s.issueProxyGrantingTicket(r, registered, cas.ProxyGrantingTicket{
+		ClientID:           registered.ID,
+		UserID:             userID,
+		SessionID:          sessionID,
+		Proxies:            proxies,
+		PrimaryCredentials: primaryCredentials,
+	}, r.URL.Query().Get("pgtUrl"))
+	if err != nil {
+		writeCASFailure(w, "INVALID_PROXY_CALLBACK", err.Error())
+		return
+	}
+	writeCASSuccess(w, user, r.URL.Path == "/cas/p3/proxyValidate", pgtIOU, proxies)
+}
+
+func (s *server) casProxy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	rawPGT := r.URL.Query().Get("pgt")
+	targetService := r.URL.Query().Get("targetService")
+	if rawPGT == "" || targetService == "" {
+		writeCASProxyFailure(w, "INVALID_REQUEST", "pgt and targetService are required")
+		return
+	}
+	target, ok := s.findCASClient(r.Context(), targetService)
+	if !ok {
+		writeCASProxyFailure(w, "UNAUTHORIZED_SERVICE", "targetService is not registered")
+		return
+	}
+	now := s.now().UTC()
+	pgt, err := s.cas.FindProxyGrantingTicket(r.Context(), security.HashToken(rawPGT), now)
+	if err != nil {
+		writeCASProxyFailure(w, "UNAUTHORIZED_SERVICE", "proxy granting ticket is invalid or expired")
+		return
+	}
+	source, err := s.clients.Find(r.Context(), pgt.ClientID)
+	if err != nil || !source.Enabled || !source.CASProxy {
+		writeCASProxyFailure(w, "UNAUTHORIZED_SERVICE", "service is not allowed to proxy authentication")
+		return
+	}
+	rawTicket, err := security.RandomToken(32)
+	if err != nil {
+		writeCASProxyFailure(w, "INTERNAL_ERROR", "could not generate proxy ticket")
+		return
+	}
+	rawTicket = "PT-" + rawTicket
+	proxies := make([]string, 0, len(pgt.Proxies)+1)
+	proxies = append(proxies, pgt.CallbackURL)
+	proxies = append(proxies, pgt.Proxies...)
+	if err := s.cas.SaveProxyTicket(r.Context(), cas.ProxyTicket{
+		Hash:               security.HashToken(rawTicket),
+		ClientID:           target.ID,
+		TargetService:      targetService,
+		UserID:             pgt.UserID,
+		SessionID:          pgt.SessionID,
+		Proxies:            proxies,
+		PrimaryCredentials: pgt.PrimaryCredentials,
+		IssuedAt:           now,
+		ExpiresAt:          now.Add(proxyTicketLifetime),
+	}, security.HashToken(rawPGT)); err != nil {
+		s.logger.Error("save CAS proxy ticket", "error", err)
+		writeCASProxyFailure(w, "INTERNAL_ERROR", "could not save proxy ticket")
+		return
+	}
+	var body bytes.Buffer
+	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
+	body.WriteString(`<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:proxySuccess><cas:proxyTicket>`)
+	xmlEscape(&body, rawTicket)
+	body.WriteString(`</cas:proxyTicket></cas:proxySuccess></cas:serviceResponse>`)
+	_, _ = w.Write(body.Bytes())
+}
+
+func (s *server) issueProxyGrantingTicket(r *http.Request, registered client.Client, value cas.ProxyGrantingTicket, callbackURL string) (string, error) {
+	if callbackURL == "" {
+		return "", nil
+	}
+	if !registered.CASProxy {
+		return "", errors.New("service is not authorized for proxy authentication")
+	}
+	if !validCASProxyCallback(registered, r.URL.Query().Get("service"), callbackURL) {
+		return "", errors.New("proxy callback must be HTTPS and use the registered service host")
+	}
+	rawPGT, err := security.RandomToken(32)
+	if err != nil {
+		return "", errors.New("could not generate proxy granting ticket")
+	}
+	rawPGT = "PGT-" + rawPGT
+	rawIOU, err := security.RandomToken(32)
+	if err != nil {
+		return "", errors.New("could not generate proxy granting ticket IOU")
+	}
+	rawIOU = "PGTIOU-" + rawIOU
+	callback, _ := url.Parse(callbackURL)
+	query := callback.Query()
+	query.Set("pgtId", rawPGT)
+	query.Set("pgtIou", rawIOU)
+	callback.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, callback.String(), nil)
+	if err != nil {
+		return "", errors.New("proxy callback is invalid")
+	}
+	response, err := s.outbound.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("proxy callback failed: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("proxy callback returned HTTP %d", response.StatusCode)
+	}
+	now := s.now().UTC()
+	value.Hash = security.HashToken(rawPGT)
+	value.CallbackURL = callbackURL
+	value.IssuedAt = now
+	value.ExpiresAt = now.Add(proxyGrantingTicketLifetime)
+	if err := s.cas.SaveProxyGrantingTicket(r.Context(), value); err != nil {
+		s.logger.Error("save CAS proxy granting ticket", "error", err)
+		return "", errors.New("could not save proxy granting ticket")
+	}
+	return rawIOU, nil
+}
+
+func validCASProxyCallback(registered client.Client, serviceURL, callbackURL string) bool {
+	if !registered.CASProxy {
+		return false
+	}
+	service, err := url.Parse(serviceURL)
+	if err != nil {
+		return false
+	}
+	callback, err := url.Parse(callbackURL)
+	if err != nil ||
+		callback.Scheme != "https" ||
+		callback.Host == "" ||
+		callback.User != nil ||
+		callback.Fragment != "" {
+		return false
+	}
+	return strings.EqualFold(service.Host, callback.Host)
+}
+
+func writeCASSuccess(w http.ResponseWriter, user identity.User, includeAttributes bool, pgtIOU string, proxies []string) {
 	var body bytes.Buffer
 	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
 	body.WriteString(`<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:authenticationSuccess><cas:user>`)
 	xmlEscape(&body, user.Username)
 	body.WriteString(`</cas:user>`)
-	if r.URL.Path == "/cas/p3/serviceValidate" {
+	if includeAttributes {
 		body.WriteString(`<cas:attributes><cas:displayName>`)
 		xmlEscape(&body, user.DisplayName)
 		body.WriteString(`</cas:displayName>`)
@@ -144,6 +359,20 @@ func (s *server) casServiceValidate(w http.ResponseWriter, r *http.Request) {
 			body.WriteString(`</cas:email>`)
 		}
 		body.WriteString(`</cas:attributes>`)
+	}
+	if pgtIOU != "" {
+		body.WriteString(`<cas:proxyGrantingTicket>`)
+		xmlEscape(&body, pgtIOU)
+		body.WriteString(`</cas:proxyGrantingTicket>`)
+	}
+	if len(proxies) > 0 {
+		body.WriteString(`<cas:proxies>`)
+		for _, proxy := range proxies {
+			body.WriteString(`<cas:proxy>`)
+			xmlEscape(&body, proxy)
+			body.WriteString(`</cas:proxy>`)
+		}
+		body.WriteString(`</cas:proxies>`)
 	}
 	body.WriteString(`</cas:authenticationSuccess></cas:serviceResponse>`)
 	_, _ = w.Write(body.Bytes())
@@ -312,6 +541,17 @@ func writeCASFailure(w http.ResponseWriter, code, message string) {
 	body.WriteString(`">`)
 	xmlEscape(&body, message)
 	body.WriteString(`</cas:authenticationFailure></cas:serviceResponse>`)
+	_, _ = w.Write(body.Bytes())
+}
+
+func writeCASProxyFailure(w http.ResponseWriter, code, message string) {
+	var body bytes.Buffer
+	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
+	body.WriteString(`<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:proxyFailure code="`)
+	xmlEscape(&body, code)
+	body.WriteString(`">`)
+	xmlEscape(&body, message)
+	body.WriteString(`</cas:proxyFailure></cas:serviceResponse>`)
 	_, _ = w.Write(body.Bytes())
 }
 

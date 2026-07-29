@@ -32,9 +32,37 @@ type ServiceSession struct {
 	Ticket    string
 }
 
+type ProxyGrantingTicket struct {
+	Hash               []byte
+	ClientID           string
+	UserID             string
+	SessionID          string
+	CallbackURL        string
+	Proxies            []string
+	PrimaryCredentials bool
+	IssuedAt           time.Time
+	ExpiresAt          time.Time
+}
+
+type ProxyTicket struct {
+	Hash               []byte
+	ClientID           string
+	TargetService      string
+	UserID             string
+	SessionID          string
+	Proxies            []string
+	PrimaryCredentials bool
+	IssuedAt           time.Time
+	ExpiresAt          time.Time
+}
+
 type Repository interface {
 	SaveServiceTicket(context.Context, ServiceTicket) error
 	ConsumeServiceTicket(context.Context, []byte, string, bool, time.Time) (ServiceTicket, error)
+	SaveProxyGrantingTicket(context.Context, ProxyGrantingTicket) error
+	FindProxyGrantingTicket(context.Context, []byte, time.Time) (ProxyGrantingTicket, error)
+	SaveProxyTicket(context.Context, ProxyTicket, []byte) error
+	ConsumeProxyTicket(context.Context, []byte, string, bool, time.Time) (ProxyTicket, error)
 	ListServiceSessions(context.Context, string) ([]ServiceSession, error)
 	DeleteServiceSessions(context.Context, string) error
 }
@@ -44,14 +72,92 @@ type memoryTicket struct {
 	consumedAt *time.Time
 }
 
+type memoryProxyTicket struct {
+	ProxyTicket
+	consumedAt *time.Time
+}
+
 type MemoryRepository struct {
-	mu       sync.Mutex
-	tickets  []memoryTicket
-	sessions []ServiceSession
+	mu                   sync.Mutex
+	tickets              []memoryTicket
+	proxyGrantingTickets []ProxyGrantingTicket
+	proxyTickets         []memoryProxyTicket
+	sessions             []ServiceSession
 }
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{}
+}
+
+func (r *MemoryRepository) SaveProxyGrantingTicket(_ context.Context, value ProxyGrantingTicket) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value.Hash = append([]byte(nil), value.Hash...)
+	value.Proxies = append([]string(nil), value.Proxies...)
+	r.proxyGrantingTickets = append(r.proxyGrantingTickets, value)
+	return nil
+}
+
+func (r *MemoryRepository) FindProxyGrantingTicket(_ context.Context, hash []byte, now time.Time) (ProxyGrantingTicket, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, record := range r.proxyGrantingTickets {
+		if !bytes.Equal(record.Hash, hash) {
+			continue
+		}
+		if !record.ExpiresAt.After(now) {
+			return ProxyGrantingTicket{}, ErrTicketExpired
+		}
+		record.Hash = append([]byte(nil), record.Hash...)
+		record.Proxies = append([]string(nil), record.Proxies...)
+		return record, nil
+	}
+	return ProxyGrantingTicket{}, ErrTicketNotFound
+}
+
+func (r *MemoryRepository) SaveProxyTicket(_ context.Context, value ProxyTicket, pgtHash []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	found := false
+	for _, pgt := range r.proxyGrantingTickets {
+		if bytes.Equal(pgt.Hash, pgtHash) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ErrTicketNotFound
+	}
+	value.Hash = append([]byte(nil), value.Hash...)
+	value.Proxies = append([]string(nil), value.Proxies...)
+	r.proxyTickets = append(r.proxyTickets, memoryProxyTicket{ProxyTicket: value})
+	return nil
+}
+
+func (r *MemoryRepository) ConsumeProxyTicket(_ context.Context, hash []byte, targetService string, requirePrimary bool, now time.Time) (ProxyTicket, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.proxyTickets {
+		record := &r.proxyTickets[index]
+		if !bytes.Equal(record.Hash, hash) || record.TargetService != targetService {
+			continue
+		}
+		if record.consumedAt != nil {
+			return ProxyTicket{}, ErrTicketNotFound
+		}
+		if requirePrimary && !record.PrimaryCredentials {
+			return ProxyTicket{}, ErrTicketNotFound
+		}
+		if !record.ExpiresAt.After(now) {
+			return ProxyTicket{}, ErrTicketExpired
+		}
+		record.consumedAt = &now
+		value := record.ProxyTicket
+		value.Hash = append([]byte(nil), value.Hash...)
+		value.Proxies = append([]string(nil), value.Proxies...)
+		return value, nil
+	}
+	return ProxyTicket{}, ErrTicketNotFound
 }
 
 func (r *MemoryRepository) SaveServiceTicket(_ context.Context, value ServiceTicket) error {
@@ -115,5 +221,19 @@ func (r *MemoryRepository) DeleteServiceSessions(_ context.Context, sessionID st
 		}
 	}
 	r.sessions = result
+	pgts := r.proxyGrantingTickets[:0]
+	for _, value := range r.proxyGrantingTickets {
+		if value.SessionID != sessionID {
+			pgts = append(pgts, value)
+		}
+	}
+	r.proxyGrantingTickets = pgts
+	proxyTickets := r.proxyTickets[:0]
+	for _, value := range r.proxyTickets {
+		if value.SessionID != sessionID {
+			proxyTickets = append(proxyTickets, value)
+		}
+	}
+	r.proxyTickets = proxyTickets
 	return nil
 }

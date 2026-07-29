@@ -11,14 +11,16 @@ import (
 	"time"
 
 	"certus/internal/client"
+	"certus/internal/federation"
 	"certus/internal/identity"
 	"certus/internal/security"
 	"certus/internal/session"
 )
 
 const (
-	sessionCookieName = "certus_session"
-	csrfCookieName    = "certus_csrf"
+	sessionCookieName      = "certus_session"
+	csrfCookieName         = "certus_csrf"
+	externalOIDCCookieName = "certus_oidc_transaction"
 )
 
 type loginPageData struct {
@@ -29,6 +31,10 @@ type loginPageData struct {
 	CSRFToken       string
 	Error           string
 	PasswordEnabled bool
+	LDAPEnabled     bool
+	OIDCEnabled     bool
+	OIDCLabel       string
+	Unavailable     bool
 }
 
 type loginMethodView struct {
@@ -40,11 +46,24 @@ func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
 	if returnTo == "" {
 		returnTo = "/portal"
 	}
+	page, err := s.newLoginPageData(r, returnTo, s.ensureCSRF(w, r), "")
+	if err != nil {
+		http.Error(w, "未知的接入系统", http.StatusBadRequest)
+		return
+	}
+	s.render(w, "login.html", page)
+}
+
+func (s *server) newLoginPageData(r *http.Request, returnTo, csrfToken, message string) (loginPageData, error) {
 	page := loginPageData{
 		Title:           "登录 Certus",
 		ReturnTo:        returnTo,
-		CSRFToken:       s.ensureCSRF(w, r),
+		CSRFToken:       csrfToken,
+		Error:           message,
 		PasswordEnabled: true,
+		LDAPEnabled:     s.ldap.Enabled(),
+		OIDCEnabled:     s.externalOIDC.Enabled(),
+		OIDCLabel:       s.externalOIDC.Label(),
 	}
 	clientID := r.URL.Query().Get("client_id")
 	if clientID == "" {
@@ -55,18 +74,28 @@ func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
 	if clientID != "" {
 		item, err := s.clients.Find(r.Context(), clientID)
 		if err != nil {
-			http.Error(w, "未知的接入系统", http.StatusBadRequest)
-			return
+			return loginPageData{}, err
 		}
 		page.Client = item
 		page.PasswordEnabled = slices.Contains(item.LoginMethods, client.LoginPassword)
+		page.LDAPEnabled = slices.Contains(item.LoginMethods, client.LoginLDAP) && s.ldap.Enabled()
+		page.OIDCEnabled = slices.Contains(item.LoginMethods, client.LoginOIDC) && s.externalOIDC.Enabled()
 		for _, method := range item.LoginMethods {
 			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(method)})
+			if method == client.LoginLDAP && !s.ldap.Enabled() || method == client.LoginOIDC && !s.externalOIDC.Enabled() {
+				page.Unavailable = true
+			}
 		}
 	} else {
 		page.Methods = []loginMethodView{{Label: loginMethodLabel(client.LoginPassword)}}
+		if s.ldap.Enabled() {
+			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(client.LoginLDAP)})
+		}
+		if s.externalOIDC.Enabled() {
+			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(client.LoginOIDC)})
+		}
 	}
-	s.render(w, "login.html", page)
+	return page, nil
 }
 
 func (s *server) loginPassword(w http.ResponseWriter, r *http.Request) {
@@ -94,16 +123,199 @@ func (s *server) loginPassword(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, identity.ErrCredentialLocked) {
 			message = "登录失败次数过多，请稍后重试"
 		}
-		s.render(w, "login.html", loginPageData{
-			Title:           "登录 Certus",
-			Methods:         []loginMethodView{{Label: loginMethodLabel(client.LoginPassword)}},
-			ReturnTo:        returnTo,
-			CSRFToken:       s.ensureCSRF(w, r),
-			Error:           message,
-			PasswordEnabled: true,
-		})
+		s.renderLoginError(w, r, returnTo, message)
 		return
 	}
+	s.completeLogin(w, r, user, returnTo)
+}
+
+func (s *server) loginLDAP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", "登录请求无效")
+		return
+	}
+	returnTo := validatedReturnTo(r.Form.Get("continue"))
+	if returnTo == "" {
+		returnTo = "/portal"
+	}
+	if !s.validCSRF(r.Form.Get("csrf_token"), r) {
+		writeProblem(w, http.StatusBadRequest, "invalid_csrf", "登录页面已失效，请刷新后重试")
+		return
+	}
+	if !s.ldap.Enabled() {
+		writeProblem(w, http.StatusServiceUnavailable, "login_method_unavailable", "LDAP 身份源尚未配置")
+		return
+	}
+	if registered, ok := s.loginClient(r, returnTo); ok && !slices.Contains(registered.LoginMethods, client.LoginLDAP) {
+		writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用 LDAP 登录")
+		return
+	}
+	profile, err := s.ldap.Authenticate(r.Context(), r.Form.Get("username"), r.Form.Get("password"))
+	if err != nil {
+		if errors.Is(err, federation.ErrUnavailable) {
+			s.logger.Warn("LDAP login unavailable", "error", err)
+			s.renderLoginError(w, r, returnTo, "LDAP 身份源暂时不可用，请稍后重试")
+			return
+		}
+		s.renderLoginError(w, r, returnTo, "LDAP 用户名或密码不正确")
+		return
+	}
+	user, err := s.externalUsers.ResolveExternalIdentity(r.Context(), profile, s.now().UTC())
+	if err != nil {
+		s.logger.Error("resolve LDAP identity", "error", err)
+		s.renderLoginError(w, r, returnTo, "无法同步 LDAP 账号")
+		return
+	}
+	if user.Status != identity.UserActive {
+		s.renderLoginError(w, r, returnTo, "账号当前不可登录")
+		return
+	}
+	s.completeLogin(w, r, user, returnTo)
+}
+
+func (s *server) loginOIDC(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	returnTo := validatedReturnTo(r.URL.Query().Get("continue"))
+	if returnTo == "" {
+		returnTo = "/portal"
+	}
+	if !s.externalOIDC.Enabled() {
+		writeProblem(w, http.StatusServiceUnavailable, "login_method_unavailable", "外部 OIDC 身份源尚未配置")
+		return
+	}
+	if registered, ok := s.loginClient(r, returnTo); ok && !slices.Contains(registered.LoginMethods, client.LoginOIDC) {
+		writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用外部身份提供商登录")
+		return
+	}
+	state, err := security.RandomToken(24)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建外部登录请求失败")
+		return
+	}
+	nonce, err := security.RandomToken(24)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建外部登录请求失败")
+		return
+	}
+	verifier, err := security.RandomToken(32)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建外部登录请求失败")
+		return
+	}
+	now := s.now().UTC()
+	transaction, err := s.signer.Sign(map[string]any{
+		"purpose":  "external_oidc",
+		"state":    state,
+		"nonce":    nonce,
+		"verifier": verifier,
+		"continue": returnTo,
+		"iat":      now.Unix(),
+		"exp":      now.Add(5 * time.Minute).Unix(),
+	})
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建外部登录请求失败")
+		return
+	}
+	target, err := s.externalOIDC.AuthorizationURL(r.Context(), state, nonce, verifier)
+	if err != nil {
+		s.logger.Warn("start external OIDC login", "error", err)
+		writeProblem(w, http.StatusBadGateway, "identity_provider_unavailable", "外部身份提供商暂时不可用")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     externalOIDCCookieName,
+		Value:    transaction,
+		Path:     "/login/oidc/callback",
+		MaxAge:   int((5 * time.Minute).Seconds()),
+		HttpOnly: true,
+		Secure:   s.secureCookies(),
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func (s *server) loginOIDCCallback(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	cookie, err := r.Cookie(externalOIDCCookieName)
+	s.clearExternalOIDCCookie(w)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_login_transaction", "外部登录请求已失效")
+		return
+	}
+	claims, err := s.signer.Verify(cookie.Value)
+	if err != nil || !s.validExternalOIDCClaims(claims, r.URL.Query().Get("state")) {
+		writeProblem(w, http.StatusBadRequest, "invalid_login_transaction", "外部登录请求无效或已过期")
+		return
+	}
+	returnTo, _ := claims["continue"].(string)
+	nonce, _ := claims["nonce"].(string)
+	verifier, _ := claims["verifier"].(string)
+	if providerError := r.URL.Query().Get("error"); providerError != "" {
+		s.renderLoginError(w, r, returnTo, "外部身份提供商未完成登录")
+		return
+	}
+	profile, err := s.externalOIDC.Exchange(r.Context(), r.URL.Query().Get("code"), nonce, verifier)
+	if err != nil {
+		s.logger.Warn("complete external OIDC login", "error", err)
+		s.renderLoginError(w, r, returnTo, "外部身份验证失败")
+		return
+	}
+	user, err := s.externalUsers.ResolveExternalIdentity(r.Context(), profile, s.now().UTC())
+	if err != nil {
+		s.logger.Error("resolve external OIDC identity", "error", err)
+		s.renderLoginError(w, r, returnTo, "无法同步外部身份账号")
+		return
+	}
+	if user.Status != identity.UserActive {
+		s.renderLoginError(w, r, returnTo, "账号当前不可登录")
+		return
+	}
+	s.completeLogin(w, r, user, returnTo)
+}
+
+func (s *server) validExternalOIDCClaims(claims map[string]any, state string) bool {
+	purpose, _ := claims["purpose"].(string)
+	expectedState, _ := claims["state"].(string)
+	nonce, _ := claims["nonce"].(string)
+	verifier, _ := claims["verifier"].(string)
+	returnTo, _ := claims["continue"].(string)
+	expiration, _ := claims["exp"].(float64)
+	issuedAt, _ := claims["iat"].(float64)
+	now := s.now().UTC().Unix()
+	return purpose == "external_oidc" &&
+		state != "" &&
+		subtle.ConstantTimeCompare([]byte(expectedState), []byte(state)) == 1 &&
+		nonce != "" &&
+		verifier != "" &&
+		validatedReturnTo(returnTo) != "" &&
+		int64(expiration) > now &&
+		int64(issuedAt) <= now+30
+}
+
+func (s *server) clearExternalOIDCCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     externalOIDCCookieName,
+		Value:    "",
+		Path:     "/login/oidc/callback",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secureCookies(),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *server) renderLoginError(w http.ResponseWriter, r *http.Request, returnTo, message string) {
+	page, err := s.newLoginPageData(r, returnTo, s.ensureCSRF(w, r), message)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_client", "未知的接入系统")
+		return
+	}
+	s.render(w, "login.html", page)
+}
+
+func (s *server) completeLogin(w http.ResponseWriter, r *http.Request, user identity.User, returnTo string) {
 	ipAddress, _, _ := net.SplitHostPort(r.RemoteAddr)
 	_, token, err := s.sessions.Create(r.Context(), user.ID, ipAddress, r.UserAgent())
 	if err != nil {
@@ -149,6 +361,7 @@ func (s *server) loginClient(r *http.Request, returnTo string) (client.Client, b
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	if current, ok := s.currentSession(r); ok {
+		_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
 		_ = s.sessions.Revoke(r.Context(), current.ID)
 	}
 	s.clearSessionCookie(w)

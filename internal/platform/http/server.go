@@ -13,6 +13,7 @@ import (
 	"certus/internal/cas"
 	"certus/internal/client"
 	"certus/internal/config"
+	"certus/internal/federation"
 	"certus/internal/identity"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
@@ -26,12 +27,15 @@ type server struct {
 	templates        *template.Template
 	clients          client.Repository
 	users            identity.UserRepository
+	externalUsers    identity.ExternalIdentityRepository
 	passwords        *identity.PasswordService
 	sessions         *session.Service
 	oauth            oauth.Repository
 	cas              cas.Repository
 	signer           *oidc.Signer
 	outbound         *http.Client
+	ldap             *federation.LDAPAuthenticator
+	externalOIDC     *federation.OIDCAuthenticator
 	now              func() time.Time
 	deviceAttemptsMu sync.Mutex
 	deviceAttempts   map[string]deviceAttemptWindow
@@ -78,13 +82,15 @@ func NewWithRepositories(cfg config.Config, logger *slog.Logger, clients client.
 }
 
 type Dependencies struct {
-	Clients   client.Repository
-	Users     identity.UserRepository
-	Passwords identity.PasswordRepository
-	Sessions  session.Repository
-	OAuth     oauth.Repository
-	CAS       cas.Repository
-	Keys      oidc.KeyRepository
+	Clients            client.Repository
+	Users              identity.UserRepository
+	ExternalIdentities identity.ExternalIdentityRepository
+	Passwords          identity.PasswordRepository
+	Sessions           session.Repository
+	OAuth              oauth.Repository
+	CAS                cas.Repository
+	Keys               oidc.KeyRepository
+	OutboundHTTPClient *http.Client
 }
 
 func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Logger, dependencies Dependencies) (http.Handler, error) {
@@ -93,20 +99,46 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	if err != nil {
 		return nil, err
 	}
-	s := &server{
-		cfg:       cfg,
-		logger:    logger,
-		templates: templates,
-		clients:   dependencies.Clients,
-		users:     dependencies.Users,
-		passwords: identity.NewPasswordService(dependencies.Passwords),
-		sessions:  session.NewService(dependencies.Sessions, 12*time.Hour),
-		oauth:     dependencies.OAuth,
-		cas:       dependencies.CAS,
-		signer:    signer,
-		outbound: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+	externalUsers := dependencies.ExternalIdentities
+	if externalUsers == nil {
+		var ok bool
+		externalUsers, ok = dependencies.Users.(identity.ExternalIdentityRepository)
+		if !ok {
+			return nil, errors.New("user repository does not implement external identity repository")
+		}
+	}
+	outbound := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	if dependencies.OutboundHTTPClient != nil {
+		configured := *dependencies.OutboundHTTPClient
+		if configured.Timeout == 0 || configured.Timeout > 5*time.Second {
+			configured.Timeout = 5 * time.Second
+		}
+		configured.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
-		}},
+		}
+		outbound = &configured
+	}
+	s := &server{
+		cfg:           cfg,
+		logger:        logger,
+		templates:     templates,
+		clients:       dependencies.Clients,
+		users:         dependencies.Users,
+		externalUsers: externalUsers,
+		passwords:     identity.NewPasswordService(dependencies.Passwords),
+		sessions:      session.NewService(dependencies.Sessions, 12*time.Hour),
+		oauth:         dependencies.OAuth,
+		cas:           dependencies.CAS,
+		signer:        signer,
+		outbound:      outbound,
+		ldap:          federation.NewLDAPAuthenticator(cfg.LDAP),
+		externalOIDC: federation.NewOIDCAuthenticator(
+			cfg.ExternalOIDC,
+			cfg.Issuer+"/login/oidc/callback",
+			outbound,
+		),
 		now:            time.Now,
 		deviceAttempts: make(map[string]deviceAttemptWindow),
 	}
@@ -117,6 +149,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("GET /", s.home)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPassword)
+	mux.HandleFunc("POST /login/ldap", s.loginLDAP)
+	mux.HandleFunc("GET /login/oidc", s.loginOIDC)
+	mux.HandleFunc("GET /login/oidc/callback", s.loginOIDCCallback)
 	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /portal", s.portal)
 	mux.HandleFunc("GET /admin/clients", s.adminClientsPage)
@@ -143,6 +178,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("GET /cas/validate", s.casValidate)
 	mux.HandleFunc("GET /cas/serviceValidate", s.casServiceValidate)
 	mux.HandleFunc("GET /cas/p3/serviceValidate", s.casServiceValidate)
+	mux.HandleFunc("GET /cas/proxyValidate", s.casProxyValidate)
+	mux.HandleFunc("GET /cas/p3/proxyValidate", s.casProxyValidate)
+	mux.HandleFunc("GET /cas/proxy", s.casProxy)
 	mux.HandleFunc("GET /cas/logout", s.casLogout)
 	mux.HandleFunc("POST /cas/logout", s.casLogout)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.discovery)

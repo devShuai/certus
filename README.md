@@ -17,11 +17,13 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - 账号密码登录、Argon2id 凭据、失败锁定和安全 Cookie 会话
 - 登录页与认证后的中间落地页
 - 接入系统领域模型、内存仓储与只读查询 API
-- 按接入系统动态展示登录方式
+- 按接入系统动态展示账号密码、LDAP 和外部 OIDC 登录方式
+- LDAP TLS/StartTLS 登录与外部身份自动映射
+- 外部 OIDC Discovery、授权码 + PKCE、state/nonce 校验与账号自动建档
 - OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
 - OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS 和 UserInfo
 - OAuth 设备授权码、浏览器确认和标准轮询错误
-- CAS 1.0/2.0/3.0 Service Ticket 校验、Gateway、Renew 和后端单点登出
+- CAS 1.0/2.0/3.0 Service Ticket 校验、PGT/PT 代理认证、Gateway、Renew 和后端单点登出
 - 可选 PostgreSQL 连接池与内嵌、带校验和的自动迁移
 - PostgreSQL 全协议仓储；未配置数据库时自动使用开发内存仓储
 - 协议闭环端到端测试
@@ -73,7 +75,7 @@ go run ./cmd/certus
 - OAuth 授权码和支持轮换检测的刷新令牌族
 - 审计事件
 
-增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话，以及 OIDC 持久化签名密钥。
+增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT，以及 OIDC 持久化签名密钥。
 
 迁移文件已嵌入可执行文件，并在 `certus_schema_migrations` 中记录版本与 SHA-256 校验和；已执行的 migration 被修改时，服务会拒绝启动。
 
@@ -127,6 +129,31 @@ PUT  /api/v1/admin/users/{user_id}/password
 ```
 
 服务端只保存 Argon2id 哈希；连续失败 5 次会锁定凭据 15 分钟。
+
+### LDAP 与外部 OIDC
+
+客户端在 `login_methods` 中选择 `ldap` 或 `oidc` 后，还需要配置对应的全局身份源。LDAP 支持服务账号搜索后以最终用户 DN 绑定：
+
+```powershell
+$env:CERTUS_LDAP_URL='ldaps://ldap.example.com:636'
+$env:CERTUS_LDAP_BASE_DN='ou=people,dc=example,dc=com'
+$env:CERTUS_LDAP_BIND_DN='cn=certus,ou=services,dc=example,dc=com'
+$env:CERTUS_LDAP_BIND_PASSWORD='<LDAP 服务账号密码>'
+$env:CERTUS_LDAP_USER_FILTER='(&(objectClass=person)(uid={username}))'
+```
+
+使用 `ldap://` 时可通过 `CERTUS_LDAP_START_TLS=true` 强制升级到 TLS。用户输入会在代入过滤器前转义，空密码不会发送到 LDAP。
+
+外部 OIDC 使用发现文档、授权码和 PKCE：
+
+```powershell
+$env:CERTUS_EXTERNAL_OIDC_ISSUER='https://idp.example.com'
+$env:CERTUS_EXTERNAL_OIDC_CLIENT_ID='certus'
+$env:CERTUS_EXTERNAL_OIDC_CLIENT_SECRET='<OIDC 客户端密钥>'
+$env:CERTUS_EXTERNAL_OIDC_LABEL='企业统一身份'
+```
+
+在上游登记的回调地址固定为 `${CERTUS_ISSUER}/login/oidc/callback`。只有上游标记为已验证的邮箱才用于关联现有 Certus 用户；否则会创建独立用户，避免仅凭未验证邮箱合并账号。
 
 ## 配置跳转登录系统
 

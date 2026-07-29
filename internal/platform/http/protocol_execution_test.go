@@ -211,7 +211,72 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 	}
 }
 
-func newProtocolTestHandler(t *testing.T, serviceURL string) http.Handler {
+func TestCASProxyGrantingAndProxyTicketExecution(t *testing.T) {
+	type callbackValues struct {
+		pgt string
+		iou string
+	}
+	callbacks := make(chan callbackValues, 1)
+	service := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbacks <- callbackValues{
+			pgt: r.URL.Query().Get("pgtId"),
+			iou: r.URL.Query().Get("pgtIou"),
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer service.Close()
+
+	handler := newProtocolTestHandler(t, service.URL, service.Client())
+	browser := newTestBrowser(handler)
+	browser.login(t, "/portal")
+
+	login := browser.request(t, http.MethodGet, "/cas/login?service="+url.QueryEscape(service.URL), "", "")
+	serviceRedirect, err := url.Parse(login.Header().Get("Location"))
+	if err != nil || serviceRedirect.Query().Get("ticket") == "" {
+		t.Fatalf("invalid CAS redirect: %d %s %v", login.Code, login.Header().Get("Location"), err)
+	}
+	callbackURL := service.URL + "/proxy/callback?tenant=certus"
+	validationQuery := url.Values{
+		"service": {service.URL},
+		"ticket":  {serviceRedirect.Query().Get("ticket")},
+		"pgtUrl":  {callbackURL},
+	}
+	validated := browser.request(t, http.MethodGet, "/cas/p3/serviceValidate?"+validationQuery.Encode(), "", "")
+	if validated.Code != http.StatusOK || !strings.Contains(validated.Body.String(), "<cas:proxyGrantingTicket>PGTIOU-") {
+		t.Fatalf("CAS PGT validation: %d %s", validated.Code, validated.Body.String())
+	}
+	var callback callbackValues
+	select {
+	case callback = <-callbacks:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CAS PGT callback was not sent")
+	}
+	if !strings.HasPrefix(callback.pgt, "PGT-") || !strings.HasPrefix(callback.iou, "PGTIOU-") ||
+		!strings.Contains(validated.Body.String(), callback.iou) {
+		t.Fatalf("unexpected PGT callback: %#v response=%s", callback, validated.Body.String())
+	}
+
+	proxyQuery := url.Values{"pgt": {callback.pgt}, "targetService": {service.URL}}
+	proxied := browser.request(t, http.MethodGet, "/cas/proxy?"+proxyQuery.Encode(), "", "")
+	if proxied.Code != http.StatusOK || !strings.Contains(proxied.Body.String(), "<cas:proxyTicket>PT-") {
+		t.Fatalf("CAS proxy ticket: %d %s", proxied.Code, proxied.Body.String())
+	}
+	start := strings.Index(proxied.Body.String(), "PT-")
+	end := strings.Index(proxied.Body.String()[start:], "</cas:proxyTicket>")
+	proxyTicket := proxied.Body.String()[start : start+end]
+	proxyValidateQuery := url.Values{"service": {service.URL}, "ticket": {proxyTicket}}
+	proxyValidated := browser.request(t, http.MethodGet, "/cas/p3/proxyValidate?"+proxyValidateQuery.Encode(), "", "")
+	if !strings.Contains(proxyValidated.Body.String(), "<cas:user>alice</cas:user>") ||
+		!strings.Contains(proxyValidated.Body.String(), "<cas:proxy>"+callbackURL+"</cas:proxy>") {
+		t.Fatalf("CAS proxy validation: %d %s", proxyValidated.Code, proxyValidated.Body.String())
+	}
+	replayed := browser.request(t, http.MethodGet, "/cas/p3/proxyValidate?"+proxyValidateQuery.Encode(), "", "")
+	if !strings.Contains(replayed.Body.String(), `code="INVALID_TICKET"`) {
+		t.Fatalf("CAS proxy ticket was reusable: %d %s", replayed.Code, replayed.Body.String())
+	}
+}
+
+func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...*http.Client) http.Handler {
 	t.Helper()
 	user, err := identity.NewUser(identity.CreateUser{
 		Username:    "alice",
@@ -236,11 +301,12 @@ func newProtocolTestHandler(t *testing.T, serviceURL string) http.Handler {
 		AllowedScopes:   []string{"openid", "profile", "email"},
 		CASVersion:      client.CASVersion3,
 		CASServiceURLs:  []string{serviceURL},
+		CASProxy:        true,
 		CASRenew:        true,
 		CASSingleLogout: true,
 		Enabled:         true,
 	})
-	handler, err := NewWithDependencies(context.Background(), config.Config{Issuer: "https://auth.example.com"}, slog.New(slog.NewTextHandler(io.Discard, nil)), Dependencies{
+	dependencies := Dependencies{
 		Clients:   clients,
 		Users:     users,
 		Passwords: users,
@@ -248,7 +314,11 @@ func newProtocolTestHandler(t *testing.T, serviceURL string) http.Handler {
 		OAuth:     oauth.NewMemoryRepository(),
 		CAS:       cas.NewMemoryRepository(),
 		Keys:      &oidc.MemoryKeyRepository{},
-	})
+	}
+	if len(outboundClients) > 0 {
+		dependencies.OutboundHTTPClient = outboundClients[0]
+	}
+	handler, err := NewWithDependencies(context.Background(), config.Config{Issuer: "https://auth.example.com"}, slog.New(slog.NewTextHandler(io.Discard, nil)), dependencies)
 	if err != nil {
 		t.Fatal(err)
 	}

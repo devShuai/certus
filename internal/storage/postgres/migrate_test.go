@@ -56,3 +56,18 @@ func TestProtocolExecutionMigration(t *testing.T) {
 		t.Fatal("protocol migration must not require extension installation privileges")
 	}
 }
+
+func TestCASProxyMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/006_cas_proxy.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"cas_proxy_granting_tickets",
+		"cas_proxy_tickets",
+	} {
+		if !strings.Contains(string(content), "CREATE TABLE "+table) {
+			t.Errorf("CAS proxy migration does not create %s", table)
+		}
+	}
+}

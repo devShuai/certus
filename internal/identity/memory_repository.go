@@ -12,17 +12,68 @@ type MemoryUserRepository struct {
 	mu          sync.RWMutex
 	users       map[string]User
 	credentials map[string]PasswordCredential
+	external    map[string]string
 }
 
 func NewMemoryUserRepository(users ...User) *MemoryUserRepository {
 	repository := &MemoryUserRepository{
 		users:       make(map[string]User, len(users)),
 		credentials: make(map[string]PasswordCredential),
+		external:    make(map[string]string),
 	}
 	for _, user := range users {
 		repository.users[user.ID] = cloneUser(user)
 	}
 	return repository
+}
+
+func (r *MemoryUserRepository) ResolveExternalIdentity(_ context.Context, profile ExternalProfile, now time.Time) (User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	key := profile.ProviderID + "\x00" + profile.Subject
+	if userID, ok := r.external[key]; ok {
+		user, exists := r.users[userID]
+		if !exists {
+			return User{}, ErrNotFound
+		}
+		return cloneUser(user), nil
+	}
+	if profile.EmailTrusted && profile.Email != nil {
+		for _, existing := range r.users {
+			if existing.Email != nil && strings.EqualFold(*existing.Email, *profile.Email) {
+				r.external[key] = existing.ID
+				return cloneUser(existing), nil
+			}
+		}
+	}
+
+	user, err := NewExternalUser(profile, false, now)
+	if err != nil {
+		return User{}, err
+	}
+	for _, existing := range r.users {
+		if strings.EqualFold(existing.Username, user.Username) ||
+			(existing.Email != nil && user.Email != nil && strings.EqualFold(*existing.Email, *user.Email)) {
+			user, err = NewExternalUser(profile, true, now)
+			if err != nil {
+				return User{}, err
+			}
+			break
+		}
+	}
+	for _, existing := range r.users {
+		if strings.EqualFold(existing.Username, user.Username) ||
+			(existing.Email != nil && user.Email != nil && strings.EqualFold(*existing.Email, *user.Email)) {
+			return User{}, ErrConflict
+		}
+	}
+	if _, exists := r.users[user.ID]; exists {
+		return User{}, ErrConflict
+	}
+	r.users[user.ID] = cloneUser(user)
+	r.external[key] = user.ID
+	return cloneUser(user), nil
 }
 
 func (r *MemoryUserRepository) FindByUsername(_ context.Context, username string) (User, error) {

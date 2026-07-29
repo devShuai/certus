@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -92,6 +93,122 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (i
 		return identity.User{}, fmt.Errorf("find user by username: %w", err)
 	}
 	return user, nil
+}
+
+func (r *UserRepository) ResolveExternalIdentity(ctx context.Context, profile identity.ExternalProfile, now time.Time) (identity.User, error) {
+	profileJSON, err := json.Marshal(profile)
+	if err != nil {
+		return identity.User{}, fmt.Errorf("encode external identity profile: %w", err)
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return identity.User{}, fmt.Errorf("begin external identity resolution: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	lockKey := profile.ProviderID + "\x00" + profile.Subject
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+		return identity.User{}, fmt.Errorf("lock external identity: %w", err)
+	}
+	if profile.EmailTrusted && profile.Email != nil {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(lower($1)))`, *profile.Email); err != nil {
+			return identity.User{}, fmt.Errorf("lock external identity email: %w", err)
+		}
+	}
+
+	existing, err := scanUser(tx.QueryRow(ctx, `
+		SELECT u.id::text, u.username, u.display_name, u.email, u.status, u.created_at, u.updated_at
+		FROM external_identities e
+		JOIN users u ON u.id = e.user_id
+		WHERE e.provider_id = $1 AND e.provider_subject = $2`,
+		profile.ProviderID, profile.Subject,
+	))
+	if err == nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE external_identities
+			SET profile = $3
+			WHERE provider_id = $1 AND provider_subject = $2`,
+			profile.ProviderID, profile.Subject, profileJSON,
+		); err != nil {
+			return identity.User{}, fmt.Errorf("update external identity profile: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return identity.User{}, fmt.Errorf("commit external identity resolution: %w", err)
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return identity.User{}, fmt.Errorf("find external identity: %w", err)
+	}
+
+	if profile.EmailTrusted && profile.Email != nil {
+		existing, err = scanUser(tx.QueryRow(ctx, `
+			SELECT id::text, username, display_name, email, status, created_at, updated_at
+			FROM users
+			WHERE lower(email) = lower($1)
+			FOR UPDATE`,
+			*profile.Email,
+		))
+		if err == nil {
+			if err := insertExternalIdentity(ctx, tx, existing.ID, profile, profileJSON, now); err != nil {
+				return identity.User{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return identity.User{}, fmt.Errorf("commit external identity link: %w", err)
+			}
+			return existing, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return identity.User{}, fmt.Errorf("find user by external email: %w", err)
+		}
+	}
+
+	user, err := identity.NewExternalUser(profile, false, now)
+	if err != nil {
+		return identity.User{}, err
+	}
+	created, err := insertExternalUser(ctx, tx, user)
+	if errors.Is(err, pgx.ErrNoRows) {
+		user, err = identity.NewExternalUser(profile, true, now)
+		if err != nil {
+			return identity.User{}, err
+		}
+		created, err = insertExternalUser(ctx, tx, user)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identity.User{}, identity.ErrConflict
+	}
+	if err != nil {
+		return identity.User{}, fmt.Errorf("create external user: %w", err)
+	}
+	if err := insertExternalIdentity(ctx, tx, created.ID, profile, profileJSON, now); err != nil {
+		return identity.User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return identity.User{}, fmt.Errorf("commit external identity provisioning: %w", err)
+	}
+	return created, nil
+}
+
+func insertExternalUser(ctx context.Context, tx pgx.Tx, user identity.User) (identity.User, error) {
+	return scanUser(tx.QueryRow(ctx, `
+		INSERT INTO users (id, username, display_name, email, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		ON CONFLICT DO NOTHING
+		RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
+		user.ID, user.Username, user.DisplayName, user.Email, user.Status, user.CreatedAt,
+	))
+}
+
+func insertExternalIdentity(ctx context.Context, tx pgx.Tx, userID string, profile identity.ExternalProfile, encoded []byte, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO external_identities (user_id, provider_id, provider_subject, profile, created_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		userID, profile.ProviderID, profile.Subject, encoded, now.UTC(),
+	); err != nil {
+		return fmt.Errorf("link external identity: %w", err)
+	}
+	return nil
 }
 
 func (r *UserRepository) Create(ctx context.Context, user identity.User) (identity.User, error) {

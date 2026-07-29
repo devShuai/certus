@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/mail"
@@ -70,8 +71,23 @@ type UserRepository interface {
 	Replace(context.Context, User) (User, error)
 }
 
+type ExternalProfile struct {
+	ProviderID   string         `json:"provider_id"`
+	Subject      string         `json:"subject"`
+	Username     string         `json:"username"`
+	DisplayName  string         `json:"display_name"`
+	Email        *string        `json:"email,omitempty"`
+	EmailTrusted bool           `json:"email_trusted"`
+	Claims       map[string]any `json:"claims,omitempty"`
+}
+
+type ExternalIdentityRepository interface {
+	ResolveExternalIdentity(context.Context, ExternalProfile, time.Time) (User, error)
+}
+
 var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,63}$`)
 var userIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var unsupportedUsernameCharacters = regexp.MustCompile(`[^a-z0-9._-]+`)
 
 func NewUser(input CreateUser, now time.Time) (User, error) {
 	username := strings.ToLower(strings.TrimSpace(input.Username))
@@ -134,6 +150,41 @@ func (s UserStatus) Valid() bool {
 
 func ValidUserID(id string) bool {
 	return userIDPattern.MatchString(id)
+}
+
+func NewExternalUser(profile ExternalProfile, disambiguate bool, now time.Time) (User, error) {
+	if strings.TrimSpace(profile.ProviderID) == "" || strings.TrimSpace(profile.Subject) == "" {
+		return User{}, fmt.Errorf("%w: external provider and subject are required", ErrInvalid)
+	}
+	username := strings.ToLower(strings.TrimSpace(profile.Username))
+	username = unsupportedUsernameCharacters.ReplaceAllString(username, "-")
+	username = strings.Trim(username, "._-")
+	if username == "" {
+		username = "user"
+	}
+	if len(username) > 54 {
+		username = username[:54]
+	}
+	if disambiguate {
+		sum := sha256.Sum256([]byte(profile.ProviderID + "\x00" + profile.Subject))
+		username = fmt.Sprintf("%s-%x", username, sum[:4])
+	}
+	for len(username) < 3 {
+		username += "0"
+	}
+	displayName := strings.TrimSpace(profile.DisplayName)
+	if displayName == "" {
+		displayName = profile.Username
+	}
+	if displayName == "" {
+		displayName = username
+	}
+	return NewUser(CreateUser{
+		Username:    username,
+		DisplayName: displayName,
+		Email:       profile.Email,
+		Status:      UserActive,
+	}, now)
 }
 
 func normalizeEmail(value *string) (*string, error) {
