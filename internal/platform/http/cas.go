@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -135,6 +136,12 @@ func (s *server) casServiceValidate(w http.ResponseWriter, r *http.Request) {
 		writeCASFailure(w, "INVALID_TICKET", "ticket user is unavailable")
 		return
 	}
+	roles, permissions, err := s.casEntitlements(r.Context(), registered, user.ID, r.URL.Path == "/cas/p3/serviceValidate")
+	if err != nil {
+		s.logger.Error("read CAS entitlements", "error", err)
+		writeCASFailure(w, "INTERNAL_ERROR", "could not read user roles")
+		return
+	}
 	pgtIOU, err := s.issueProxyGrantingTicket(r, registered, cas.ProxyGrantingTicket{
 		ClientID:           ticket.ClientID,
 		UserID:             ticket.UserID,
@@ -145,7 +152,7 @@ func (s *server) casServiceValidate(w http.ResponseWriter, r *http.Request) {
 		writeCASFailure(w, "INVALID_PROXY_CALLBACK", err.Error())
 		return
 	}
-	writeCASSuccess(w, user, r.URL.Path == "/cas/p3/serviceValidate", pgtIOU, nil)
+	writeCASSuccess(w, user, r.URL.Path == "/cas/p3/serviceValidate", pgtIOU, nil, roles, permissions)
 }
 
 func (s *server) casProxyValidate(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +210,12 @@ func (s *server) casProxyValidate(w http.ResponseWriter, r *http.Request) {
 		writeCASFailure(w, "INVALID_TICKET", "ticket user is unavailable")
 		return
 	}
+	roles, permissions, err := s.casEntitlements(r.Context(), registered, user.ID, r.URL.Path == "/cas/p3/proxyValidate")
+	if err != nil {
+		s.logger.Error("read CAS proxy entitlements", "error", err)
+		writeCASFailure(w, "INTERNAL_ERROR", "could not read user roles")
+		return
+	}
 	pgtIOU, err := s.issueProxyGrantingTicket(r, registered, cas.ProxyGrantingTicket{
 		ClientID:           registered.ID,
 		UserID:             userID,
@@ -214,7 +227,7 @@ func (s *server) casProxyValidate(w http.ResponseWriter, r *http.Request) {
 		writeCASFailure(w, "INVALID_PROXY_CALLBACK", err.Error())
 		return
 	}
-	writeCASSuccess(w, user, r.URL.Path == "/cas/p3/proxyValidate", pgtIOU, proxies)
+	writeCASSuccess(w, user, r.URL.Path == "/cas/p3/proxyValidate", pgtIOU, proxies, roles, permissions)
 }
 
 func (s *server) casProxy(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +356,18 @@ func validCASProxyCallback(registered client.Client, serviceURL, callbackURL str
 	return strings.EqualFold(service.Host, callback.Host)
 }
 
-func writeCASSuccess(w http.ResponseWriter, user identity.User, includeAttributes bool, pgtIOU string, proxies []string) {
+func (s *server) casEntitlements(ctx context.Context, registered client.Client, userID string, includeAttributes bool) ([]string, []string, error) {
+	if !includeAttributes || !slices.Contains(registered.AllowedScopes, "roles") {
+		return nil, nil, nil
+	}
+	value, err := s.accessControl.Effective(ctx, userID, registered.ID, s.now().UTC())
+	if err != nil {
+		return nil, nil, err
+	}
+	return value.Roles, value.Permissions, nil
+}
+
+func writeCASSuccess(w http.ResponseWriter, user identity.User, includeAttributes bool, pgtIOU string, proxies, roles, permissions []string) {
 	var body bytes.Buffer
 	body.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
 	body.WriteString(`<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:authenticationSuccess><cas:user>`)
@@ -357,6 +381,16 @@ func writeCASSuccess(w http.ResponseWriter, user identity.User, includeAttribute
 			body.WriteString(`<cas:email>`)
 			xmlEscape(&body, *user.Email)
 			body.WriteString(`</cas:email>`)
+		}
+		for _, role := range roles {
+			body.WriteString(`<cas:role>`)
+			xmlEscape(&body, role)
+			body.WriteString(`</cas:role>`)
+		}
+		for _, permission := range permissions {
+			body.WriteString(`<cas:permission>`)
+			xmlEscape(&body, permission)
+			body.WriteString(`</cas:permission>`)
 		}
 		body.WriteString(`</cas:attributes>`)
 	}

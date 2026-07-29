@@ -91,3 +91,20 @@ func TestClientLifecycleMigration(t *testing.T) {
 		t.Fatal("client lifecycle migration does not add soft archive state")
 	}
 }
+
+func TestAccessControlMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/009_access_control.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"access_roles",
+		"access_permissions",
+		"access_role_permissions",
+		"access_user_roles",
+	} {
+		if !strings.Contains(string(content), "CREATE TABLE "+table) {
+			t.Errorf("access control migration does not create %s", table)
+		}
+	}
+}

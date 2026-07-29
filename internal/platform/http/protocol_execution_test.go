@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"certus/internal/access"
 	"certus/internal/cas"
 	"certus/internal/client"
 	"certus/internal/config"
@@ -47,7 +48,7 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 		"client_id":             {"integration"},
 		"redirect_uri":          {"https://app.example.com/callback"},
 		"response_type":         {"code"},
-		"scope":                 {"openid profile email"},
+		"scope":                 {"openid profile email roles"},
 		"state":                 {"state-value"},
 		"nonce":                 {"nonce-value"},
 		"code_challenge":        {challenge},
@@ -83,11 +84,21 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 	if strings.Count(tokens["id_token"].(string), ".") != 2 || tokens["refresh_token"] == "" {
 		t.Fatalf("missing OIDC tokens: %#v", tokens)
 	}
+	idTokenParts := strings.Split(tokens["id_token"].(string), ".")
+	idTokenClaims, err := base64.RawURLEncoding.DecodeString(idTokenParts[1])
+	if err != nil ||
+		!strings.Contains(string(idTokenClaims), `"roles":["approver"]`) ||
+		!strings.Contains(string(idTokenClaims), `"permissions":["invoice.approve"]`) {
+		t.Fatalf("ID Token missing access claims: %s %v", idTokenClaims, err)
+	}
 	userinfo := httptest.NewRequest(http.MethodGet, "/oauth2/userinfo", nil)
 	userinfo.Header.Set("Authorization", "Bearer "+tokens["access_token"].(string))
 	userinfoResponse := httptest.NewRecorder()
 	handler.ServeHTTP(userinfoResponse, userinfo)
-	if userinfoResponse.Code != http.StatusOK || !strings.Contains(userinfoResponse.Body.String(), `"preferred_username":"alice"`) {
+	if userinfoResponse.Code != http.StatusOK ||
+		!strings.Contains(userinfoResponse.Body.String(), `"preferred_username":"alice"`) ||
+		!strings.Contains(userinfoResponse.Body.String(), `"roles":["approver"]`) ||
+		!strings.Contains(userinfoResponse.Body.String(), `"permissions":["invoice.approve"]`) {
 		t.Fatalf("userinfo: %d %s", userinfoResponse.Code, userinfoResponse.Body.String())
 	}
 
@@ -151,7 +162,10 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 		t.Fatalf("SSO ticket unexpectedly passed renew validation: %d %s", renewRejected.Code, renewRejected.Body.String())
 	}
 	validated := browser.request(t, http.MethodGet, "/cas/p3/serviceValidate?"+validateQuery.Encode(), "", "")
-	if validated.Code != http.StatusOK || !strings.Contains(validated.Body.String(), "<cas:user>alice</cas:user>") {
+	if validated.Code != http.StatusOK ||
+		!strings.Contains(validated.Body.String(), "<cas:user>alice</cas:user>") ||
+		!strings.Contains(validated.Body.String(), "<cas:role>approver</cas:role>") ||
+		!strings.Contains(validated.Body.String(), "<cas:permission>invoice.approve</cas:permission>") {
 		t.Fatalf("CAS validate: %d %s", validated.Code, validated.Body.String())
 	}
 	replayed := browser.request(t, http.MethodGet, "/cas/p3/serviceValidate?"+validateQuery.Encode(), "", "")
@@ -298,7 +312,7 @@ func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...
 		GrantTypes:      []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken, client.GrantDeviceCode},
 		RedirectURIs:    []string{"https://app.example.com/callback"},
 		LoginMethods:    []client.LoginMethod{client.LoginPassword},
-		AllowedScopes:   []string{"openid", "profile", "email"},
+		AllowedScopes:   []string{"openid", "profile", "email", "roles"},
 		CASVersion:      client.CASVersion3,
 		CASServiceURLs:  []string{serviceURL},
 		CASProxy:        true,
@@ -306,6 +320,27 @@ func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...
 		CASSingleLogout: true,
 		Enabled:         true,
 	})
+	accessRepository := access.NewMemoryRepository()
+	role, err := access.NewRole("integration", access.CreateRole{Code: "approver", Name: "审批人"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	permission, err := access.NewPermission("integration", access.CreatePermission{Code: "invoice.approve", Name: "审批发票"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accessRepository.CreateRole(context.Background(), role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accessRepository.CreatePermission(context.Background(), permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := accessRepository.SetRolePermissions(context.Background(), "integration", role.ID, []string{permission.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accessRepository.ReplaceUserRoles(context.Background(), user.ID, []access.RoleGrant{{RoleID: role.ID}}, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	dependencies := Dependencies{
 		Clients:   clients,
 		Users:     users,
@@ -314,6 +349,7 @@ func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...
 		OAuth:     oauth.NewMemoryRepository(),
 		CAS:       cas.NewMemoryRepository(),
 		Keys:      &oidc.MemoryKeyRepository{},
+		Access:    accessRepository,
 	}
 	if len(outboundClients) > 0 {
 		dependencies.OutboundHTTPClient = outboundClients[0]

@@ -27,6 +27,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - CAS 1.0/2.0/3.0 Service Ticket 校验、PGT/PT 代理认证、Gateway、Renew 和后端单点登出
 - 可选 PostgreSQL 连接池与内嵌、带校验和的自动迁移
 - PostgreSQL 全协议仓储；未配置数据库时自动使用开发内存仓储
+- 按客户端隔离的角色、权限点、临时授权与 `roles` scope 声明下发
 - 协议闭环端到端测试
 
 ## 本地运行
@@ -276,6 +277,42 @@ GET  /api/v1/admin/clients/{client_id}/integration
 `public` 客户端不生成密钥；`confidential` 客户端的明文密钥只在创建响应中出现一次，Certus 只保存 SHA-256 哈希。非本机回环地址的回调必须使用 HTTPS，回调地址在授权时执行精确匹配。
 
 `PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可暂停新登录和令牌签发。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端，历史令牌、授权和审计记录不会因物理删除而丢失。
+
+## 角色与权限下发
+
+角色和权限点始终按 `client_id` 隔离，用户可被授予带过期时间的临时角色。管理接口如下：
+
+```text
+GET  /api/v1/admin/clients/{client_id}/roles
+POST /api/v1/admin/clients/{client_id}/roles
+GET  /api/v1/admin/clients/{client_id}/permissions
+POST /api/v1/admin/clients/{client_id}/permissions
+GET  /api/v1/admin/clients/{client_id}/roles/{role_id}/permissions
+PUT  /api/v1/admin/clients/{client_id}/roles/{role_id}/permissions
+GET  /api/v1/admin/users/{user_id}/roles?client_id=
+PUT  /api/v1/admin/users/{user_id}/roles
+```
+
+角色授予采用完整替换语义：
+
+```json
+{
+  "roles": [
+    {
+      "role_id": "角色 UUID",
+      "expires_at": "2026-12-31T16:00:00Z"
+    }
+  ]
+}
+```
+
+客户端必须在 `allowed_scopes` 中显式加入并请求 `roles`，Certus 才会在 ID Token、UserInfo 和 Introspection 中下发当前客户端范围内的 `roles` 与 `permissions`。CAS 3.0 客户端在 `allowed_scopes` 包含 `roles` 时，会获得对应的 `<cas:role>` 与 `<cas:permission>` 属性。机密客户端也可使用 Basic 认证实时查询：
+
+```text
+GET /api/v1/access/users/{user_id}
+```
+
+令牌中的授权声明是签发时快照；高敏感操作可使用实时查询或 Introspection 缩短权限撤销的生效时延。
 
 ### 支持方式
 

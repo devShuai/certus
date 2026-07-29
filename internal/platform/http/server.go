@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"certus/internal/access"
 	"certus/internal/cas"
 	"certus/internal/client"
 	"certus/internal/config"
@@ -32,6 +33,7 @@ type server struct {
 	sessions         *session.Service
 	oauth            oauth.Repository
 	cas              cas.Repository
+	accessControl    access.Repository
 	signer           *oidc.Signer
 	outbound         *http.Client
 	ldap             *federation.LDAPAuthenticator
@@ -89,6 +91,7 @@ type Dependencies struct {
 	Sessions           session.Repository
 	OAuth              oauth.Repository
 	CAS                cas.Repository
+	Access             access.Repository
 	Keys               oidc.KeyRepository
 	OutboundHTTPClient *http.Client
 }
@@ -106,6 +109,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		if !ok {
 			return nil, errors.New("user repository does not implement external identity repository")
 		}
+	}
+	if dependencies.Access == nil {
+		dependencies.Access = access.NewMemoryRepository()
 	}
 	outbound := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -131,6 +137,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		sessions:      session.NewService(dependencies.Sessions, 12*time.Hour),
 		oauth:         dependencies.OAuth,
 		cas:           dependencies.CAS,
+		accessControl: dependencies.Access,
 		signer:        signer,
 		outbound:      outbound,
 		ldap:          federation.NewLDAPAuthenticator(cfg.LDAP),
@@ -169,6 +176,15 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("DELETE /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.archiveClient)))
 	mux.Handle("POST /api/v1/admin/clients/{clientID}/secret", s.requireAdmin(http.HandlerFunc(s.rotateClientSecret)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(http.HandlerFunc(s.getClientIntegration)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/roles", s.requireAdmin(http.HandlerFunc(s.listRoles)))
+	mux.Handle("POST /api/v1/admin/clients/{clientID}/roles", s.requireAdmin(http.HandlerFunc(s.createRole)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/permissions", s.requireAdmin(http.HandlerFunc(s.listPermissions)))
+	mux.Handle("POST /api/v1/admin/clients/{clientID}/permissions", s.requireAdmin(http.HandlerFunc(s.createPermission)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/roles/{roleID}/permissions", s.requireAdmin(http.HandlerFunc(s.listRolePermissions)))
+	mux.Handle("PUT /api/v1/admin/clients/{clientID}/roles/{roleID}/permissions", s.requireAdmin(http.HandlerFunc(s.replaceRolePermissions)))
+	mux.Handle("GET /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.listUserRoles)))
+	mux.Handle("PUT /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.replaceUserRoles)))
+	mux.HandleFunc("GET /api/v1/access/users/{userID}", s.getEffectiveAccess)
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
 	mux.HandleFunc("POST /oauth2/token", s.token)
 	mux.HandleFunc("POST /oauth2/introspect", s.introspect)

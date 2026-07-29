@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -207,6 +208,10 @@ func (s *server) clientCredentialsToken(w http.ResponseWriter, r *http.Request, 
 		writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "openid is not valid with client_credentials")
 		return
 	}
+	if slices.Contains(scopes, "roles") {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "roles is not valid with client_credentials")
+		return
+	}
 	response, err := s.issueAccessToken(r, registered.ID, "", "", scopes)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
@@ -269,6 +274,9 @@ func (s *server) issueUserTokens(r *http.Request, registered client.Client, user
 		}
 		if slices.Contains(scopes, "email") && user.Email != nil {
 			claims["email"] = *user.Email
+		}
+		if err := s.addEntitlementClaims(r.Context(), claims, user.ID, registered.ID, scopes); err != nil {
+			return nil, err
 		}
 		idToken, err := s.signer.Sign(claims)
 		if err != nil {
@@ -407,6 +415,11 @@ func (s *server) writeAccessTokenIntrospection(w http.ResponseWriter, r *http.Re
 		}
 		response["sub"] = user.ID
 		response["username"] = user.Username
+		if err := s.addEntitlementClaims(r.Context(), response, user.ID, token.ClientID, token.Scope); err != nil {
+			s.logger.Error("read token entitlements for introspection", "error", err)
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "token introspection failed")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -417,7 +430,7 @@ func (s *server) writeRefreshTokenIntrospection(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, map[string]bool{"active": false})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"active":    true,
 		"scope":     strings.Join(token.Scope, " "),
 		"client_id": token.ClientID,
@@ -426,7 +439,13 @@ func (s *server) writeRefreshTokenIntrospection(w http.ResponseWriter, r *http.R
 		"exp":       token.ExpiresAt.Unix(),
 		"iat":       token.IssuedAt.Unix(),
 		"iss":       s.cfg.Issuer,
-	})
+	}
+	if err := s.addEntitlementClaims(r.Context(), response, user.ID, token.ClientID, token.Scope); err != nil {
+		s.logger.Error("read refresh token entitlements for introspection", "error", err)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token introspection failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
@@ -502,7 +521,25 @@ func (s *server) userinfo(w http.ResponseWriter, r *http.Request) {
 	if slices.Contains(token.Scope, "email") && user.Email != nil {
 		claims["email"] = *user.Email
 	}
+	if err := s.addEntitlementClaims(r.Context(), claims, user.ID, token.ClientID, token.Scope); err != nil {
+		s.logger.Error("read user entitlements", "error", err)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "userinfo failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, claims)
+}
+
+func (s *server) addEntitlementClaims(ctx context.Context, claims map[string]any, userID, clientID string, scopes []string) error {
+	if !slices.Contains(scopes, "roles") {
+		return nil
+	}
+	value, err := s.accessControl.Effective(ctx, userID, clientID, s.now().UTC())
+	if err != nil {
+		return err
+	}
+	claims["roles"] = value.Roles
+	claims["permissions"] = value.Permissions
+	return nil
 }
 
 func (s *server) jwks(w http.ResponseWriter, _ *http.Request) {
@@ -526,7 +563,7 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"introspection_endpoint_auth_methods_supported": []string{"client_secret_basic"},
 		"revocation_endpoint_auth_methods_supported":    []string{"client_secret_basic", "none"},
 		"code_challenge_methods_supported":              []string{"S256"},
-		"scopes_supported":                              []string{"openid", "profile", "email"},
+		"scopes_supported":                              []string{"openid", "profile", "email", "roles"},
 		"subject_types_supported":                       []string{"public"},
 		"id_token_signing_alg_values_supported":         []string{"RS256"},
 	})
