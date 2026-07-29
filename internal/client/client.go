@@ -2,12 +2,24 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"net"
 	"net/url"
+	"regexp"
 	"slices"
+	"strings"
+	"sync"
 )
 
-var ErrNotFound = errors.New("client not found")
+var (
+	ErrNotFound = errors.New("client not found")
+	ErrConflict = errors.New("client already exists")
+	ErrInvalid  = errors.New("invalid client")
+)
 
 type LoginMethod string
 
@@ -17,13 +29,75 @@ const (
 	LoginOIDC     LoginMethod = "oidc"
 )
 
+type ApplicationType string
+
+const (
+	ApplicationPublic       ApplicationType = "public"
+	ApplicationConfidential ApplicationType = "confidential"
+)
+
+type Protocol string
+
+const (
+	ProtocolOAuth20 Protocol = "oauth2.0"
+	ProtocolOAuth21 Protocol = "oauth2.1"
+	ProtocolCAS     Protocol = "cas"
+)
+
+type GrantType string
+
+const (
+	GrantAuthorizationCode GrantType = "authorization_code"
+	GrantRefreshToken      GrantType = "refresh_token"
+	GrantClientCredentials GrantType = "client_credentials"
+	GrantDeviceCode        GrantType = "urn:ietf:params:oauth:grant-type:device_code"
+)
+
+type CASVersion string
+
+const (
+	CASVersion1 CASVersion = "1.0"
+	CASVersion2 CASVersion = "2.0"
+	CASVersion3 CASVersion = "3.0"
+)
+
 type Client struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Description  string        `json:"description,omitempty"`
-	RedirectURIs []string      `json:"redirect_uris"`
-	LoginMethods []LoginMethod `json:"login_methods"`
-	Enabled      bool          `json:"enabled"`
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description,omitempty"`
+	ApplicationType ApplicationType `json:"application_type"`
+	Protocols       []Protocol      `json:"protocols"`
+	GrantTypes      []GrantType     `json:"grant_types,omitempty"`
+	RedirectURIs    []string        `json:"redirect_uris"`
+	LoginMethods    []LoginMethod   `json:"login_methods"`
+	AllowedScopes   []string        `json:"allowed_scopes"`
+	CASVersion      CASVersion      `json:"cas_version,omitempty"`
+	CASServiceURLs  []string        `json:"cas_service_urls,omitempty"`
+	CASProxy        bool            `json:"cas_proxy"`
+	CASGateway      bool            `json:"cas_gateway"`
+	CASRenew        bool            `json:"cas_renew"`
+	CASSingleLogout bool            `json:"cas_single_logout"`
+	Enabled         bool            `json:"enabled"`
+	SecretHash      []byte          `json:"-"`
+}
+
+type CreateClient struct {
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	ApplicationType ApplicationType `json:"application_type"`
+	Protocols       []Protocol      `json:"protocols"`
+	GrantTypes      []GrantType     `json:"grant_types"`
+	RedirectURIs    []string        `json:"redirect_uris"`
+	LoginMethods    []LoginMethod   `json:"login_methods"`
+	AllowedScopes   []string        `json:"allowed_scopes"`
+	CASVersion      CASVersion      `json:"cas_version"`
+	CASServiceURLs  []string        `json:"cas_service_urls"`
+	CASProxy        bool            `json:"cas_proxy"`
+	CASGateway      bool            `json:"cas_gateway"`
+	CASRenew        bool            `json:"cas_renew"`
+	CASSingleLogout bool            `json:"cas_single_logout"`
+	Enabled         *bool           `json:"enabled"`
 }
 
 func (c Client) AllowsRedirectURI(candidate string) bool {
@@ -37,9 +111,11 @@ func (c Client) AllowsRedirectURI(candidate string) bool {
 type Repository interface {
 	List(context.Context) ([]Client, error)
 	Find(context.Context, string) (Client, error)
+	Create(context.Context, Client) (Client, error)
 }
 
 type MemoryRepository struct {
+	mu      sync.RWMutex
 	clients map[string]Client
 	order   []string
 }
@@ -54,6 +130,8 @@ func NewMemoryRepository(clients ...Client) *MemoryRepository {
 }
 
 func (r *MemoryRepository) List(_ context.Context) ([]Client, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	result := make([]Client, 0, len(r.order))
 	for _, id := range r.order {
 		result = append(result, clone(r.clients[id]))
@@ -62,6 +140,8 @@ func (r *MemoryRepository) List(_ context.Context) ([]Client, error) {
 }
 
 func (r *MemoryRepository) Find(_ context.Context, id string) (Client, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	item, ok := r.clients[id]
 	if !ok {
 		return Client{}, ErrNotFound
@@ -69,8 +149,259 @@ func (r *MemoryRepository) Find(_ context.Context, id string) (Client, error) {
 	return clone(item), nil
 }
 
+func (r *MemoryRepository) Create(_ context.Context, item Client) (Client, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.clients[item.ID]; exists {
+		return Client{}, ErrConflict
+	}
+	r.clients[item.ID] = clone(item)
+	r.order = append(r.order, item.ID)
+	return clone(item), nil
+}
+
 func clone(item Client) Client {
 	item.RedirectURIs = slices.Clone(item.RedirectURIs)
 	item.LoginMethods = slices.Clone(item.LoginMethods)
+	item.AllowedScopes = slices.Clone(item.AllowedScopes)
+	item.Protocols = slices.Clone(item.Protocols)
+	item.GrantTypes = slices.Clone(item.GrantTypes)
+	item.CASServiceURLs = slices.Clone(item.CASServiceURLs)
+	item.SecretHash = slices.Clone(item.SecretHash)
 	return item
+}
+
+var clientIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,62}$`)
+var scopePattern = regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,64}$`)
+
+func New(input CreateClient) (Client, string, error) {
+	item := Client{
+		ID:              strings.ToLower(strings.TrimSpace(input.ID)),
+		Name:            strings.TrimSpace(input.Name),
+		Description:     strings.TrimSpace(input.Description),
+		ApplicationType: input.ApplicationType,
+		Protocols:       uniqueProtocols(input.Protocols),
+		GrantTypes:      uniqueGrantTypes(input.GrantTypes),
+		RedirectURIs:    uniqueStrings(input.RedirectURIs),
+		LoginMethods:    uniqueMethods(input.LoginMethods),
+		AllowedScopes:   uniqueStrings(input.AllowedScopes),
+		CASVersion:      input.CASVersion,
+		CASServiceURLs:  uniqueStrings(input.CASServiceURLs),
+		CASProxy:        input.CASProxy,
+		CASGateway:      input.CASGateway,
+		CASRenew:        input.CASRenew,
+		CASSingleLogout: input.CASSingleLogout,
+		Enabled:         true,
+	}
+	if input.Enabled != nil {
+		item.Enabled = *input.Enabled
+	}
+	if item.ApplicationType == "" {
+		item.ApplicationType = ApplicationPublic
+	}
+	if len(item.Protocols) == 0 {
+		item.Protocols = []Protocol{ProtocolOAuth21}
+	}
+	if item.SupportsOAuth() && len(item.GrantTypes) == 0 {
+		item.GrantTypes = []GrantType{GrantAuthorizationCode, GrantRefreshToken}
+	}
+	if item.SupportsProtocol(ProtocolCAS) && item.CASVersion == "" {
+		item.CASVersion = CASVersion3
+	}
+	if len(item.AllowedScopes) == 0 {
+		item.AllowedScopes = []string{"openid", "profile", "email"}
+	}
+	if err := item.Validate(); err != nil {
+		return Client{}, "", err
+	}
+	if item.ApplicationType == ApplicationPublic {
+		return item, "", nil
+	}
+	secret, hash, err := newSecret()
+	if err != nil {
+		return Client{}, "", fmt.Errorf("generate client secret: %w", err)
+	}
+	item.SecretHash = hash
+	return item, secret, nil
+}
+
+func (c Client) Validate() error {
+	if !clientIDPattern.MatchString(c.ID) {
+		return fmt.Errorf("%w: id must be 2-63 lowercase letters, digits, underscores or hyphens", ErrInvalid)
+	}
+	if c.Name == "" || len([]rune(c.Name)) > 128 {
+		return fmt.Errorf("%w: name must be 1-128 characters", ErrInvalid)
+	}
+	if c.ApplicationType != ApplicationPublic && c.ApplicationType != ApplicationConfidential {
+		return fmt.Errorf("%w: unsupported application_type", ErrInvalid)
+	}
+	if len(c.Protocols) == 0 {
+		return fmt.Errorf("%w: at least one protocol is required", ErrInvalid)
+	}
+	for _, protocol := range c.Protocols {
+		if protocol != ProtocolOAuth20 && protocol != ProtocolOAuth21 && protocol != ProtocolCAS {
+			return fmt.Errorf("%w: unsupported protocol %q", ErrInvalid, protocol)
+		}
+	}
+	if c.SupportsOAuth() {
+		if len(c.GrantTypes) == 0 {
+			return fmt.Errorf("%w: OAuth clients require grant_types", ErrInvalid)
+		}
+		for _, grant := range c.GrantTypes {
+			switch grant {
+			case GrantAuthorizationCode, GrantRefreshToken, GrantClientCredentials, GrantDeviceCode:
+			default:
+				return fmt.Errorf("%w: unsupported or unsafe grant_type %q", ErrInvalid, grant)
+			}
+		}
+		if c.SupportsGrant(GrantClientCredentials) && c.ApplicationType != ApplicationConfidential {
+			return fmt.Errorf("%w: client_credentials requires a confidential client", ErrInvalid)
+		}
+		if c.SupportsGrant(GrantRefreshToken) &&
+			!c.SupportsGrant(GrantAuthorizationCode) &&
+			!c.SupportsGrant(GrantDeviceCode) {
+			return fmt.Errorf("%w: refresh_token requires authorization_code or device_code", ErrInvalid)
+		}
+		if c.SupportsGrant(GrantAuthorizationCode) && len(c.RedirectURIs) == 0 {
+			return fmt.Errorf("%w: authorization_code requires redirect_uris", ErrInvalid)
+		}
+	}
+	if len(c.RedirectURIs) > 20 {
+		return fmt.Errorf("%w: redirect_uris supports at most 20 entries", ErrInvalid)
+	}
+	for _, redirectURI := range c.RedirectURIs {
+		if !validEndpointURL(redirectURI) {
+			return fmt.Errorf("%w: invalid redirect_uri %q", ErrInvalid, redirectURI)
+		}
+	}
+	interactive := c.SupportsProtocol(ProtocolCAS) ||
+		c.SupportsGrant(GrantAuthorizationCode) ||
+		c.SupportsGrant(GrantDeviceCode)
+	if interactive && len(c.LoginMethods) == 0 {
+		return fmt.Errorf("%w: at least one login_method is required", ErrInvalid)
+	}
+	for _, method := range c.LoginMethods {
+		if method != LoginPassword && method != LoginLDAP && method != LoginOIDC {
+			return fmt.Errorf("%w: unsupported login_method %q", ErrInvalid, method)
+		}
+	}
+	if c.SupportsOAuth() && interactive && !slices.Contains(c.AllowedScopes, "openid") {
+		return fmt.Errorf("%w: openid must be an allowed scope", ErrInvalid)
+	}
+	for _, scope := range c.AllowedScopes {
+		if !scopePattern.MatchString(scope) {
+			return fmt.Errorf("%w: invalid scope %q", ErrInvalid, scope)
+		}
+	}
+	if c.SupportsProtocol(ProtocolCAS) {
+		if c.CASVersion != CASVersion1 && c.CASVersion != CASVersion2 && c.CASVersion != CASVersion3 {
+			return fmt.Errorf("%w: unsupported cas_version", ErrInvalid)
+		}
+		if len(c.CASServiceURLs) == 0 || len(c.CASServiceURLs) > 20 {
+			return fmt.Errorf("%w: CAS requires 1-20 cas_service_urls", ErrInvalid)
+		}
+		for _, serviceURL := range c.CASServiceURLs {
+			if !validEndpointURL(serviceURL) {
+				return fmt.Errorf("%w: invalid CAS service URL %q", ErrInvalid, serviceURL)
+			}
+		}
+		if c.CASProxy && c.CASVersion == CASVersion1 {
+			return fmt.Errorf("%w: CAS proxy requires version 2.0 or 3.0", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+func (c Client) SupportsProtocol(protocol Protocol) bool {
+	return slices.Contains(c.Protocols, protocol)
+}
+
+func (c Client) SupportsOAuth() bool {
+	return c.SupportsProtocol(ProtocolOAuth20) || c.SupportsProtocol(ProtocolOAuth21)
+}
+
+func (c Client) SupportsGrant(grant GrantType) bool {
+	return slices.Contains(c.GrantTypes, grant)
+}
+
+func validEndpointURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.Fragment != "" || parsed.User != nil {
+		return false
+	}
+	if parsed.Scheme == "https" {
+		return true
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	hostname := parsed.Hostname()
+	ip := net.ParseIP(hostname)
+	return strings.EqualFold(hostname, "localhost") || (ip != nil && ip.IsLoopback())
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func uniqueMethods(values []LoginMethod) []LoginMethod {
+	result := make([]LoginMethod, 0, len(values))
+	seen := make(map[LoginMethod]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func uniqueProtocols(values []Protocol) []Protocol {
+	result := make([]Protocol, 0, len(values))
+	seen := make(map[Protocol]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func uniqueGrantTypes(values []GrantType) []GrantType {
+	result := make([]GrantType, 0, len(values))
+	seen := make(map[GrantType]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func newSecret() (string, []byte, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", nil, err
+	}
+	secret := base64.RawURLEncoding.EncodeToString(value)
+	hash := sha256.Sum256([]byte(secret))
+	return secret, hash[:], nil
 }

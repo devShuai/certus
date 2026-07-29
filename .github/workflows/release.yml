@@ -1,0 +1,248 @@
+name: Package release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label used in binaries and image tags
+        required: true
+        default: manual
+        type: string
+      publish_image:
+        description: Push the Docker image to GitHub Container Registry
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - release
+
+concurrency:
+  group: certus-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  binaries:
+    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            extension: ""
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            extension: ""
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            extension: .exe
+            archive: zip
+          - goos: windows
+            goarch: arm64
+            extension: .exe
+            archive: zip
+          - goos: darwin
+            goarch: amd64
+            extension: ""
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            extension: ""
+            archive: tar.gz
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Resolve build metadata
+        id: metadata
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${MANUAL_VERSION}"
+          else
+            version="release-${GITHUB_SHA::7}"
+          fi
+          if [[ ! "${version}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]]; then
+            echo "Invalid version: ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          EXTENSION: ${{ matrix.extension }}
+          ARCHIVE: ${{ matrix.archive }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          BUILD_TIME: ${{ steps.metadata.outputs.build_time }}
+        run: |
+          set -euo pipefail
+          package="certus_${VERSION}_${GOOS}_${GOARCH}"
+          mkdir -p "dist/${package}"
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildTime=${BUILD_TIME}" \
+            -o "dist/${package}/certus${EXTENSION}" \
+            ./cmd/certus
+          cp README.md .env.example "dist/${package}/"
+          if [[ "${ARCHIVE}" == "zip" ]]; then
+            (
+              cd dist
+              zip -9 -r "${package}.zip" "${package}"
+            )
+            artifact="dist/${package}.zip"
+          else
+            tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+            artifact="dist/${package}.tar.gz"
+          fi
+          sha256sum "${artifact}" > "${artifact}.sha256"
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v7
+        with:
+          name: certus-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  binary-bundle:
+    name: Bundle binaries
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v7
+        with:
+          pattern: certus-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksum manifest
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.zip *.tar.gz > SHA256SUMS
+
+      - name: Upload binary bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: certus-server-binaries
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
+
+  docker:
+    name: Docker linux-amd64-arm64
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Resolve build metadata
+        id: metadata
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${MANUAL_VERSION}"
+          else
+            version="release-${GITHUB_SHA::7}"
+          fi
+          if [[ ! "${version}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$ ]]; then
+            echo "Invalid version: ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Sign in to GitHub Container Registry
+        if: github.event_name == 'push' || inputs.publish_image
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: image
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.metadata.outputs.image }}
+          tags: |
+            type=raw,value=release,enable=${{ github.ref == 'refs/heads/release' }}
+            type=raw,value=${{ steps.metadata.outputs.version }}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=Certus
+            org.opencontainers.image.description=Unified authentication center
+
+      - name: Build and optionally push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' || inputs.publish_image }}
+          tags: ${{ steps.image.outputs.tags }}
+          labels: ${{ steps.image.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.metadata.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.metadata.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true

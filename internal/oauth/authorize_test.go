@@ -9,9 +9,12 @@ import (
 
 func TestParseAuthorizationRequest(t *testing.T) {
 	registered := client.Client{
-		ID:           "specus",
-		RedirectURIs: []string{"https://specus.example.com/callback"},
-		Enabled:      true,
+		ID:            "specus",
+		Protocols:     []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:    []client.GrantType{client.GrantAuthorizationCode},
+		RedirectURIs:  []string{"https://specus.example.com/callback"},
+		AllowedScopes: []string{"openid", "profile"},
+		Enabled:       true,
 	}
 	values := url.Values{
 		"client_id":             {"specus"},
@@ -34,9 +37,12 @@ func TestParseAuthorizationRequest(t *testing.T) {
 
 func TestParseAuthorizationRequestRejectsUnregisteredRedirect(t *testing.T) {
 	registered := client.Client{
-		ID:           "specus",
-		RedirectURIs: []string{"https://specus.example.com/callback"},
-		Enabled:      true,
+		ID:            "specus",
+		Protocols:     []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:    []client.GrantType{client.GrantAuthorizationCode},
+		RedirectURIs:  []string{"https://specus.example.com/callback"},
+		AllowedScopes: []string{"openid"},
+		Enabled:       true,
 	}
 	values := url.Values{
 		"client_id":             {"specus"},

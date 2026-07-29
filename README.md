@@ -72,6 +72,207 @@ go run ./cmd/certus
 
 迁移文件已嵌入可执行文件，并在 `certus_schema_migrations` 中记录版本与 SHA-256 校验和；已执行的 migration 被修改时，服务会拒绝启动。
 
+## 统一用户管理
+
+用户主档由 Certus 统一维护，业务系统只消费认证结果和用户标识。当前支持：
+
+- 用户名和邮箱唯一性约束
+- 用户名、显示名称和邮箱搜索
+- 分页与状态筛选
+- `active`、`locked`、`disabled` 生命周期状态
+- 更新显示名称、邮箱和状态
+- 内存与 PostgreSQL 两种仓储
+
+管理 API 默认关闭。设置至少 32 个字符的随机 Bearer Token 后启用：
+
+```powershell
+$env:CERTUS_ADMIN_TOKEN='<至少 32 个字符的随机密钥>'
+go run ./cmd/certus
+```
+
+请求通过 `Authorization: Bearer <token>` 鉴权：
+
+```text
+GET  /api/v1/admin/users?q=&status=&limit=20&offset=0
+POST /api/v1/admin/users
+GET  /api/v1/admin/users/{user_id}
+PUT  /api/v1/admin/users/{user_id}
+```
+
+创建用户：
+
+```json
+{
+  "username": "alice",
+  "display_name": "Alice",
+  "email": "alice@example.com",
+  "status": "active"
+}
+```
+
+更新采用完整替换语义，用户名保持不可变；将状态改为 `disabled` 代替物理删除，以保留历史授权与审计引用。
+
+## 配置跳转登录系统
+
+管理员可以登记需要跳转到 Certus 登录的业务系统：
+
+```text
+GET  /admin/clients
+GET  /api/v1/admin/clients
+POST /api/v1/admin/clients
+GET  /api/v1/admin/clients/{client_id}
+GET  /api/v1/admin/clients/{client_id}/integration
+```
+
+`/admin/clients` 提供可直接使用的配置页面。管理员令牌只保存于当前浏览器的 `sessionStorage`，关闭会话后自动清除。
+
+创建配置：
+
+```json
+{
+  "id": "finance",
+  "name": "Finance",
+  "description": "财务系统",
+  "application_type": "confidential",
+  "protocols": [
+    "oauth2.0",
+    "oauth2.1",
+    "cas"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token",
+    "client_credentials"
+  ],
+  "redirect_uris": [
+    "https://finance.example.com/oidc/callback"
+  ],
+  "login_methods": [
+    "password",
+    "ldap"
+  ],
+  "allowed_scopes": [
+    "openid",
+    "profile",
+    "email"
+  ],
+  "cas_version": "3.0",
+  "cas_service_urls": [
+    "https://finance.example.com/login/cas"
+  ],
+  "cas_proxy": true,
+  "cas_gateway": true,
+  "cas_renew": false,
+  "cas_single_logout": true
+}
+```
+
+创建成功后响应会同时给出业务系统所需的接入参数：
+
+```json
+{
+  "integration": {
+    "supported_protocols": [
+      "oauth2.0",
+      "oauth2.1",
+      "cas"
+    ],
+    "issuer": "https://auth.example.com",
+    "discovery_url": "https://auth.example.com/.well-known/openid-configuration",
+    "client_id": "finance",
+    "client_secret": "<仅本次响应显示>",
+    "client_authentication_method": "client_secret_basic",
+    "authorization_endpoint": "https://auth.example.com/oauth2/authorize",
+    "token_endpoint": "https://auth.example.com/oauth2/token",
+    "userinfo_endpoint": "https://auth.example.com/oauth2/userinfo",
+    "jwks_uri": "https://auth.example.com/oauth2/jwks",
+    "redirect_uris": [
+      "https://finance.example.com/oidc/callback"
+    ],
+    "scopes": [
+      "openid",
+      "profile",
+      "email"
+    ],
+    "response_types": [
+      "code"
+    ],
+    "grant_types": [
+      "authorization_code",
+      "refresh_token",
+      "client_credentials"
+    ],
+    "pkce": {
+      "required": true,
+      "challenge_method": "S256"
+    },
+    "cas": {
+      "version": "3.0",
+      "service_urls": [
+        "https://finance.example.com/login/cas"
+      ],
+      "login_url": "https://auth.example.com/cas/login",
+      "logout_url": "https://auth.example.com/cas/logout",
+      "validate_url": "https://auth.example.com/cas/p3/serviceValidate",
+      "proxy_validate_url": "https://auth.example.com/cas/p3/proxyValidate",
+      "proxy_url": "https://auth.example.com/cas/proxy",
+      "gateway": true,
+      "renew": false,
+      "single_logout": true
+    }
+  }
+}
+```
+
+`public` 客户端不生成密钥；`confidential` 客户端的明文密钥只在创建响应中出现一次，Certus 只保存 SHA-256 哈希。非本机回环地址的回调必须使用 HTTPS，回调地址在授权时执行精确匹配。
+
+### 支持方式
+
+- OAuth 2.0：授权码 + PKCE、刷新令牌、客户端凭据、设备码
+- OAuth 2.1：授权码 + PKCE、刷新令牌、客户端凭据、设备码
+- OpenID Connect：通过 `openid` scope 为 OAuth 登录提供用户身份
+- CAS 1.0、2.0、3.0：Service Ticket 校验参数
+- CAS 2.0/3.0：代理认证
+- CAS：Gateway、Renew 和单点登出选项
+
+OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开放 OAuth implicit 和 resource owner password grant；OAuth Security BCP 已明确不应使用这些遗留流程。
+
+## 构建与发布
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) 支持两种触发方式：
+
+- 在 GitHub Actions 页面使用 `workflow_dispatch` 手动执行，可指定版本并选择是否推送镜像。
+- 向 `release` 分支提交代码时自动执行。
+
+每次运行都会先执行测试与静态检查，然后生成以下服务端包：
+
+```text
+Linux   amd64 / arm64
+Windows amd64 / arm64
+macOS   amd64 / arm64
+```
+
+各平台压缩包、独立 SHA-256 文件和总 `SHA256SUMS` 会保存为 GitHub Actions artifacts。二进制支持查看构建信息：
+
+```bash
+certus --version
+```
+
+Docker 使用 [`Dockerfile`](Dockerfile) 构建 `linux/amd64` 和 `linux/arm64` 多架构镜像并推送到：
+
+```text
+ghcr.io/devshuai/certus
+```
+
+`release` 分支构建会产生 `release`、`release-<commit>` 和 `sha-<commit>` 标签；手动构建使用输入的版本标签。镜像以无 root、无 shell 的最小运行环境启动：
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e CERTUS_DATABASE_URL='postgres://certus:password@postgres:5432/certus' \
+  -e CERTUS_ADMIN_TOKEN='<至少 32 个字符的随机密钥>' \
+  ghcr.io/devshuai/certus:release
+```
+
 ## 规划中的模块边界
 
 ```text
@@ -87,4 +288,4 @@ internal/audit             审计事件
 web                        登录页和中间落地页
 ```
 
-建议下一阶段先实现客户端注册、PostgreSQL 数据模型、账号密码登录和带 PKCE 的授权码流程。
+下一阶段继续实现协议执行层：账号登录、授权码和令牌签发、设备码，以及 CAS Service Ticket 与单点登出。

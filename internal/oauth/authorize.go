@@ -22,6 +22,9 @@ func ParseAuthorizationRequest(values url.Values, registered client.Client) (Aut
 	if !registered.Enabled {
 		return AuthorizationRequest{}, errors.New("client is disabled")
 	}
+	if !registered.SupportsOAuth() || !registered.SupportsGrant(client.GrantAuthorizationCode) {
+		return AuthorizationRequest{}, errors.New("authorization_code is not enabled for this client")
+	}
 	if values.Get("client_id") != registered.ID {
 		return AuthorizationRequest{}, errors.New("invalid client_id")
 	}
@@ -46,6 +49,11 @@ func ParseAuthorizationRequest(values url.Values, registered client.Client) (Aut
 	scopes := strings.Fields(values.Get("scope"))
 	if !contains(scopes, "openid") {
 		return AuthorizationRequest{}, errors.New("openid scope is required")
+	}
+	for _, scope := range scopes {
+		if !contains(registered.AllowedScopes, scope) {
+			return AuthorizationRequest{}, errors.New("requested scope is not allowed")
+		}
 	}
 	return AuthorizationRequest{
 		ClientID:            registered.ID,

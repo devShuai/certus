@@ -11,6 +11,7 @@ import (
 
 	"certus/internal/client"
 	"certus/internal/config"
+	"certus/internal/identity"
 	"certus/internal/oauth"
 	"certus/web"
 )
@@ -20,23 +21,32 @@ type server struct {
 	logger    *slog.Logger
 	templates *template.Template
 	clients   client.Repository
+	users     identity.UserRepository
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
 	clients := client.NewMemoryRepository(client.Client{
-		ID:           "specus",
-		Name:         "Specus",
-		Description:  "示例接入系统",
-		RedirectURIs: []string{"http://localhost:3000/callback"},
-		LoginMethods: []client.LoginMethod{client.LoginPassword, client.LoginLDAP},
-		Enabled:      true,
+		ID:              "specus",
+		Name:            "Specus",
+		Description:     "示例接入系统",
+		ApplicationType: client.ApplicationPublic,
+		Protocols:       []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:      []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken},
+		RedirectURIs:    []string{"http://localhost:3000/callback"},
+		LoginMethods:    []client.LoginMethod{client.LoginPassword, client.LoginLDAP},
+		AllowedScopes:   []string{"openid", "profile", "email"},
+		Enabled:         true,
 	})
 	return NewWithClients(cfg, logger, clients)
 }
 
 func NewWithClients(cfg config.Config, logger *slog.Logger, clients client.Repository) http.Handler {
+	return NewWithRepositories(cfg, logger, clients, identity.NewMemoryUserRepository())
+}
+
+func NewWithRepositories(cfg config.Config, logger *slog.Logger, clients client.Repository, users identity.UserRepository) http.Handler {
 	templates := template.Must(template.ParseFS(web.Files, "templates/*.html"))
-	s := &server{cfg: cfg, logger: logger, templates: templates, clients: clients}
+	s := &server{cfg: cfg, logger: logger, templates: templates, clients: clients, users: users}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
@@ -44,8 +54,17 @@ func NewWithClients(cfg config.Config, logger *slog.Logger, clients client.Repos
 	mux.HandleFunc("GET /", s.home)
 	mux.HandleFunc("GET /login", s.login)
 	mux.HandleFunc("GET /portal", s.portal)
+	mux.HandleFunc("GET /admin/clients", s.adminClientsPage)
 	mux.HandleFunc("GET /api/v1/clients", s.listClients)
 	mux.HandleFunc("GET /api/v1/clients/{clientID}", s.getClient)
+	mux.Handle("GET /api/v1/admin/users", s.requireAdmin(http.HandlerFunc(s.listUsers)))
+	mux.Handle("POST /api/v1/admin/users", s.requireAdmin(http.HandlerFunc(s.createUser)))
+	mux.Handle("GET /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.getUser)))
+	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.replaceUser)))
+	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.listAdminClients)))
+	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.createClient)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.getAdminClient)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(http.HandlerFunc(s.getClientIntegration)))
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.discovery)
 
@@ -108,6 +127,10 @@ func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 		Title   string
 		Clients []client.Client
 	}{Title: "Certus 统一认证中心", Clients: clients})
+}
+
+func (s *server) adminClientsPage(w http.ResponseWriter, _ *http.Request) {
+	s.render(w, "admin-clients.html", map[string]string{"Title": "配置接入系统 · Certus"})
 }
 
 func (s *server) listClients(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +207,7 @@ func logging(next http.Handler, logger *slog.Logger) http.Handler {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")

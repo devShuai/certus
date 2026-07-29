@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,84 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 	}
 	if second.RedirectURIs[0] != "https://specus.example.com/callback" || second.LoginMethods[0] != LoginPassword {
 		t.Fatal("repository state was mutated through returned client")
+	}
+}
+
+func TestNewConfidentialClientReturnsSecretOnce(t *testing.T) {
+	item, secret, err := New(CreateClient{
+		ID:              "finance",
+		Name:            "Finance",
+		ApplicationType: ApplicationConfidential,
+		RedirectURIs:    []string{"https://finance.example.com/oidc/callback"},
+		LoginMethods:    []LoginMethod{LoginPassword},
+		AllowedScopes:   []string{"openid", "profile"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secret) < 40 || len(item.SecretHash) != 32 {
+		t.Fatalf("secret was not generated securely: secret=%d hash=%d", len(secret), len(item.SecretHash))
+	}
+	if strings.Contains(string(item.SecretHash), secret) {
+		t.Fatal("raw secret was retained in client")
+	}
+}
+
+func TestNewClientRejectsInsecureRemoteRedirect(t *testing.T) {
+	_, _, err := New(CreateClient{
+		ID:           "finance",
+		Name:         "Finance",
+		RedirectURIs: []string{"http://finance.example.com/callback"},
+		LoginMethods: []LoginMethod{LoginPassword},
+	})
+	if err == nil {
+		t.Fatal("expected insecure redirect URI to be rejected")
+	}
+}
+
+func TestNewClientAllowsLoopbackHTTPForDevelopment(t *testing.T) {
+	_, _, err := New(CreateClient{
+		ID:           "local-app",
+		Name:         "Local App",
+		RedirectURIs: []string{"http://127.0.0.1:3000/callback"},
+		LoginMethods: []LoginMethod{LoginPassword},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublicClientCannotUseClientCredentials(t *testing.T) {
+	_, _, err := New(CreateClient{
+		ID:              "public-api",
+		Name:            "Public API",
+		ApplicationType: ApplicationPublic,
+		Protocols:       []Protocol{ProtocolOAuth20},
+		GrantTypes:      []GrantType{GrantClientCredentials},
+	})
+	if err == nil {
+		t.Fatal("expected client_credentials validation error")
+	}
+}
+
+func TestCASClientSupportsVersionedOptions(t *testing.T) {
+	item, _, err := New(CreateClient{
+		ID:              "legacy-cas",
+		Name:            "Legacy CAS",
+		ApplicationType: ApplicationPublic,
+		Protocols:       []Protocol{ProtocolCAS},
+		LoginMethods:    []LoginMethod{LoginLDAP},
+		CASVersion:      CASVersion3,
+		CASServiceURLs:  []string{"https://legacy.example.com/login/cas"},
+		CASProxy:        true,
+		CASGateway:      true,
+		CASSingleLogout: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !item.SupportsProtocol(ProtocolCAS) || item.CASVersion != CASVersion3 || !item.CASProxy {
+		t.Fatalf("unexpected CAS client: %#v", item)
 	}
 }
 

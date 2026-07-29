@@ -21,7 +21,9 @@ func NewClientRepository(pool *pgxpool.Pool) *ClientRepository {
 
 func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, name, description, enabled
+		SELECT id, name, description, application_type, protocols, grant_types,
+		       allowed_scopes, enabled, client_secret_hash, cas_version,
+		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout
 		FROM oauth_clients
 		ORDER BY name, id`)
 	if err != nil {
@@ -31,9 +33,9 @@ func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 
 	result := make([]client.Client, 0)
 	for rows.Next() {
-		var item client.Client
-		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &item.Enabled); err != nil {
-			return nil, fmt.Errorf("scan client: %w", err)
+		item, err := scanClient(rows)
+		if err != nil {
+			return nil, err
 		}
 		if err := r.loadRelations(ctx, &item); err != nil {
 			return nil, err
@@ -47,12 +49,12 @@ func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 }
 
 func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, error) {
-	var item client.Client
-	err := r.pool.QueryRow(ctx, `
-		SELECT id, name, description, enabled
+	item, err := scanClient(r.pool.QueryRow(ctx, `
+		SELECT id, name, description, application_type, protocols, grant_types,
+		       allowed_scopes, enabled, client_secret_hash, cas_version,
+		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout
 		FROM oauth_clients
-		WHERE id = $1`, id,
-	).Scan(&item.ID, &item.Name, &item.Description, &item.Enabled)
+		WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return client.Client{}, client.ErrNotFound
 	}
@@ -63,6 +65,111 @@ func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, 
 		return client.Client{}, err
 	}
 	return item, nil
+}
+
+func (r *ClientRepository) Create(ctx context.Context, item client.Client) (client.Client, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return client.Client{}, fmt.Errorf("begin client creation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO oauth_clients (
+			id, name, description, application_type, protocols, grant_types,
+			allowed_scopes, enabled, client_secret_hash, cas_version,
+			cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		item.ID,
+		item.Name,
+		item.Description,
+		item.ApplicationType,
+		stringProtocols(item.Protocols),
+		stringGrantTypes(item.GrantTypes),
+		item.AllowedScopes,
+		item.Enabled,
+		nullableBytes(item.SecretHash),
+		item.CASVersion,
+		item.CASServiceURLs,
+		item.CASProxy,
+		item.CASGateway,
+		item.CASRenew,
+		item.CASSingleLogout,
+	)
+	if isUniqueViolation(err) {
+		return client.Client{}, client.ErrConflict
+	}
+	if err != nil {
+		return client.Client{}, fmt.Errorf("insert client: %w", err)
+	}
+	for _, redirectURI := range item.RedirectURIs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2)`, item.ID, redirectURI); err != nil {
+			return client.Client{}, fmt.Errorf("insert redirect URI: %w", err)
+		}
+	}
+	for position, method := range item.LoginMethods {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_login_methods (client_id, method, position)
+			VALUES ($1, $2, $3)`, item.ID, method, position); err != nil {
+			return client.Client{}, fmt.Errorf("insert login method: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return client.Client{}, fmt.Errorf("commit client creation: %w", err)
+	}
+	return item, nil
+}
+
+func scanClient(scanner interface{ Scan(...any) error }) (client.Client, error) {
+	var item client.Client
+	var protocols []string
+	var grants []string
+	err := scanner.Scan(
+		&item.ID,
+		&item.Name,
+		&item.Description,
+		&item.ApplicationType,
+		&protocols,
+		&grants,
+		&item.AllowedScopes,
+		&item.Enabled,
+		&item.SecretHash,
+		&item.CASVersion,
+		&item.CASServiceURLs,
+		&item.CASProxy,
+		&item.CASGateway,
+		&item.CASRenew,
+		&item.CASSingleLogout,
+	)
+	if err != nil {
+		return client.Client{}, fmt.Errorf("scan client: %w", err)
+	}
+	for _, protocol := range protocols {
+		item.Protocols = append(item.Protocols, client.Protocol(protocol))
+	}
+	for _, grant := range grants {
+		item.GrantTypes = append(item.GrantTypes, client.GrantType(grant))
+	}
+	return item, nil
+}
+
+func stringProtocols(values []client.Protocol) []string {
+	result := make([]string, len(values))
+	for i, value := range values {
+		result[i] = string(value)
+	}
+	return result
+}
+
+func stringGrantTypes(values []client.GrantType) []string {
+	result := make([]string, len(values))
+	for i, value := range values {
+		result[i] = string(value)
+	}
+	return result
 }
 
 func (r *ClientRepository) loadRelations(ctx context.Context, item *client.Client) error {
@@ -108,4 +215,11 @@ func (r *ClientRepository) loadRelations(ctx context.Context, item *client.Clien
 		return fmt.Errorf("iterate login methods: %w", err)
 	}
 	return nil
+}
+
+func nullableBytes(value []byte) []byte {
+	if len(value) == 0 {
+		return nil
+	}
+	return value
 }

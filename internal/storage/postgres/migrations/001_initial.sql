@@ -1,5 +1,3 @@
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
 CREATE TABLE oauth_clients (
     id text PRIMARY KEY,
     name text NOT NULL,

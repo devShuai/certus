@@ -31,4 +31,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 			t.Errorf("migration does not create %s", table)
 		}
 	}
+	if strings.Contains(string(content), "CREATE EXTENSION") {
+		t.Fatal("base migration must not require database extension installation privileges")
+	}
 }

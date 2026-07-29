@@ -1,0 +1,15 @@
+.git
+.github
+.agents
+.codex
+.idea
+.cache
+.env
+.env.*
+!.env.example
+bin
+dist
+design
+docs
+*.log
+*.ps1

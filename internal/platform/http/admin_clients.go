@@ -1,0 +1,180 @@
+package httpserver
+
+import (
+	"errors"
+	"net/http"
+
+	"certus/internal/client"
+)
+
+type clientRegistrationResponse struct {
+	Client      client.Client         `json:"client"`
+	Integration integrationParameters `json:"integration"`
+}
+
+type integrationParameters struct {
+	SupportedProtocols          []client.Protocol  `json:"supported_protocols"`
+	Issuer                      string             `json:"issuer,omitempty"`
+	DiscoveryURL                string             `json:"discovery_url,omitempty"`
+	ClientID                    string             `json:"client_id"`
+	ClientSecret                string             `json:"client_secret,omitempty"`
+	ClientAuthenticationMethod  string             `json:"client_authentication_method,omitempty"`
+	AuthorizationEndpoint       string             `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint               string             `json:"token_endpoint,omitempty"`
+	DeviceAuthorizationEndpoint string             `json:"device_authorization_endpoint,omitempty"`
+	UserInfoEndpoint            string             `json:"userinfo_endpoint,omitempty"`
+	JWKSURI                     string             `json:"jwks_uri,omitempty"`
+	RedirectURIs                []string           `json:"redirect_uris,omitempty"`
+	Scopes                      []string           `json:"scopes,omitempty"`
+	ResponseTypes               []string           `json:"response_types,omitempty"`
+	GrantTypes                  []client.GrantType `json:"grant_types,omitempty"`
+	PKCE                        map[string]any     `json:"pkce,omitempty"`
+	CAS                         *casIntegration    `json:"cas,omitempty"`
+}
+
+type casIntegration struct {
+	Version            client.CASVersion `json:"version"`
+	ServiceURLs        []string          `json:"service_urls"`
+	LoginURL           string            `json:"login_url"`
+	LogoutURL          string            `json:"logout_url"`
+	ValidateURL        string            `json:"validate_url"`
+	ServiceValidateURL string            `json:"service_validate_url,omitempty"`
+	ProxyValidateURL   string            `json:"proxy_validate_url,omitempty"`
+	ProxyURL           string            `json:"proxy_url,omitempty"`
+	Gateway            bool              `json:"gateway"`
+	Renew              bool              `json:"renew"`
+	SingleLogout       bool              `json:"single_logout"`
+}
+
+func (s *server) listAdminClients(w http.ResponseWriter, r *http.Request) {
+	items, err := s.clients.List(r.Context())
+	if err != nil {
+		s.logger.Error("list admin clients", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) getAdminClient(w http.ResponseWriter, r *http.Request) {
+	item, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
+	if errors.Is(err, client.ErrNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("find admin client", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, clientRegistrationResponse{
+		Client:      item,
+		Integration: s.integrationParameters(item, ""),
+	})
+}
+
+func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
+	var input client.CreateClient
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, secret, err := client.New(input)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_client", err.Error())
+		return
+	}
+	item, err = s.clients.Create(r.Context(), item)
+	if errors.Is(err, client.ErrConflict) {
+		writeProblem(w, http.StatusConflict, "client_conflict", "client_id 已存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("create client", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建接入系统失败")
+		return
+	}
+	w.Header().Set("Location", "/api/v1/admin/clients/"+item.ID)
+	writeJSON(w, http.StatusCreated, clientRegistrationResponse{
+		Client:      item,
+		Integration: s.integrationParameters(item, secret),
+	})
+}
+
+func (s *server) getClientIntegration(w http.ResponseWriter, r *http.Request) {
+	item, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
+	if errors.Is(err, client.ErrNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("find client integration", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入参数失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.integrationParameters(item, ""))
+}
+
+func (s *server) integrationParameters(item client.Client, secret string) integrationParameters {
+	parameters := integrationParameters{
+		SupportedProtocols: item.Protocols,
+		ClientID:           item.ID,
+		ClientSecret:       secret,
+	}
+	if item.SupportsOAuth() {
+		parameters.Issuer = s.cfg.Issuer
+		parameters.DiscoveryURL = s.cfg.Issuer + "/.well-known/openid-configuration"
+		parameters.AuthorizationEndpoint = s.cfg.Issuer + "/oauth2/authorize"
+		parameters.TokenEndpoint = s.cfg.Issuer + "/oauth2/token"
+		parameters.UserInfoEndpoint = s.cfg.Issuer + "/oauth2/userinfo"
+		parameters.JWKSURI = s.cfg.Issuer + "/oauth2/jwks"
+		parameters.RedirectURIs = item.RedirectURIs
+		parameters.Scopes = item.AllowedScopes
+		parameters.GrantTypes = item.GrantTypes
+		parameters.ClientAuthenticationMethod = "none"
+		if item.ApplicationType == client.ApplicationConfidential {
+			parameters.ClientAuthenticationMethod = "client_secret_basic"
+		}
+		if item.SupportsGrant(client.GrantAuthorizationCode) {
+			parameters.ResponseTypes = []string{"code"}
+			parameters.PKCE = map[string]any{
+				"required":         true,
+				"challenge_method": "S256",
+			}
+		}
+		if item.SupportsGrant(client.GrantDeviceCode) {
+			parameters.DeviceAuthorizationEndpoint = s.cfg.Issuer + "/oauth2/device_authorization"
+		}
+	}
+	if item.SupportsProtocol(client.ProtocolCAS) {
+		cas := &casIntegration{
+			Version:      item.CASVersion,
+			ServiceURLs:  item.CASServiceURLs,
+			LoginURL:     s.cfg.Issuer + "/cas/login",
+			LogoutURL:    s.cfg.Issuer + "/cas/logout",
+			Gateway:      item.CASGateway,
+			Renew:        item.CASRenew,
+			SingleLogout: item.CASSingleLogout,
+		}
+		switch item.CASVersion {
+		case client.CASVersion1:
+			cas.ValidateURL = s.cfg.Issuer + "/cas/validate"
+		case client.CASVersion2:
+			cas.ValidateURL = s.cfg.Issuer + "/cas/serviceValidate"
+			cas.ServiceValidateURL = cas.ValidateURL
+			if item.CASProxy {
+				cas.ProxyValidateURL = s.cfg.Issuer + "/cas/proxyValidate"
+				cas.ProxyURL = s.cfg.Issuer + "/cas/proxy"
+			}
+		case client.CASVersion3:
+			cas.ValidateURL = s.cfg.Issuer + "/cas/p3/serviceValidate"
+			cas.ServiceValidateURL = cas.ValidateURL
+			if item.CASProxy {
+				cas.ProxyValidateURL = s.cfg.Issuer + "/cas/p3/proxyValidate"
+				cas.ProxyURL = s.cfg.Issuer + "/cas/proxy"
+			}
+		}
+		parameters.CAS = cas
+	}
+	return parameters
+}
