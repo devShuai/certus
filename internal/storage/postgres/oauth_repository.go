@@ -1,0 +1,366 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"certus/internal/oauth"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type OAuthRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewOAuthRepository(pool *pgxpool.Pool) *OAuthRepository {
+	return &OAuthRepository{pool: pool}
+}
+
+func (r *OAuthRepository) SaveAuthorizationCode(ctx context.Context, value oauth.AuthorizationCode) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO oauth_authorization_codes (
+			code_hash, client_id, user_id, session_id, redirect_uri, scope, nonce,
+			code_challenge, code_challenge_method, authenticated_at, created_at, expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'S256', $9, $10, $11)`,
+		value.Hash, value.ClientID, value.UserID, value.SessionID, value.RedirectURI, value.Scope,
+		value.Nonce, value.CodeChallenge, value.AuthenticatedAt, value.CreatedAt, value.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert authorization code: %w", err)
+	}
+	return nil
+}
+
+func (r *OAuthRepository) ConsumeAuthorizationCode(ctx context.Context, hash []byte, clientID, redirectURI, codeChallenge string, now time.Time) (oauth.AuthorizationCode, error) {
+	var value oauth.AuthorizationCode
+	err := r.pool.QueryRow(ctx, `
+		UPDATE oauth_authorization_codes
+		SET consumed_at = $2
+		WHERE code_hash = $1
+		  AND client_id = $3
+		  AND redirect_uri = $4
+		  AND code_challenge = $5
+		  AND consumed_at IS NULL
+		  AND expires_at > $2
+		RETURNING code_hash, client_id, user_id::text, session_id::text, redirect_uri, scope, nonce,
+		          code_challenge, authenticated_at, created_at, expires_at`,
+		hash, now, clientID, redirectURI, codeChallenge,
+	).Scan(
+		&value.Hash, &value.ClientID, &value.UserID, &value.SessionID, &value.RedirectURI,
+		&value.Scope, &value.Nonce, &value.CodeChallenge, &value.AuthenticatedAt,
+		&value.CreatedAt, &value.ExpiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oauth.AuthorizationCode{}, oauth.ErrGrantNotFound
+	}
+	if err != nil {
+		return oauth.AuthorizationCode{}, fmt.Errorf("consume authorization code: %w", err)
+	}
+	return value, nil
+}
+
+func (r *OAuthRepository) SaveAccessToken(ctx context.Context, value oauth.AccessToken) error {
+	var userID any
+	if value.UserID != "" {
+		userID = value.UserID
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO oauth_access_tokens (token_hash, client_id, user_id, scope, issued_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		value.Hash, value.ClientID, userID, value.Scope, value.IssuedAt, value.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert access token: %w", err)
+	}
+	return nil
+}
+
+func (r *OAuthRepository) FindAccessToken(ctx context.Context, hash []byte, now time.Time) (oauth.AccessToken, error) {
+	var value oauth.AccessToken
+	var userID pgtype.Text
+	err := r.pool.QueryRow(ctx, `
+		SELECT token_hash, client_id, user_id::text, scope, issued_at, expires_at
+		FROM oauth_access_tokens
+		WHERE token_hash = $1
+		  AND revoked_at IS NULL
+		  AND expires_at > $2`,
+		hash, now,
+	).Scan(&value.Hash, &value.ClientID, &userID, &value.Scope, &value.IssuedAt, &value.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oauth.AccessToken{}, oauth.ErrGrantNotFound
+	}
+	if err != nil {
+		return oauth.AccessToken{}, fmt.Errorf("find access token: %w", err)
+	}
+	if userID.Valid {
+		value.UserID = userID.String
+	}
+	return value, nil
+}
+
+func (r *OAuthRepository) SaveRefreshToken(ctx context.Context, value oauth.RefreshToken) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO oauth_refresh_tokens (
+			token_hash, family_id, client_id, user_id, scope, issued_at, expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		value.Hash, value.FamilyID, value.ClientID, value.UserID, value.Scope, value.IssuedAt, value.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert refresh token: %w", err)
+	}
+	return nil
+}
+
+func (r *OAuthRepository) RotateRefreshToken(ctx context.Context, hash []byte, replacement oauth.RefreshToken, now time.Time) (oauth.RefreshToken, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return oauth.RefreshToken{}, fmt.Errorf("begin refresh rotation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var current oauth.RefreshToken
+	var consumedAt pgtype.Timestamptz
+	var revokedAt pgtype.Timestamptz
+	err = tx.QueryRow(ctx, `
+		SELECT token_hash, family_id::text, client_id, user_id::text, scope, issued_at, expires_at,
+		       consumed_at, revoked_at
+		FROM oauth_refresh_tokens
+		WHERE token_hash = $1
+		FOR UPDATE`,
+		hash,
+	).Scan(
+		&current.Hash, &current.FamilyID, &current.ClientID, &current.UserID, &current.Scope,
+		&current.IssuedAt, &current.ExpiresAt, &consumedAt, &revokedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oauth.RefreshToken{}, oauth.ErrGrantNotFound
+	}
+	if err != nil {
+		return oauth.RefreshToken{}, fmt.Errorf("lock refresh token: %w", err)
+	}
+	if current.ClientID != replacement.ClientID {
+		return oauth.RefreshToken{}, oauth.ErrGrantNotFound
+	}
+	if consumedAt.Valid || revokedAt.Valid {
+		if _, err := tx.Exec(ctx, `
+			UPDATE oauth_refresh_tokens
+			SET revoked_at = coalesce(revoked_at, $2)
+			WHERE family_id = $1`,
+			current.FamilyID, now,
+		); err != nil {
+			return oauth.RefreshToken{}, fmt.Errorf("revoke refresh family: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return oauth.RefreshToken{}, fmt.Errorf("commit refresh reuse handling: %w", err)
+		}
+		return oauth.RefreshToken{}, oauth.ErrRefreshReuse
+	}
+	if !current.ExpiresAt.After(now) {
+		return oauth.RefreshToken{}, oauth.ErrGrantExpired
+	}
+	replacement.FamilyID = current.FamilyID
+	replacement.UserID = current.UserID
+	replacement.Scope = append([]string(nil), current.Scope...)
+	command, err := tx.Exec(ctx, `
+		UPDATE oauth_refresh_tokens
+		SET consumed_at = $2, replaced_by_hash = $3
+		WHERE token_hash = $1`,
+		hash, now, replacement.Hash,
+	)
+	if err != nil || command.RowsAffected() != 1 {
+		if err != nil {
+			return oauth.RefreshToken{}, fmt.Errorf("consume refresh token: %w", err)
+		}
+		return oauth.RefreshToken{}, errors.New("consume refresh token: no row updated")
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO oauth_refresh_tokens (
+			token_hash, family_id, client_id, user_id, scope, issued_at, expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		replacement.Hash, replacement.FamilyID, replacement.ClientID, replacement.UserID,
+		replacement.Scope, replacement.IssuedAt, replacement.ExpiresAt,
+	)
+	if err != nil {
+		return oauth.RefreshToken{}, fmt.Errorf("insert replacement refresh token: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return oauth.RefreshToken{}, fmt.Errorf("commit refresh rotation: %w", err)
+	}
+	return current, nil
+}
+
+func (r *OAuthRepository) SaveDeviceAuthorization(ctx context.Context, value oauth.DeviceAuthorization) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO oauth_device_authorizations (
+			device_code_hash, user_code_hash, client_id, scope, status,
+			created_at, expires_at, interval_seconds
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		value.DeviceHash, value.UserHash, value.ClientID, value.Scope, value.Status,
+		value.CreatedAt, value.ExpiresAt, int(value.Interval/time.Second),
+	)
+	if err != nil {
+		return fmt.Errorf("insert device authorization: %w", err)
+	}
+	return nil
+}
+
+func (r *OAuthRepository) FindDeviceByUserCode(ctx context.Context, hash []byte, now time.Time) (oauth.DeviceAuthorization, error) {
+	value, err := scanDevice(r.pool.QueryRow(ctx, `
+		SELECT device_code_hash, user_code_hash, client_id, user_id::text, scope, status,
+		       authenticated_at, created_at, expires_at, interval_seconds, last_poll_at
+		FROM oauth_device_authorizations
+		WHERE user_code_hash = $1
+		  AND status = 'pending'
+		  AND expires_at > $2`,
+		hash, now,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oauth.DeviceAuthorization{}, oauth.ErrGrantNotFound
+	}
+	if err != nil {
+		return oauth.DeviceAuthorization{}, fmt.Errorf("find device by user code: %w", err)
+	}
+	return value, nil
+}
+
+func (r *OAuthRepository) DecideDeviceAuthorization(ctx context.Context, userHash []byte, userID string, authenticatedAt time.Time, approve bool, now time.Time) error {
+	status := oauth.DeviceDenied
+	if approve {
+		status = oauth.DeviceApproved
+	}
+	command, err := r.pool.Exec(ctx, `
+		UPDATE oauth_device_authorizations
+		SET user_id = $2, authenticated_at = $3, status = $4, decided_at = $5
+		WHERE user_code_hash = $1
+		  AND status = 'pending'
+		  AND expires_at > $5`,
+		userHash, userID, authenticatedAt, status, now,
+	)
+	if err != nil {
+		return fmt.Errorf("decide device authorization: %w", err)
+	}
+	if command.RowsAffected() != 1 {
+		return oauth.ErrGrantNotFound
+	}
+	return nil
+}
+
+func (r *OAuthRepository) PollDeviceAuthorization(ctx context.Context, deviceHash []byte, clientID string, now time.Time) (oauth.DeviceAuthorization, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return oauth.DeviceAuthorization{}, fmt.Errorf("begin device poll: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	value, err := scanDevice(tx.QueryRow(ctx, `
+		SELECT device_code_hash, user_code_hash, client_id, user_id::text, scope, status,
+		       authenticated_at, created_at, expires_at, interval_seconds, last_poll_at
+		FROM oauth_device_authorizations
+		WHERE device_code_hash = $1 AND client_id = $2
+		FOR UPDATE`,
+		deviceHash, clientID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oauth.DeviceAuthorization{}, oauth.ErrGrantNotFound
+	}
+	if err != nil {
+		return oauth.DeviceAuthorization{}, fmt.Errorf("lock device authorization: %w", err)
+	}
+	if !value.ExpiresAt.After(now) {
+		return oauth.DeviceAuthorization{}, oauth.ErrGrantExpired
+	}
+	if value.LastPollAt != nil && now.Before(value.LastPollAt.Add(value.Interval)) {
+		value.Interval += 5 * time.Second
+		_, err := tx.Exec(ctx, `
+			UPDATE oauth_device_authorizations
+			SET interval_seconds = $2, last_poll_at = $3
+			WHERE device_code_hash = $1`,
+			deviceHash, int(value.Interval/time.Second), now,
+		)
+		if err != nil {
+			return oauth.DeviceAuthorization{}, fmt.Errorf("slow device poll: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return oauth.DeviceAuthorization{}, err
+		}
+		return oauth.DeviceAuthorization{}, oauth.ErrSlowDown
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE oauth_device_authorizations
+		SET last_poll_at = $2
+		WHERE device_code_hash = $1`,
+		deviceHash, now,
+	)
+	if err != nil {
+		return oauth.DeviceAuthorization{}, fmt.Errorf("record device poll: %w", err)
+	}
+	switch value.Status {
+	case oauth.DevicePending:
+		if err := tx.Commit(ctx); err != nil {
+			return oauth.DeviceAuthorization{}, err
+		}
+		return oauth.DeviceAuthorization{}, oauth.ErrAuthorizationPending
+	case oauth.DeviceDenied:
+		if err := tx.Commit(ctx); err != nil {
+			return oauth.DeviceAuthorization{}, err
+		}
+		return oauth.DeviceAuthorization{}, oauth.ErrAccessDenied
+	case oauth.DeviceConsumed:
+		return oauth.DeviceAuthorization{}, oauth.ErrGrantConsumed
+	case oauth.DeviceApproved:
+		_, err := tx.Exec(ctx, `
+			UPDATE oauth_device_authorizations
+			SET status = 'consumed', consumed_at = $2
+			WHERE device_code_hash = $1`,
+			deviceHash, now,
+		)
+		if err != nil {
+			return oauth.DeviceAuthorization{}, fmt.Errorf("consume device authorization: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return oauth.DeviceAuthorization{}, err
+		}
+		return value, nil
+	default:
+		return oauth.DeviceAuthorization{}, oauth.ErrGrantNotFound
+	}
+}
+
+type deviceScanner interface {
+	Scan(...any) error
+}
+
+func scanDevice(scanner deviceScanner) (oauth.DeviceAuthorization, error) {
+	var value oauth.DeviceAuthorization
+	var userID pgtype.Text
+	var intervalSeconds int
+	var authenticatedAt pgtype.Timestamptz
+	var lastPoll pgtype.Timestamptz
+	err := scanner.Scan(
+		&value.DeviceHash, &value.UserHash, &value.ClientID, &userID, &value.Scope,
+		&value.Status, &authenticatedAt, &value.CreatedAt, &value.ExpiresAt, &intervalSeconds, &lastPoll,
+	)
+	if err != nil {
+		return oauth.DeviceAuthorization{}, err
+	}
+	if userID.Valid {
+		value.UserID = userID.String
+	}
+	if authenticatedAt.Valid {
+		value.AuthenticatedAt = authenticatedAt.Time
+	}
+	value.Interval = time.Duration(intervalSeconds) * time.Second
+	if lastPoll.Valid {
+		value.LastPollAt = &lastPoll.Time
+	}
+	return value, nil
+}

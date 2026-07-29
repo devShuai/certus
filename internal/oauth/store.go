@@ -1,0 +1,300 @@
+package oauth
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"sync"
+	"time"
+)
+
+var (
+	ErrGrantNotFound        = errors.New("grant not found")
+	ErrGrantExpired         = errors.New("grant expired")
+	ErrGrantConsumed        = errors.New("grant consumed")
+	ErrRefreshReuse         = errors.New("refresh token reuse detected")
+	ErrAuthorizationPending = errors.New("authorization pending")
+	ErrSlowDown             = errors.New("slow down")
+	ErrAccessDenied         = errors.New("access denied")
+)
+
+type AuthorizationCode struct {
+	Hash            []byte
+	ClientID        string
+	UserID          string
+	SessionID       string
+	RedirectURI     string
+	Scope           []string
+	Nonce           string
+	CodeChallenge   string
+	AuthenticatedAt time.Time
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+}
+
+type AccessToken struct {
+	Hash      []byte
+	ClientID  string
+	UserID    string
+	Scope     []string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
+}
+
+type RefreshToken struct {
+	Hash      []byte
+	FamilyID  string
+	ClientID  string
+	UserID    string
+	Scope     []string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
+}
+
+type DeviceStatus string
+
+const (
+	DevicePending  DeviceStatus = "pending"
+	DeviceApproved DeviceStatus = "approved"
+	DeviceDenied   DeviceStatus = "denied"
+	DeviceConsumed DeviceStatus = "consumed"
+)
+
+type DeviceAuthorization struct {
+	DeviceHash      []byte
+	UserHash        []byte
+	ClientID        string
+	UserID          string
+	Scope           []string
+	Status          DeviceStatus
+	AuthenticatedAt time.Time
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	Interval        time.Duration
+	LastPollAt      *time.Time
+}
+
+type Repository interface {
+	SaveAuthorizationCode(context.Context, AuthorizationCode) error
+	ConsumeAuthorizationCode(context.Context, []byte, string, string, string, time.Time) (AuthorizationCode, error)
+	SaveAccessToken(context.Context, AccessToken) error
+	FindAccessToken(context.Context, []byte, time.Time) (AccessToken, error)
+	SaveRefreshToken(context.Context, RefreshToken) error
+	RotateRefreshToken(context.Context, []byte, RefreshToken, time.Time) (RefreshToken, error)
+	SaveDeviceAuthorization(context.Context, DeviceAuthorization) error
+	FindDeviceByUserCode(context.Context, []byte, time.Time) (DeviceAuthorization, error)
+	DecideDeviceAuthorization(context.Context, []byte, string, time.Time, bool, time.Time) error
+	PollDeviceAuthorization(context.Context, []byte, string, time.Time) (DeviceAuthorization, error)
+}
+
+type memoryAuthorizationCode struct {
+	AuthorizationCode
+	consumedAt *time.Time
+}
+
+type memoryRefreshToken struct {
+	RefreshToken
+	consumedAt *time.Time
+	revokedAt  *time.Time
+}
+
+type MemoryRepository struct {
+	mu           sync.Mutex
+	codes        []memoryAuthorizationCode
+	accessTokens []AccessToken
+	refresh      []memoryRefreshToken
+	devices      []DeviceAuthorization
+}
+
+func NewMemoryRepository() *MemoryRepository {
+	return &MemoryRepository{}
+}
+
+func (r *MemoryRepository) SaveAuthorizationCode(_ context.Context, value AuthorizationCode) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value.Hash = cloneBytes(value.Hash)
+	value.Scope = append([]string(nil), value.Scope...)
+	r.codes = append(r.codes, memoryAuthorizationCode{AuthorizationCode: value})
+	return nil
+}
+
+func (r *MemoryRepository) ConsumeAuthorizationCode(_ context.Context, hash []byte, clientID, redirectURI, codeChallenge string, now time.Time) (AuthorizationCode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.codes {
+		record := &r.codes[index]
+		if !bytes.Equal(record.Hash, hash) {
+			continue
+		}
+		if record.ClientID != clientID || record.RedirectURI != redirectURI || record.CodeChallenge != codeChallenge {
+			return AuthorizationCode{}, ErrGrantNotFound
+		}
+		if record.consumedAt != nil {
+			return AuthorizationCode{}, ErrGrantConsumed
+		}
+		if !record.ExpiresAt.After(now) {
+			return AuthorizationCode{}, ErrGrantExpired
+		}
+		record.consumedAt = &now
+		return cloneAuthorizationCode(record.AuthorizationCode), nil
+	}
+	return AuthorizationCode{}, ErrGrantNotFound
+}
+
+func (r *MemoryRepository) SaveAccessToken(_ context.Context, value AccessToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value.Hash = cloneBytes(value.Hash)
+	value.Scope = append([]string(nil), value.Scope...)
+	r.accessTokens = append(r.accessTokens, value)
+	return nil
+}
+
+func (r *MemoryRepository) FindAccessToken(_ context.Context, hash []byte, now time.Time) (AccessToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, value := range r.accessTokens {
+		if bytes.Equal(value.Hash, hash) && value.ExpiresAt.After(now) {
+			value.Hash = cloneBytes(value.Hash)
+			value.Scope = append([]string(nil), value.Scope...)
+			return value, nil
+		}
+	}
+	return AccessToken{}, ErrGrantNotFound
+}
+
+func (r *MemoryRepository) SaveRefreshToken(_ context.Context, value RefreshToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value.Hash = cloneBytes(value.Hash)
+	value.Scope = append([]string(nil), value.Scope...)
+	r.refresh = append(r.refresh, memoryRefreshToken{RefreshToken: value})
+	return nil
+}
+
+func (r *MemoryRepository) RotateRefreshToken(_ context.Context, hash []byte, replacement RefreshToken, now time.Time) (RefreshToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.refresh {
+		record := &r.refresh[index]
+		if !bytes.Equal(record.Hash, hash) {
+			continue
+		}
+		if record.ClientID != replacement.ClientID {
+			return RefreshToken{}, ErrGrantNotFound
+		}
+		if record.revokedAt != nil || record.consumedAt != nil {
+			for familyIndex := range r.refresh {
+				if r.refresh[familyIndex].FamilyID == record.FamilyID {
+					value := now
+					r.refresh[familyIndex].revokedAt = &value
+				}
+			}
+			return RefreshToken{}, ErrRefreshReuse
+		}
+		if !record.ExpiresAt.After(now) {
+			return RefreshToken{}, ErrGrantExpired
+		}
+		record.consumedAt = &now
+		replacement.FamilyID = record.FamilyID
+		replacement.UserID = record.UserID
+		replacement.Scope = append([]string(nil), record.Scope...)
+		replacement.Hash = cloneBytes(replacement.Hash)
+		r.refresh = append(r.refresh, memoryRefreshToken{RefreshToken: replacement})
+		value := record.RefreshToken
+		value.Hash = cloneBytes(value.Hash)
+		value.Scope = append([]string(nil), value.Scope...)
+		return value, nil
+	}
+	return RefreshToken{}, ErrGrantNotFound
+}
+
+func (r *MemoryRepository) SaveDeviceAuthorization(_ context.Context, value DeviceAuthorization) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value.DeviceHash = cloneBytes(value.DeviceHash)
+	value.UserHash = cloneBytes(value.UserHash)
+	value.Scope = append([]string(nil), value.Scope...)
+	r.devices = append(r.devices, value)
+	return nil
+}
+
+func (r *MemoryRepository) FindDeviceByUserCode(_ context.Context, hash []byte, now time.Time) (DeviceAuthorization, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, value := range r.devices {
+		if bytes.Equal(value.UserHash, hash) && value.ExpiresAt.After(now) && value.Status == DevicePending {
+			return cloneDevice(value), nil
+		}
+	}
+	return DeviceAuthorization{}, ErrGrantNotFound
+}
+
+func (r *MemoryRepository) DecideDeviceAuthorization(_ context.Context, userHash []byte, userID string, authenticatedAt time.Time, approve bool, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.devices {
+		value := &r.devices[index]
+		if bytes.Equal(value.UserHash, userHash) && value.ExpiresAt.After(now) && value.Status == DevicePending {
+			value.UserID = userID
+			value.AuthenticatedAt = authenticatedAt
+			if approve {
+				value.Status = DeviceApproved
+			} else {
+				value.Status = DeviceDenied
+			}
+			return nil
+		}
+	}
+	return ErrGrantNotFound
+}
+
+func (r *MemoryRepository) PollDeviceAuthorization(_ context.Context, deviceHash []byte, clientID string, now time.Time) (DeviceAuthorization, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.devices {
+		value := &r.devices[index]
+		if !bytes.Equal(value.DeviceHash, deviceHash) || value.ClientID != clientID {
+			continue
+		}
+		if !value.ExpiresAt.After(now) {
+			return DeviceAuthorization{}, ErrGrantExpired
+		}
+		if value.LastPollAt != nil && now.Before(value.LastPollAt.Add(value.Interval)) {
+			value.Interval += 5 * time.Second
+			value.LastPollAt = &now
+			return DeviceAuthorization{}, ErrSlowDown
+		}
+		value.LastPollAt = &now
+		switch value.Status {
+		case DevicePending:
+			return DeviceAuthorization{}, ErrAuthorizationPending
+		case DeviceDenied:
+			return DeviceAuthorization{}, ErrAccessDenied
+		case DeviceConsumed:
+			return DeviceAuthorization{}, ErrGrantConsumed
+		case DeviceApproved:
+			value.Status = DeviceConsumed
+			return cloneDevice(*value), nil
+		}
+	}
+	return DeviceAuthorization{}, ErrGrantNotFound
+}
+
+func cloneBytes(value []byte) []byte {
+	return append([]byte(nil), value...)
+}
+
+func cloneAuthorizationCode(value AuthorizationCode) AuthorizationCode {
+	value.Hash = cloneBytes(value.Hash)
+	value.Scope = append([]string(nil), value.Scope...)
+	return value
+}
+
+func cloneDevice(value DeviceAuthorization) DeviceAuthorization {
+	value.DeviceHash = cloneBytes(value.DeviceHash)
+	value.UserHash = cloneBytes(value.UserHash)
+	value.Scope = append([]string(nil), value.Scope...)
+	return value
+}

@@ -285,9 +285,6 @@ func (c Client) Validate() error {
 			return fmt.Errorf("%w: unsupported login_method %q", ErrInvalid, method)
 		}
 	}
-	if c.SupportsOAuth() && interactive && !slices.Contains(c.AllowedScopes, "openid") {
-		return fmt.Errorf("%w: openid must be an allowed scope", ErrInvalid)
-	}
 	for _, scope := range c.AllowedScopes {
 		if !scopePattern.MatchString(scope) {
 			return fmt.Errorf("%w: invalid scope %q", ErrInvalid, scope)

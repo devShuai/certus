@@ -10,10 +10,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"certus/internal/cas"
 	"certus/internal/client"
 	"certus/internal/config"
 	"certus/internal/identity"
+	"certus/internal/oauth"
+	"certus/internal/oidc"
 	httpserver "certus/internal/platform/http"
+	"certus/internal/session"
 	"certus/internal/storage/postgres"
 )
 
@@ -41,6 +45,11 @@ func main() {
 
 	var clients client.Repository = defaultClients()
 	var users identity.UserRepository = identity.NewMemoryUserRepository()
+	var passwords identity.PasswordRepository = users.(identity.PasswordRepository)
+	var sessions session.Repository = session.NewMemoryRepository()
+	var oauthRepository oauth.Repository = oauth.NewMemoryRepository()
+	var casRepository cas.Repository = cas.NewMemoryRepository()
+	var keys oidc.KeyRepository = &oidc.MemoryKeyRepository{}
 	if cfg.DatabaseURL != "" {
 		pool, err := postgres.Open(ctx, cfg.DatabaseURL)
 		if err != nil {
@@ -53,15 +62,34 @@ func main() {
 			os.Exit(1)
 		}
 		clients = postgres.NewClientRepository(pool)
-		users = postgres.NewUserRepository(pool)
+		userRepository := postgres.NewUserRepository(pool)
+		users = userRepository
+		passwords = userRepository
+		sessions = postgres.NewSessionRepository(pool)
+		oauthRepository = postgres.NewOAuthRepository(pool)
+		casRepository = postgres.NewCASRepository(pool)
+		keys = postgres.NewOIDCKeyRepository(pool)
 		logger.Info("postgres storage enabled")
 	} else {
 		logger.Warn("in-memory storage enabled; data will not persist")
 	}
 
+	handler, err := httpserver.NewWithDependencies(ctx, cfg, logger, httpserver.Dependencies{
+		Clients:   clients,
+		Users:     users,
+		Passwords: passwords,
+		Sessions:  sessions,
+		OAuth:     oauthRepository,
+		CAS:       casRepository,
+		Keys:      keys,
+	})
+	if err != nil {
+		logger.Error("initialize protocol execution", "error", err)
+		os.Exit(1)
+	}
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           httpserver.NewWithRepositories(cfg, logger, clients, users),
+		Handler:           handler,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 	}

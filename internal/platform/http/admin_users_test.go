@@ -61,6 +61,17 @@ func TestAdminUserLifecycle(t *testing.T) {
 
 	location := created.Header().Get("Location")
 	userID := location[strings.LastIndex(location, "/")+1:]
+	setPassword := httptest.NewRequest(http.MethodPut, location+"/password", bytes.NewBufferString(
+		`{"password":"correct horse battery staple"}`,
+	))
+	setPassword.Header.Set("Content-Type", "application/json")
+	setPassword.Header.Set("Authorization", "Bearer test-admin-token")
+	passwordSet := httptest.NewRecorder()
+	handler.ServeHTTP(passwordSet, setPassword)
+	if passwordSet.Code != http.StatusNoContent {
+		t.Fatalf("unexpected password response: %d %s", passwordSet.Code, passwordSet.Body.String())
+	}
+
 	replace := httptest.NewRequest(http.MethodPut, location, bytes.NewBufferString(
 		`{"display_name":"Alice Chen","email":null,"status":"disabled"}`,
 	))

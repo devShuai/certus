@@ -35,3 +35,24 @@ func TestEmbeddedMigrations(t *testing.T) {
 		t.Fatal("base migration must not require database extension installation privileges")
 	}
 }
+
+func TestProtocolExecutionMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/005_protocol_execution.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"oauth_access_tokens",
+		"oauth_device_authorizations",
+		"cas_service_tickets",
+		"cas_service_sessions",
+		"oidc_signing_keys",
+	} {
+		if !strings.Contains(string(content), "CREATE TABLE "+table) {
+			t.Errorf("protocol migration does not create %s", table)
+		}
+	}
+	if strings.Contains(string(content), "CREATE EXTENSION") {
+		t.Fatal("protocol migration must not require extension installation privileges")
+	}
+}

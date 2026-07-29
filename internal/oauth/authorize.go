@@ -3,9 +3,15 @@ package oauth
 import (
 	"errors"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"certus/internal/client"
+)
+
+var (
+	codeChallengePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43,128}$`)
+	codeVerifierPattern  = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
 )
 
 type AuthorizationRequest struct {
@@ -39,7 +45,7 @@ func ParseAuthorizationRequest(values url.Values, registered client.Client) (Aut
 		return AuthorizationRequest{}, errors.New("code_challenge_method must be S256")
 	}
 	challenge := values.Get("code_challenge")
-	if len(challenge) < 43 || len(challenge) > 128 {
+	if !codeChallengePattern.MatchString(challenge) {
 		return AuthorizationRequest{}, errors.New("invalid code_challenge")
 	}
 	state := values.Get("state")
@@ -47,9 +53,6 @@ func ParseAuthorizationRequest(values url.Values, registered client.Client) (Aut
 		return AuthorizationRequest{}, errors.New("state is required")
 	}
 	scopes := strings.Fields(values.Get("scope"))
-	if !contains(scopes, "openid") {
-		return AuthorizationRequest{}, errors.New("openid scope is required")
-	}
 	for _, scope := range scopes {
 		if !contains(registered.AllowedScopes, scope) {
 			return AuthorizationRequest{}, errors.New("requested scope is not allowed")
@@ -64,6 +67,10 @@ func ParseAuthorizationRequest(values url.Values, registered client.Client) (Aut
 		CodeChallenge:       challenge,
 		CodeChallengeMethod: "S256",
 	}, nil
+}
+
+func ValidCodeVerifier(value string) bool {
+	return codeVerifierPattern.MatchString(value)
 }
 
 func contains(values []string, expected string) bool {

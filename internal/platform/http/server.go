@@ -1,27 +1,40 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
 	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/url"
+	"sync"
 	"time"
 
+	"certus/internal/cas"
 	"certus/internal/client"
 	"certus/internal/config"
 	"certus/internal/identity"
 	"certus/internal/oauth"
+	"certus/internal/oidc"
+	"certus/internal/session"
 	"certus/web"
 )
 
 type server struct {
-	cfg       config.Config
-	logger    *slog.Logger
-	templates *template.Template
-	clients   client.Repository
-	users     identity.UserRepository
+	cfg              config.Config
+	logger           *slog.Logger
+	templates        *template.Template
+	clients          client.Repository
+	users            identity.UserRepository
+	passwords        *identity.PasswordService
+	sessions         *session.Service
+	oauth            oauth.Repository
+	cas              cas.Repository
+	signer           *oidc.Signer
+	outbound         *http.Client
+	now              func() time.Time
+	deviceAttemptsMu sync.Mutex
+	deviceAttempts   map[string]deviceAttemptWindow
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -45,14 +58,66 @@ func NewWithClients(cfg config.Config, logger *slog.Logger, clients client.Repos
 }
 
 func NewWithRepositories(cfg config.Config, logger *slog.Logger, clients client.Repository, users identity.UserRepository) http.Handler {
+	passwords, ok := users.(identity.PasswordRepository)
+	if !ok {
+		panic("user repository does not implement password repository")
+	}
+	handler, err := NewWithDependencies(context.Background(), cfg, logger, Dependencies{
+		Clients:   clients,
+		Users:     users,
+		Passwords: passwords,
+		Sessions:  session.NewMemoryRepository(),
+		OAuth:     oauth.NewMemoryRepository(),
+		CAS:       cas.NewMemoryRepository(),
+		Keys:      &oidc.MemoryKeyRepository{},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return handler
+}
+
+type Dependencies struct {
+	Clients   client.Repository
+	Users     identity.UserRepository
+	Passwords identity.PasswordRepository
+	Sessions  session.Repository
+	OAuth     oauth.Repository
+	CAS       cas.Repository
+	Keys      oidc.KeyRepository
+}
+
+func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Logger, dependencies Dependencies) (http.Handler, error) {
 	templates := template.Must(template.ParseFS(web.Files, "templates/*.html"))
-	s := &server{cfg: cfg, logger: logger, templates: templates, clients: clients, users: users}
+	signer, err := oidc.NewSigner(ctx, dependencies.Keys)
+	if err != nil {
+		return nil, err
+	}
+	s := &server{
+		cfg:       cfg,
+		logger:    logger,
+		templates: templates,
+		clients:   dependencies.Clients,
+		users:     dependencies.Users,
+		passwords: identity.NewPasswordService(dependencies.Passwords),
+		sessions:  session.NewService(dependencies.Sessions, 12*time.Hour),
+		oauth:     dependencies.OAuth,
+		cas:       dependencies.CAS,
+		signer:    signer,
+		outbound: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
+		now:            time.Now,
+		deviceAttempts: make(map[string]deviceAttemptWindow),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /", s.home)
-	mux.HandleFunc("GET /login", s.login)
+	mux.HandleFunc("GET /login", s.loginPage)
+	mux.HandleFunc("POST /login", s.loginPassword)
+	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /portal", s.portal)
 	mux.HandleFunc("GET /admin/clients", s.adminClientsPage)
 	mux.HandleFunc("GET /api/v1/clients", s.listClients)
@@ -61,11 +126,25 @@ func NewWithRepositories(cfg config.Config, logger *slog.Logger, clients client.
 	mux.Handle("POST /api/v1/admin/users", s.requireAdmin(http.HandlerFunc(s.createUser)))
 	mux.Handle("GET /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.getUser)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.replaceUser)))
+	mux.Handle("PUT /api/v1/admin/users/{userID}/password", s.requireAdmin(http.HandlerFunc(s.setUserPassword)))
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.listAdminClients)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.createClient)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.getAdminClient)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(http.HandlerFunc(s.getClientIntegration)))
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
+	mux.HandleFunc("POST /oauth2/token", s.token)
+	mux.HandleFunc("POST /oauth2/device_authorization", s.deviceAuthorization)
+	mux.HandleFunc("GET /oauth2/userinfo", s.userinfo)
+	mux.HandleFunc("POST /oauth2/userinfo", s.userinfo)
+	mux.HandleFunc("GET /oauth2/jwks", s.jwks)
+	mux.HandleFunc("GET /device", s.devicePage)
+	mux.HandleFunc("POST /device", s.deviceDecision)
+	mux.HandleFunc("GET /cas/login", s.casLogin)
+	mux.HandleFunc("GET /cas/validate", s.casValidate)
+	mux.HandleFunc("GET /cas/serviceValidate", s.casServiceValidate)
+	mux.HandleFunc("GET /cas/p3/serviceValidate", s.casServiceValidate)
+	mux.HandleFunc("GET /cas/logout", s.casLogout)
+	mux.HandleFunc("POST /cas/logout", s.casLogout)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.discovery)
 
 	assets, err := fs.Sub(web.Files, "static")
@@ -73,7 +152,7 @@ func NewWithRepositories(cfg config.Config, logger *slog.Logger, clients client.
 		panic(err)
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(assets)))
-	return requestID(logging(securityHeaders(mux), logger))
+	return requestID(logging(securityHeaders(mux, s.secureCookies()), logger)), nil
 }
 
 func (s *server) render(w http.ResponseWriter, name string, data any) {
@@ -89,32 +168,6 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *server) home(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/portal", http.StatusTemporaryRedirect)
-}
-
-type loginPage struct {
-	Title   string
-	Client  client.Client
-	Methods []loginMethodView
-}
-
-type loginMethodView struct {
-	Label string
-}
-
-func (s *server) login(w http.ResponseWriter, r *http.Request) {
-	page := loginPage{Title: "登录 Certus"}
-	if clientID := r.URL.Query().Get("client_id"); clientID != "" {
-		item, err := s.clients.Find(r.Context(), clientID)
-		if err != nil {
-			http.Error(w, "未知的接入系统", http.StatusBadRequest)
-			return
-		}
-		page.Client = item
-		for _, method := range item.LoginMethods {
-			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(method)})
-		}
-	}
-	s.render(w, "login.html", page)
 }
 
 func (s *server) portal(w http.ResponseWriter, r *http.Request) {
@@ -155,35 +208,6 @@ func (s *server) getClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("client_id")
-	registered, err := s.clients.Find(r.Context(), clientID)
-	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid_request", "未知的 client_id")
-		return
-	}
-	if _, err := oauth.ParseAuthorizationRequest(r.URL.Query(), registered); err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	target := &url.URL{Path: "/login", RawQuery: r.URL.RawQuery}
-	http.Redirect(w, r, target.String(), http.StatusFound)
-}
-
-func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                s.cfg.Issuer,
-		"authorization_endpoint":                s.cfg.Issuer + "/oauth2/authorize",
-		"token_endpoint":                        s.cfg.Issuer + "/oauth2/token",
-		"jwks_uri":                              s.cfg.Issuer + "/oauth2/jwks",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{"RS256"},
-	})
-}
-
 func loginMethodLabel(method client.LoginMethod) string {
 	switch method {
 	case client.LoginPassword:
@@ -205,12 +229,15 @@ func logging(next http.Handler, logger *slog.Logger) http.Handler {
 	})
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func securityHeaders(next http.Handler, secure bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
+		if secure {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
