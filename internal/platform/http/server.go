@@ -165,6 +165,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.listAdminClients)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.createClient)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.getAdminClient)))
+	mux.Handle("PUT /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.replaceClient)))
+	mux.Handle("DELETE /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.archiveClient)))
+	mux.Handle("POST /api/v1/admin/clients/{clientID}/secret", s.requireAdmin(http.HandlerFunc(s.rotateClientSecret)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(http.HandlerFunc(s.getClientIntegration)))
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
 	mux.HandleFunc("POST /oauth2/token", s.token)
@@ -219,7 +222,7 @@ func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "portal.html", struct {
 		Title   string
 		Clients []client.Client
-	}{Title: "Certus 统一认证中心", Clients: clients})
+	}{Title: "Certus 统一认证中心", Clients: activeClients(clients)})
 }
 
 func (s *server) adminClientsPage(w http.ResponseWriter, _ *http.Request) {
@@ -232,7 +235,7 @@ func (s *server) listClients(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "读取客户端失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": clients})
+	writeJSON(w, http.StatusOK, map[string]any{"items": activeClients(clients)})
 }
 
 func (s *server) getClient(w http.ResponseWriter, r *http.Request) {
@@ -245,7 +248,21 @@ func (s *server) getClient(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "读取客户端失败")
 		return
 	}
+	if !item.Enabled || item.ArchivedAt != nil {
+		writeProblem(w, http.StatusNotFound, "not_found", "客户端不存在")
+		return
+	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func activeClients(items []client.Client) []client.Client {
+	result := make([]client.Client, 0, len(items))
+	for _, item := range items {
+		if item.Enabled && item.ArchivedAt == nil {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func loginMethodLabel(method client.LoginMethod) string {

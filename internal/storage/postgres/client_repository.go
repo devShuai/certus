@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"certus/internal/client"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,7 +25,8 @@ func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, name, description, application_type, protocols, grant_types,
 		       allowed_scopes, enabled, client_secret_hash, cas_version,
-		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout
+		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
+		       archived_at
 		FROM oauth_clients
 		ORDER BY name, id`)
 	if err != nil {
@@ -52,7 +55,8 @@ func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, 
 	item, err := scanClient(r.pool.QueryRow(ctx, `
 		SELECT id, name, description, application_type, protocols, grant_types,
 		       allowed_scopes, enabled, client_secret_hash, cas_version,
-		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout
+		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
+		       archived_at
 		FROM oauth_clients
 		WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -65,6 +69,111 @@ func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, 
 		return client.Client{}, err
 	}
 	return item, nil
+}
+
+func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (client.Client, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return client.Client{}, fmt.Errorf("begin client replacement: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	command, err := tx.Exec(ctx, `
+		UPDATE oauth_clients
+		SET name = $2,
+		    description = $3,
+		    protocols = $4,
+		    grant_types = $5,
+		    allowed_scopes = $6,
+		    enabled = $7,
+		    cas_version = $8,
+		    cas_service_urls = $9,
+		    cas_proxy = $10,
+		    cas_gateway = $11,
+		    cas_renew = $12,
+		    cas_single_logout = $13,
+		    updated_at = now()
+		WHERE id = $1 AND archived_at IS NULL`,
+		item.ID,
+		item.Name,
+		item.Description,
+		stringProtocols(item.Protocols),
+		stringGrantTypes(item.GrantTypes),
+		item.AllowedScopes,
+		item.Enabled,
+		item.CASVersion,
+		item.CASServiceURLs,
+		item.CASProxy,
+		item.CASGateway,
+		item.CASRenew,
+		item.CASSingleLogout,
+	)
+	if err != nil {
+		return client.Client{}, fmt.Errorf("replace client: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return client.Client{}, client.ErrArchived
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_client_redirect_uris WHERE client_id = $1`, item.ID); err != nil {
+		return client.Client{}, fmt.Errorf("replace client redirect URIs: %w", err)
+	}
+	for _, redirectURI := range item.RedirectURIs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2)`, item.ID, redirectURI); err != nil {
+			return client.Client{}, fmt.Errorf("insert replacement redirect URI: %w", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_client_login_methods WHERE client_id = $1`, item.ID); err != nil {
+		return client.Client{}, fmt.Errorf("replace client login methods: %w", err)
+	}
+	for position, method := range item.LoginMethods {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_login_methods (client_id, method, position)
+			VALUES ($1, $2, $3)`, item.ID, method, position); err != nil {
+			return client.Client{}, fmt.Errorf("insert replacement login method: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return client.Client{}, fmt.Errorf("commit client replacement: %w", err)
+	}
+	return item, nil
+}
+
+func (r *ClientRepository) RotateSecret(ctx context.Context, id string, hash []byte) (client.Client, error) {
+	command, err := r.pool.Exec(ctx, `
+		UPDATE oauth_clients
+		SET client_secret_hash = $2, updated_at = now()
+		WHERE id = $1
+		  AND application_type = 'confidential'
+		  AND archived_at IS NULL`,
+		id, hash,
+	)
+	if err != nil {
+		return client.Client{}, fmt.Errorf("rotate client secret: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return client.Client{}, client.ErrNotFound
+	}
+	return r.Find(ctx, id)
+}
+
+func (r *ClientRepository) Archive(ctx context.Context, id string, now time.Time) error {
+	command, err := r.pool.Exec(ctx, `
+		UPDATE oauth_clients
+		SET enabled = false,
+		    archived_at = coalesce(archived_at, $2),
+		    updated_at = $2
+		WHERE id = $1`,
+		id, now.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("archive client: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return client.ErrNotFound
+	}
+	return nil
 }
 
 func (r *ClientRepository) Create(ctx context.Context, item client.Client) (client.Client, error) {
@@ -127,6 +236,7 @@ func scanClient(scanner interface{ Scan(...any) error }) (client.Client, error) 
 	var item client.Client
 	var protocols []string
 	var grants []string
+	var archivedAt pgtype.Timestamptz
 	err := scanner.Scan(
 		&item.ID,
 		&item.Name,
@@ -143,6 +253,7 @@ func scanClient(scanner interface{ Scan(...any) error }) (client.Client, error) 
 		&item.CASGateway,
 		&item.CASRenew,
 		&item.CASSingleLogout,
+		&archivedAt,
 	)
 	if err != nil {
 		return client.Client{}, fmt.Errorf("scan client: %w", err)
@@ -152,6 +263,9 @@ func scanClient(scanner interface{ Scan(...any) error }) (client.Client, error) 
 	}
 	for _, grant := range grants {
 		item.GrantTypes = append(item.GrantTypes, client.GrantType(grant))
+	}
+	if archivedAt.Valid {
+		item.ArchivedAt = &archivedAt.Time
 	}
 	return item, nil
 }

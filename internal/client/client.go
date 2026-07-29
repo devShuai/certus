@@ -13,12 +13,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
 	ErrNotFound = errors.New("client not found")
 	ErrConflict = errors.New("client already exists")
 	ErrInvalid  = errors.New("invalid client")
+	ErrArchived = errors.New("client is archived")
 )
 
 type LoginMethod string
@@ -78,6 +80,7 @@ type Client struct {
 	CASRenew        bool            `json:"cas_renew"`
 	CASSingleLogout bool            `json:"cas_single_logout"`
 	Enabled         bool            `json:"enabled"`
+	ArchivedAt      *time.Time      `json:"archived_at,omitempty"`
 	SecretHash      []byte          `json:"-"`
 }
 
@@ -100,6 +103,23 @@ type CreateClient struct {
 	Enabled         *bool           `json:"enabled"`
 }
 
+type ReplaceClient struct {
+	Name            string        `json:"name"`
+	Description     string        `json:"description"`
+	Protocols       []Protocol    `json:"protocols"`
+	GrantTypes      []GrantType   `json:"grant_types"`
+	RedirectURIs    []string      `json:"redirect_uris"`
+	LoginMethods    []LoginMethod `json:"login_methods"`
+	AllowedScopes   []string      `json:"allowed_scopes"`
+	CASVersion      CASVersion    `json:"cas_version"`
+	CASServiceURLs  []string      `json:"cas_service_urls"`
+	CASProxy        bool          `json:"cas_proxy"`
+	CASGateway      bool          `json:"cas_gateway"`
+	CASRenew        bool          `json:"cas_renew"`
+	CASSingleLogout bool          `json:"cas_single_logout"`
+	Enabled         *bool         `json:"enabled"`
+}
+
 func (c Client) AllowsRedirectURI(candidate string) bool {
 	parsed, err := url.Parse(candidate)
 	if err != nil || !parsed.IsAbs() || parsed.Fragment != "" {
@@ -112,6 +132,9 @@ type Repository interface {
 	List(context.Context) ([]Client, error)
 	Find(context.Context, string) (Client, error)
 	Create(context.Context, Client) (Client, error)
+	Replace(context.Context, Client) (Client, error)
+	RotateSecret(context.Context, string, []byte) (Client, error)
+	Archive(context.Context, string, time.Time) error
 }
 
 type MemoryRepository struct {
@@ -160,6 +183,51 @@ func (r *MemoryRepository) Create(_ context.Context, item Client) (Client, error
 	return clone(item), nil
 }
 
+func (r *MemoryRepository) Replace(_ context.Context, item Client) (Client, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, exists := r.clients[item.ID]
+	if !exists {
+		return Client{}, ErrNotFound
+	}
+	if current.ArchivedAt != nil {
+		return Client{}, ErrArchived
+	}
+	r.clients[item.ID] = clone(item)
+	return clone(item), nil
+}
+
+func (r *MemoryRepository) RotateSecret(_ context.Context, id string, hash []byte) (Client, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, exists := r.clients[id]
+	if !exists {
+		return Client{}, ErrNotFound
+	}
+	if item.ArchivedAt != nil {
+		return Client{}, ErrArchived
+	}
+	item.SecretHash = append([]byte(nil), hash...)
+	r.clients[id] = item
+	return clone(item), nil
+}
+
+func (r *MemoryRepository) Archive(_ context.Context, id string, now time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, exists := r.clients[id]
+	if !exists {
+		return ErrNotFound
+	}
+	if item.ArchivedAt == nil {
+		value := now.UTC()
+		item.ArchivedAt = &value
+		item.Enabled = false
+		r.clients[id] = item
+	}
+	return nil
+}
+
 func clone(item Client) Client {
 	item.RedirectURIs = slices.Clone(item.RedirectURIs)
 	item.LoginMethods = slices.Clone(item.LoginMethods)
@@ -168,6 +236,10 @@ func clone(item Client) Client {
 	item.GrantTypes = slices.Clone(item.GrantTypes)
 	item.CASServiceURLs = slices.Clone(item.CASServiceURLs)
 	item.SecretHash = slices.Clone(item.SecretHash)
+	if item.ArchivedAt != nil {
+		value := *item.ArchivedAt
+		item.ArchivedAt = &value
+	}
 	return item
 }
 
@@ -223,6 +295,63 @@ func New(input CreateClient) (Client, string, error) {
 	}
 	item.SecretHash = hash
 	return item, secret, nil
+}
+
+func Replace(current Client, input ReplaceClient) (Client, error) {
+	if current.ArchivedAt != nil {
+		return Client{}, ErrArchived
+	}
+	enabled := current.Enabled
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+	item := Client{
+		ID:              current.ID,
+		Name:            strings.TrimSpace(input.Name),
+		Description:     strings.TrimSpace(input.Description),
+		ApplicationType: current.ApplicationType,
+		Protocols:       uniqueProtocols(input.Protocols),
+		GrantTypes:      uniqueGrantTypes(input.GrantTypes),
+		RedirectURIs:    uniqueStrings(input.RedirectURIs),
+		LoginMethods:    uniqueMethods(input.LoginMethods),
+		AllowedScopes:   uniqueStrings(input.AllowedScopes),
+		CASVersion:      input.CASVersion,
+		CASServiceURLs:  uniqueStrings(input.CASServiceURLs),
+		CASProxy:        input.CASProxy,
+		CASGateway:      input.CASGateway,
+		CASRenew:        input.CASRenew,
+		CASSingleLogout: input.CASSingleLogout,
+		Enabled:         enabled,
+		SecretHash:      slices.Clone(current.SecretHash),
+	}
+	if item.SupportsOAuth() && len(item.GrantTypes) == 0 {
+		item.GrantTypes = []GrantType{GrantAuthorizationCode, GrantRefreshToken}
+	}
+	if item.SupportsProtocol(ProtocolCAS) && item.CASVersion == "" {
+		item.CASVersion = CASVersion3
+	}
+	if len(item.AllowedScopes) == 0 {
+		item.AllowedScopes = []string{"openid", "profile", "email"}
+	}
+	if err := item.Validate(); err != nil {
+		return Client{}, err
+	}
+	return item, nil
+}
+
+func RotateSecret(current Client) (Client, string, error) {
+	if current.ArchivedAt != nil {
+		return Client{}, "", ErrArchived
+	}
+	if current.ApplicationType != ApplicationConfidential {
+		return Client{}, "", fmt.Errorf("%w: only confidential clients have secrets", ErrInvalid)
+	}
+	secret, hash, err := newSecret()
+	if err != nil {
+		return Client{}, "", fmt.Errorf("generate client secret: %w", err)
+	}
+	current.SecretHash = hash
+	return current, secret, nil
 }
 
 func (c Client) Validate() error {

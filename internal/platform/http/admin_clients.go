@@ -103,6 +103,93 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
+	current, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
+	if errors.Is(err, client.ErrNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("find client for replacement", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		return
+	}
+	var input client.ReplaceClient
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := client.Replace(current, input)
+	if errors.Is(err, client.ErrArchived) {
+		writeProblem(w, http.StatusConflict, "client_archived", "已归档的接入系统不能修改")
+		return
+	}
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_client", err.Error())
+		return
+	}
+	item, err = s.clients.Replace(r.Context(), item)
+	if errors.Is(err, client.ErrArchived) {
+		writeProblem(w, http.StatusConflict, "client_archived", "已归档的接入系统不能修改")
+		return
+	}
+	if err != nil {
+		s.logger.Error("replace client", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "更新接入系统失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, clientRegistrationResponse{
+		Client:      item,
+		Integration: s.integrationParameters(item, ""),
+	})
+}
+
+func (s *server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
+	current, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
+	if errors.Is(err, client.ErrNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("find client for secret rotation", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		return
+	}
+	rotated, secret, err := client.RotateSecret(current)
+	if errors.Is(err, client.ErrArchived) {
+		writeProblem(w, http.StatusConflict, "client_archived", "已归档的接入系统不能轮换密钥")
+		return
+	}
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_client", err.Error())
+		return
+	}
+	item, err := s.clients.RotateSecret(r.Context(), rotated.ID, rotated.SecretHash)
+	if err != nil {
+		s.logger.Error("rotate client secret", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "轮换客户端密钥失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, clientRegistrationResponse{
+		Client:      item,
+		Integration: s.integrationParameters(item, secret),
+	})
+}
+
+func (s *server) archiveClient(w http.ResponseWriter, r *http.Request) {
+	err := s.clients.Archive(r.Context(), r.PathValue("clientID"), s.now().UTC())
+	if errors.Is(err, client.ErrNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("archive client", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "归档接入系统失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *server) getClientIntegration(w http.ResponseWriter, r *http.Request) {
 	item, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
 	if errors.Is(err, client.ErrNotFound) {

@@ -2,8 +2,10 @@ package client
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMemoryRepositoryReturnsCopies(t *testing.T) {
@@ -125,4 +127,67 @@ func TestAllowsRedirectURIRequiresExactAbsoluteURI(t *testing.T) {
 			t.Errorf("AllowsRedirectURI(%q) = %v, want %v", test.uri, got, test.want)
 		}
 	}
+}
+
+func TestClientReplacementSecretRotationAndArchive(t *testing.T) {
+	current, originalSecret, err := New(CreateClient{
+		ID:              "finance",
+		Name:            "Finance",
+		ApplicationType: ApplicationConfidential,
+		Protocols:       []Protocol{ProtocolOAuth21},
+		GrantTypes:      []GrantType{GrantAuthorizationCode, GrantRefreshToken},
+		RedirectURIs:    []string{"https://finance.example.com/callback"},
+		LoginMethods:    []LoginMethod{LoginPassword},
+		AllowedScopes:   []string{"openid", "profile"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	replaced, err := Replace(current, ReplaceClient{
+		Name:          "Finance Portal",
+		Protocols:     []Protocol{ProtocolOAuth21},
+		GrantTypes:    []GrantType{GrantAuthorizationCode},
+		RedirectURIs:  []string{"https://finance.example.com/oidc/callback"},
+		LoginMethods:  []LoginMethod{LoginOIDC},
+		AllowedScopes: []string{"openid"},
+		Enabled:       &disabled,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.ID != current.ID ||
+		replaced.ApplicationType != current.ApplicationType ||
+		!bytesEqual(replaced.SecretHash, current.SecretHash) ||
+		replaced.Enabled ||
+		replaced.Name != "Finance Portal" {
+		t.Fatalf("unexpected replacement: %#v", replaced)
+	}
+
+	rotated, secret, err := RotateSecret(replaced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret == originalSecret || bytesEqual(rotated.SecretHash, current.SecretHash) {
+		t.Fatal("secret rotation did not create a new credential")
+	}
+
+	repository := NewMemoryRepository(rotated)
+	if err := repository.Archive(context.Background(), rotated.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := repository.Find(context.Background(), rotated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.Enabled || archived.ArchivedAt == nil {
+		t.Fatalf("client was not archived: %#v", archived)
+	}
+	if _, err := repository.Replace(context.Background(), rotated); !errors.Is(err, ErrArchived) {
+		t.Fatalf("archived client was replaceable: %v", err)
+	}
+}
+
+func bytesEqual(left, right []byte) bool {
+	return string(left) == string(right)
 }

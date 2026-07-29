@@ -2,13 +2,16 @@ package httpserver
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
+	"certus/internal/client"
 	"certus/internal/config"
 )
 
@@ -84,4 +87,96 @@ func TestAdminClientsPage(t *testing.T) {
 	if !strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'self'") {
 		t.Fatal("admin page scripts are not restricted by CSP")
 	}
+}
+
+func TestClientLifecycleAPIs(t *testing.T) {
+	handler := New(config.Config{
+		Issuer:     "https://auth.example.com",
+		AdminToken: "test-admin-token",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	createBody := `{
+		"id":"resource-api",
+		"name":"Resource API",
+		"application_type":"confidential",
+		"protocols":["oauth2.1"],
+		"grant_types":["client_credentials"],
+		"allowed_scopes":["openid","api.read"]
+	}`
+	created := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", createBody)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create client: %d %s", created.Code, created.Body.String())
+	}
+	var creation clientRegistrationResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &creation); err != nil {
+		t.Fatal(err)
+	}
+	originalSecret := creation.Integration.ClientSecret
+
+	rotated := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients/resource-api/secret", "")
+	if rotated.Code != http.StatusOK {
+		t.Fatalf("rotate secret: %d %s", rotated.Code, rotated.Body.String())
+	}
+	var rotation clientRegistrationResponse
+	if err := json.Unmarshal(rotated.Body.Bytes(), &rotation); err != nil {
+		t.Fatal(err)
+	}
+	newSecret := rotation.Integration.ClientSecret
+	if newSecret == "" || newSecret == originalSecret {
+		t.Fatal("secret rotation did not return a new one-time secret")
+	}
+	tokenForm := url.Values{
+		"grant_type": {string(client.GrantClientCredentials)},
+		"scope":      {"api.read"},
+	}
+	if oldToken := oauthFormRequest(t, handler, "/oauth2/token", tokenForm, "resource-api", originalSecret); oldToken.Code != http.StatusUnauthorized {
+		t.Fatalf("old secret remained valid: %d %s", oldToken.Code, oldToken.Body.String())
+	}
+	if newToken := oauthFormRequest(t, handler, "/oauth2/token", tokenForm, "resource-api", newSecret); newToken.Code != http.StatusOK {
+		t.Fatalf("new secret was not valid: %d %s", newToken.Code, newToken.Body.String())
+	}
+
+	disabled := adminJSONRequest(t, handler, http.MethodPut, "/api/v1/admin/clients/resource-api", `{
+		"name":"Resource API v2",
+		"description":"updated",
+		"protocols":["oauth2.1"],
+		"grant_types":["client_credentials"],
+		"allowed_scopes":["openid","api.read"],
+		"enabled":false
+	}`)
+	if disabled.Code != http.StatusOK ||
+		!strings.Contains(disabled.Body.String(), `"name":"Resource API v2"`) ||
+		!strings.Contains(disabled.Body.String(), `"enabled":false`) {
+		t.Fatalf("disable client: %d %s", disabled.Code, disabled.Body.String())
+	}
+	public := httptest.NewRecorder()
+	handler.ServeHTTP(public, httptest.NewRequest(http.MethodGet, "/api/v1/clients/resource-api", nil))
+	if public.Code != http.StatusNotFound {
+		t.Fatalf("disabled client remained publicly visible: %d %s", public.Code, public.Body.String())
+	}
+
+	archived := adminJSONRequest(t, handler, http.MethodDelete, "/api/v1/admin/clients/resource-api", "")
+	if archived.Code != http.StatusNoContent {
+		t.Fatalf("archive client: %d %s", archived.Code, archived.Body.String())
+	}
+	updateArchived := adminJSONRequest(t, handler, http.MethodPut, "/api/v1/admin/clients/resource-api", `{
+		"name":"Archived",
+		"protocols":["oauth2.1"],
+		"grant_types":["client_credentials"],
+		"allowed_scopes":["openid","api.read"]
+	}`)
+	if updateArchived.Code != http.StatusConflict || !strings.Contains(updateArchived.Body.String(), `"client_archived"`) {
+		t.Fatalf("archived client was mutable: %d %s", updateArchived.Code, updateArchived.Body.String())
+	}
+}
+
+func adminJSONRequest(t *testing.T, handler http.Handler, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer test-admin-token")
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }

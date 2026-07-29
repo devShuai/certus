@@ -165,6 +165,9 @@ GET  /admin/clients
 GET  /api/v1/admin/clients
 POST /api/v1/admin/clients
 GET  /api/v1/admin/clients/{client_id}
+PUT  /api/v1/admin/clients/{client_id}
+DELETE /api/v1/admin/clients/{client_id}
+POST /api/v1/admin/clients/{client_id}/secret
 GET  /api/v1/admin/clients/{client_id}/integration
 ```
 
@@ -271,6 +274,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
 ```
 
 `public` 客户端不生成密钥；`confidential` 客户端的明文密钥只在创建响应中出现一次，Certus 只保存 SHA-256 哈希。非本机回环地址的回调必须使用 HTTPS，回调地址在授权时执行精确匹配。
+
+`PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可暂停新登录和令牌签发。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端，历史令牌、授权和审计记录不会因物理删除而丢失。
 
 ### 支持方式
 

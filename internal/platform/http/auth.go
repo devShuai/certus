@@ -76,6 +76,9 @@ func (s *server) newLoginPageData(r *http.Request, returnTo, csrfToken, message 
 		if err != nil {
 			return loginPageData{}, err
 		}
+		if !item.Enabled || item.ArchivedAt != nil {
+			return loginPageData{}, client.ErrNotFound
+		}
 		page.Client = item
 		page.PasswordEnabled = slices.Contains(item.LoginMethods, client.LoginPassword)
 		page.LDAPEnabled = slices.Contains(item.LoginMethods, client.LoginLDAP) && s.ldap.Enabled()

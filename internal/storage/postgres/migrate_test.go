@@ -81,3 +81,13 @@ func TestTokenRevocationMigration(t *testing.T) {
 		t.Fatal("token revocation migration does not link access tokens to refresh families")
 	}
 }
+
+func TestClientLifecycleMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/008_client_lifecycle.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "ADD COLUMN archived_at") {
+		t.Fatal("client lifecycle migration does not add soft archive state")
+	}
+}
