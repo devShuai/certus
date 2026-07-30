@@ -46,6 +46,29 @@ func (r *MemoryRepository) ReplacePending(_ context.Context, credential Credenti
 	return nil
 }
 
+func (r *MemoryRepository) ReplaceRecoveryCodes(
+	_ context.Context,
+	userID string,
+	recoveryCodes [][]byte,
+	_ time.Time,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value, ok := r.credentials[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	if !value.Enabled {
+		return ErrNotEnabled
+	}
+	value.recoveryCodes = make([][]byte, 0, len(recoveryCodes))
+	for _, code := range recoveryCodes {
+		value.recoveryCodes = append(value.recoveryCodes, append([]byte(nil), code...))
+	}
+	r.credentials[userID] = value
+	return nil
+}
+
 func (r *MemoryRepository) ListSecretCiphertexts(_ context.Context) ([]SecretRecord, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -29,6 +29,7 @@ var (
 	ErrLocked         = errors.New("MFA verification is temporarily locked")
 	ErrReplay         = errors.New("MFA code has already been used")
 	ErrAlreadyEnabled = errors.New("MFA is already enabled")
+	ErrNotEnabled     = errors.New("MFA is not enabled")
 )
 
 const (
@@ -69,6 +70,7 @@ type Setup struct {
 type Repository interface {
 	Find(context.Context, string) (Credential, error)
 	ReplacePending(context.Context, Credential, [][]byte) error
+	ReplaceRecoveryCodes(context.Context, string, [][]byte, time.Time) error
 	Enable(context.Context, string, int64, time.Time) error
 	UseTOTP(context.Context, string, int64, time.Time) error
 	UseRecoveryCode(context.Context, string, []byte, time.Time) error
@@ -164,15 +166,9 @@ func (s *Service) Setup(ctx context.Context, userID, username string) (Setup, er
 	if err != nil {
 		return Setup{}, err
 	}
-	recoveryCodes := make([]string, 0, recoveryCodeCount)
-	recoveryHashes := make([][]byte, 0, recoveryCodeCount)
-	for range recoveryCodeCount {
-		code, err := newRecoveryCode()
-		if err != nil {
-			return Setup{}, err
-		}
-		recoveryCodes = append(recoveryCodes, code)
-		recoveryHashes = append(recoveryHashes, hashRecoveryCode(code))
+	recoveryCodes, recoveryHashes, err := newRecoveryCodes()
+	if err != nil {
+		return Setup{}, err
 	}
 	now := s.now().UTC()
 	if err := s.repository.ReplacePending(ctx, Credential{
@@ -265,6 +261,24 @@ func (s *Service) Verify(ctx context.Context, userID, code string) error {
 
 func (s *Service) Disable(ctx context.Context, userID string) error {
 	return s.repository.Delete(ctx, userID)
+}
+
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID string) ([]string, error) {
+	credential, err := s.repository.Find(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !credential.Enabled {
+		return nil, ErrNotEnabled
+	}
+	codes, hashes, err := newRecoveryCodes()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repository.ReplaceRecoveryCodes(ctx, userID, hashes, s.now().UTC()); err != nil {
+		return nil, err
+	}
+	return codes, nil
 }
 
 func (s *Service) matchTOTP(credential Credential, code string) (int64, error) {
@@ -420,6 +434,20 @@ func newRecoveryCode() (string, error) {
 		encoded = encoded[size:]
 	}
 	return strings.Join(groups, "-"), nil
+}
+
+func newRecoveryCodes() ([]string, [][]byte, error) {
+	codes := make([]string, 0, recoveryCodeCount)
+	hashes := make([][]byte, 0, recoveryCodeCount)
+	for range recoveryCodeCount {
+		code, err := newRecoveryCode()
+		if err != nil {
+			return nil, nil, err
+		}
+		codes = append(codes, code)
+		hashes = append(hashes, hashRecoveryCode(code))
+	}
+	return codes, hashes, nil
 }
 
 func hashRecoveryCode(code string) []byte {

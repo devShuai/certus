@@ -100,6 +100,50 @@ func (r *MFARepository) ReplacePending(ctx context.Context, credential mfa.Crede
 	return nil
 }
 
+func (r *MFARepository) ReplaceRecoveryCodes(
+	ctx context.Context,
+	userID string,
+	recoveryCodes [][]byte,
+	now time.Time,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin MFA recovery code replacement: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var enabled bool
+	if err := tx.QueryRow(ctx, `
+		SELECT enabled
+		FROM mfa_totp_credentials
+		WHERE user_id = $1
+		FOR UPDATE`,
+		userID,
+	).Scan(&enabled); errors.Is(err, pgx.ErrNoRows) {
+		return mfa.ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("lock MFA credential for recovery code replacement: %w", err)
+	}
+	if !enabled {
+		return mfa.ErrNotEnabled
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM mfa_recovery_codes WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("delete old MFA recovery codes: %w", err)
+	}
+	for _, hash := range recoveryCodes {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO mfa_recovery_codes (user_id, code_hash, created_at)
+			VALUES ($1, $2, $3)`,
+			userID, hash, now,
+		); err != nil {
+			return fmt.Errorf("insert regenerated MFA recovery code: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit MFA recovery code replacement: %w", err)
+	}
+	return nil
+}
+
 func (r *MFARepository) ListSecretCiphertexts(ctx context.Context) ([]mfa.SecretRecord, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT user_id::text, secret_ciphertext

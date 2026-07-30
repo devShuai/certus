@@ -65,6 +65,49 @@ func TestSetupEnableVerifyReplayAndRecovery(t *testing.T) {
 	}
 }
 
+func TestRegenerateRecoveryCodesInvalidatesPreviousSet(t *testing.T) {
+	ctx := context.Background()
+	key, _ := hex.DecodeString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	repository := NewMemoryRepository()
+	service := NewService(repository, key, "Certus")
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	setup, err := service.Setup(ctx, "user-1", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RegenerateRecoveryCodes(ctx, "user-1"); !errors.Is(err, ErrNotEnabled) {
+		t.Fatalf("regenerate pending MFA recovery codes: %v", err)
+	}
+	secret, err := base32NoPaddingDecode(setup.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Enable(ctx, "user-1", generateTOTP(secret, now.Unix()/30)); err != nil {
+		t.Fatal(err)
+	}
+	regenerated, err := service.RegenerateRecoveryCodes(ctx, "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(regenerated) != recoveryCodeCount {
+		t.Fatalf("unexpected regenerated recovery code count: %d", len(regenerated))
+	}
+	if err := service.Verify(ctx, "user-1", setup.RecoveryCodes[0]); !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("old recovery code remained valid: %v", err)
+	}
+	if err := service.Verify(ctx, "user-1", regenerated[0]); err != nil {
+		t.Fatalf("regenerated recovery code failed: %v", err)
+	}
+	status, err := service.Status(ctx, "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RecoveryCodes != recoveryCodeCount-1 {
+		t.Fatalf("unexpected remaining recovery codes: %d", status.RecoveryCodes)
+	}
+}
+
 func TestRewrapLegacySecretAndRotateKeyRing(t *testing.T) {
 	ctx := context.Background()
 	legacyKey := []byte("legacy-mfa-key-material-32-bytes")

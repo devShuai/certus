@@ -258,12 +258,16 @@ function renderMFA() {
   const summary = document.querySelector("#mfa-summary");
   const unavailable = document.querySelector("#mfa-unavailable");
   const setupForm = document.querySelector("#mfa-setup-form");
+  const recoveryForm = document.querySelector("#mfa-recovery-form");
+  const recoveryResult = document.querySelector("#mfa-recovery-result");
   const disableForm = document.querySelector("#mfa-disable-form");
 
   unavailable.classList.toggle("hidden", status.available);
   setupForm.classList.add("hidden");
+  recoveryForm.classList.add("hidden");
   disableForm.classList.add("hidden");
   if (!status.available) {
+    recoveryResult.classList.add("hidden");
     badge.textContent = "不可用";
     badge.className = "badge disabled";
     summary.textContent = "当前部署尚未启用 TOTP 多因素认证。";
@@ -273,9 +277,11 @@ function renderMFA() {
     badge.textContent = "已启用";
     badge.className = "badge active";
     summary.textContent = `TOTP 已启用，剩余 ${status.recovery_codes} 枚恢复码${status.verified_at ? `，启用于 ${accountDate(status.verified_at)}` : ""}。`;
+    recoveryForm.classList.remove("hidden");
     disableForm.classList.remove("hidden");
     return;
   }
+  recoveryResult.classList.add("hidden");
   badge.textContent = status.pending ? "待验证" : "未启用";
   badge.className = `badge ${status.pending ? "locked" : "disabled"}`;
   summary.textContent = status.pending ? "上次配置尚未验证，可以重新开始并生成新的密钥与恢复码。" : "启用认证器动态口令，为密码登录增加第二重保护。";
@@ -308,8 +314,7 @@ document.querySelector("#mfa-setup-form").addEventListener("submit", async (even
   }
 });
 
-document.querySelector("#copy-recovery-codes").addEventListener("click", async (event) => {
-  const copyButton = event.currentTarget;
+async function copyRecoveryCodes(copyButton) {
   try {
     await navigator.clipboard.writeText(accountState.recoveryCodes.join("\n"));
     copyButton.textContent = "已复制";
@@ -317,7 +322,10 @@ document.querySelector("#copy-recovery-codes").addEventListener("click", async (
   } catch {
     setAccountStatus("浏览器未允许访问剪贴板，请手动复制恢复码。", "error");
   }
-});
+}
+
+document.querySelector("#copy-recovery-codes").addEventListener("click", (event) => copyRecoveryCodes(event.currentTarget));
+document.querySelector("#copy-rotated-recovery-codes").addEventListener("click", (event) => copyRecoveryCodes(event.currentTarget));
 
 document.querySelector("#mfa-enable-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -338,6 +346,35 @@ document.querySelector("#mfa-enable-form").addEventListener("submit", async (eve
     document.querySelector("#mfa-setup-result").classList.add("hidden");
     await loadMFA();
     setAccountStatus("多因素认证已启用。", "success");
+  } catch (error) {
+    setAccountStatus(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.querySelector("#mfa-recovery-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!window.confirm("重新生成后，所有原恢复码都会立即失效，确定继续吗？")) return;
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const submit = form.querySelector("button[type='submit']");
+  submit.disabled = true;
+  try {
+    const value = await accountAPI("/api/v1/account/mfa/recovery-codes", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: data.get("current_password"),
+        code: data.get("code"),
+      }),
+    });
+    form.reset();
+    accountState.recoveryCodes = value.recovery_codes || [];
+    const codes = document.querySelector("#rotated-recovery-codes");
+    codes.replaceChildren(...accountState.recoveryCodes.map((code) => accountElement("code", { text: code })));
+    document.querySelector("#mfa-recovery-result").classList.remove("hidden");
+    await loadMFA();
+    setAccountStatus("恢复码已重新生成，所有原恢复码均已失效。", "success");
   } catch (error) {
     setAccountStatus(error.message, "error");
   } finally {

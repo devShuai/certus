@@ -60,6 +60,17 @@
           <button type="submit">验证并启用 MFA</button>
         </form>
       </div>
+      <form id="mfa-recovery-form" class="stack hidden">
+        <p class="muted">恢复码遗失或即将用尽时，可验证当前密码和第二因子后重新生成。原恢复码会立即全部失效。</p>
+        <label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label>
+        <label>动态口令或现有恢复码<input name="code" autocomplete="one-time-code" required></label>
+        <button class="secondary" type="submit">重新生成恢复码</button>
+      </form>
+      <div id="mfa-recovery-result" class="mfa-setup-result hidden">
+        <p class="warning">原恢复码已全部失效。下列新恢复码只显示一次，请立即保存到离线安全位置。</p>
+        <div class="section-heading"><strong>新恢复码</strong><button id="copy-rotated-recovery-codes" class="secondary" type="button">复制恢复码</button></div>
+        <div id="rotated-recovery-codes" class="recovery-codes"></div>
+      </div>
       <form id="mfa-disable-form" class="stack hidden">
         <label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label>
         <label>动态口令或恢复码<input name="code" autocomplete="one-time-code" required></label>

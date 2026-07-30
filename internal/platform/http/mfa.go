@@ -239,6 +239,54 @@ func (s *server) enableAccountMFA(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *server) regenerateAccountMFARecoveryCodes(w http.ResponseWriter, r *http.Request) {
+	current, ok := s.requireCurrentSession(w, r)
+	if !ok || !s.requireAccountCSRF(w, r) {
+		return
+	}
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		Code            string `json:"code"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if _, ok := s.verifyAccountPassword(w, r, current.UserID, input.CurrentPassword); !ok {
+		return
+	}
+	if !s.allowMFAAttempt(w, r, current.UserID) {
+		return
+	}
+	if err := s.mfa.Verify(r.Context(), current.UserID, input.Code); err != nil {
+		s.recordAudit(r, audit.Event{
+			ActorUserID: auditActor(current.UserID),
+			EventType:   "mfa.recovery_codes.regenerated",
+			Outcome:     audit.OutcomeFailure,
+			Details:     map[string]any{"reason": "invalid_mfa_code"},
+		})
+		writeProblem(w, http.StatusBadRequest, "invalid_mfa_code", "动态口令或恢复码无效")
+		return
+	}
+	codes, err := s.mfa.RegenerateRecoveryCodes(r.Context(), current.UserID)
+	if errors.Is(err, mfa.ErrNotFound) || errors.Is(err, mfa.ErrNotEnabled) {
+		writeProblem(w, http.StatusConflict, "mfa_not_enabled", "多因素认证尚未启用")
+		return
+	}
+	if err != nil {
+		s.logger.Error("regenerate account MFA recovery codes", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "重新生成恢复码失败")
+		return
+	}
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(current.UserID),
+		EventType:   "mfa.recovery_codes.regenerated",
+		Outcome:     audit.OutcomeSuccess,
+		Details:     map[string]any{"count": len(codes)},
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{"recovery_codes": codes})
+}
+
 func (s *server) disableAccountMFA(w http.ResponseWriter, r *http.Request) {
 	current, ok := s.requireCurrentSession(w, r)
 	if !ok || !s.requireAccountCSRF(w, r) {
@@ -253,6 +301,9 @@ func (s *server) disableAccountMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := s.verifyAccountPassword(w, r, current.UserID, input.CurrentPassword); !ok {
+		return
+	}
+	if !s.allowMFAAttempt(w, r, current.UserID) {
 		return
 	}
 	if err := s.mfa.Verify(r.Context(), current.UserID, input.Code); err != nil {

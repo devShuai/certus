@@ -98,6 +98,28 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 		t.Fatalf("enable MFA: %d %s", response.Code, response.Body.String())
 	}
 
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/account/mfa/recovery-codes", strings.NewReader(
+		`{"current_password":"initial-password-123","code":"`+setup.RecoveryCodes[0]+`"}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: accountToken})
+	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("regenerate MFA recovery codes: %d %s", response.Code, response.Body.String())
+	}
+	var regenerated struct {
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &regenerated); err != nil {
+		t.Fatal(err)
+	}
+	if len(regenerated.RecoveryCodes) != 10 {
+		t.Fatalf("unexpected regenerated recovery codes: %#v", regenerated.RecoveryCodes)
+	}
+
 	request = httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(
 		"csrf_token="+csrf+"&continue=%2Fportal&username=alice&password=initial-password-123",
 	))
@@ -119,7 +141,7 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/login/mfa", strings.NewReader(
-		"csrf_token="+csrf+"&code="+setup.RecoveryCodes[0],
+		"csrf_token="+csrf+"&code="+regenerated.RecoveryCodes[0],
 	))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
@@ -141,6 +163,10 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 	if page, err := audits.List(ctx, audit.Filter{EventType: "login.mfa", Limit: 20}); err != nil ||
 		page.Total != 1 || page.Items[0].Outcome != audit.OutcomeSuccess {
 		t.Fatalf("missing MFA login audit: %#v %v", page, err)
+	}
+	if page, err := audits.List(ctx, audit.Filter{EventType: "mfa.recovery_codes.regenerated", Limit: 20}); err != nil ||
+		page.Total != 1 || page.Items[0].Outcome != audit.OutcomeSuccess {
+		t.Fatalf("missing recovery code regeneration audit: %#v %v", page, err)
 	}
 }
 

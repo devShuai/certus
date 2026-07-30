@@ -341,6 +341,22 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if count, err := mfa.RewrapSecrets(ctx, mfaRepository, mfaKeyRing, nil); err != nil || count != 0 {
 		t.Fatalf("PostgreSQL MFA rewrap was not idempotent: %d %v", count, err)
 	}
+	if err := mfaRepository.Enable(ctx, user.ID, 0, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	regeneratedHashes := [][]byte{[]byte("regenerated-code-1"), []byte("regenerated-code-2")}
+	if err := mfaRepository.ReplaceRecoveryCodes(ctx, user.ID, regeneratedHashes, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if credential, err := mfaRepository.Find(ctx, user.ID); err != nil || credential.RecoveryCodes != 2 {
+		t.Fatalf("PostgreSQL recovery code replacement failed: %#v %v", credential, err)
+	}
+	if err := mfaRepository.UseRecoveryCode(ctx, user.ID, regeneratedHashes[0], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if credential, err := mfaRepository.Find(ctx, user.ID); err != nil || credential.RecoveryCodes != 1 {
+		t.Fatalf("PostgreSQL regenerated recovery code consumption failed: %#v %v", credential, err)
+	}
 	limiter := ratelimit.NewService(NewRateLimitRepository(pool))
 	rateNow := time.Now().UTC().Add(-2 * time.Minute)
 	for index, expected := range []bool{true, true, false} {
