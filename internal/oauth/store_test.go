@@ -31,6 +31,36 @@ func TestAuthorizationCodePKCEMismatchDoesNotConsumeCode(t *testing.T) {
 	}
 }
 
+func TestOIDCClientSessionLifecycle(t *testing.T) {
+	repository := NewMemoryRepository()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, value := range []OIDCClientSession{
+		{SessionID: "session", ClientID: "alpha", UserID: "user", CreatedAt: now},
+		{SessionID: "session", ClientID: "beta", UserID: "user", CreatedAt: now},
+		{SessionID: "other", ClientID: "alpha", UserID: "user", CreatedAt: now},
+	} {
+		if err := repository.SaveOIDCClientSession(ctx, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := repository.ListOIDCClientSessions(ctx, "session")
+	if err != nil || len(items) != 2 {
+		t.Fatalf("unexpected OIDC client sessions: %#v %v", items, err)
+	}
+	if err := repository.DeleteOIDCClientSessions(ctx, "session"); err != nil {
+		t.Fatal(err)
+	}
+	items, err = repository.ListOIDCClientSessions(ctx, "session")
+	if err != nil || len(items) != 0 {
+		t.Fatalf("OIDC client sessions were not deleted: %#v %v", items, err)
+	}
+	items, err = repository.ListOIDCClientSessions(ctx, "other")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("unrelated OIDC client session was deleted: %#v %v", items, err)
+	}
+}
+
 func TestRefreshReuseRevokesReplacementFamily(t *testing.T) {
 	repository := NewMemoryRepository()
 	now := time.Now().UTC()

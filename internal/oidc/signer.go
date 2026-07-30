@@ -190,12 +190,19 @@ func signerFromPEM(encoded []byte) (*Signer, error) {
 }
 
 func (s *Signer) Sign(claims map[string]any) (string, error) {
+	return s.SignTyped(claims, "JWT")
+}
+
+func (s *Signer) SignTyped(claims map[string]any, tokenType string) (string, error) {
+	if tokenType == "" {
+		return "", errors.New("signed token type is required")
+	}
 	s.refreshIfStale()
 	s.mu.RLock()
 	key := s.key
 	kid := s.kid
 	s.mu.RUnlock()
-	header, err := json.Marshal(map[string]string{"alg": "RS256", "kid": kid, "typ": "JWT"})
+	header, err := json.Marshal(map[string]string{"alg": "RS256", "kid": kid, "typ": tokenType})
 	if err != nil {
 		return "", err
 	}

@@ -53,6 +53,29 @@ func TestSignerPersistsKeyAndProducesVerifiableJWT(t *testing.T) {
 	}
 }
 
+func TestSignerSupportsExplicitTokenTypes(t *testing.T) {
+	signer, err := NewSigner(context.Background(), &MemoryKeyRepository{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := signer.SignTyped(map[string]any{"events": map[string]any{}}, "logout+jwt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(token, ".")
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header map[string]string
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		t.Fatal(err)
+	}
+	if header["typ"] != "logout+jwt" {
+		t.Fatalf("unexpected explicit token type: %#v", header)
+	}
+}
+
 func TestSignerRotationKeepsRetiredVerificationKey(t *testing.T) {
 	ctx := context.Background()
 	repository := &MemoryKeyRepository{}

@@ -38,19 +38,24 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 
 func TestNewConfidentialClientReturnsSecretOnce(t *testing.T) {
 	item, secret, err := New(CreateClient{
-		ID:                     "finance",
-		Name:                   "Finance",
-		ApplicationType:        ApplicationConfidential,
-		RedirectURIs:           []string{"https://finance.example.com/oidc/callback"},
-		PostLogoutRedirectURIs: []string{"https://finance.example.com/logout/callback"},
-		LoginMethods:           []LoginMethod{LoginPassword},
-		AllowedScopes:          []string{"openid", "profile"},
+		ID:                               "finance",
+		Name:                             "Finance",
+		ApplicationType:                  ApplicationConfidential,
+		RedirectURIs:                     []string{"https://finance.example.com/oidc/callback"},
+		PostLogoutRedirectURIs:           []string{"https://finance.example.com/logout/callback"},
+		BackchannelLogoutURI:             "https://finance.example.com/oidc/backchannel-logout",
+		BackchannelLogoutSessionRequired: true,
+		LoginMethods:                     []LoginMethod{LoginPassword},
+		AllowedScopes:                    []string{"openid", "profile"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(secret) < 40 || len(item.SecretHash) != 32 {
 		t.Fatalf("secret was not generated securely: secret=%d hash=%d", len(secret), len(item.SecretHash))
+	}
+	if item.BackchannelLogoutURI == "" || !item.BackchannelLogoutSessionRequired {
+		t.Fatalf("back-channel logout metadata was not retained: %#v", item)
 	}
 	if strings.Contains(string(item.SecretHash), secret) {
 		t.Fatal("raw secret was retained in client")
@@ -78,6 +83,38 @@ func TestNewClientAllowsLoopbackHTTPForDevelopment(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNewClientRejectsInvalidBackchannelLogoutConfiguration(t *testing.T) {
+	tests := []CreateClient{
+		{
+			ID:                               "missing-uri",
+			Name:                             "Missing URI",
+			BackchannelLogoutSessionRequired: true,
+			RedirectURIs:                     []string{"https://app.example.com/callback"},
+			LoginMethods:                     []LoginMethod{LoginPassword},
+		},
+		{
+			ID:                   "insecure-uri",
+			Name:                 "Insecure URI",
+			BackchannelLogoutURI: "http://app.example.com/logout",
+			RedirectURIs:         []string{"https://app.example.com/callback"},
+			LoginMethods:         []LoginMethod{LoginPassword},
+		},
+		{
+			ID:                   "cas-only",
+			Name:                 "CAS Only",
+			Protocols:            []Protocol{ProtocolCAS},
+			BackchannelLogoutURI: "https://app.example.com/logout",
+			LoginMethods:         []LoginMethod{LoginPassword},
+			CASServiceURLs:       []string{"https://app.example.com/cas"},
+		},
+	}
+	for _, input := range tests {
+		if _, _, err := New(input); err == nil {
+			t.Fatalf("invalid back-channel logout configuration was accepted: %#v", input)
+		}
 	}
 }
 

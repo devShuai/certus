@@ -79,6 +79,13 @@ type DeviceAuthorization struct {
 	LastPollAt      *time.Time
 }
 
+type OIDCClientSession struct {
+	SessionID string
+	ClientID  string
+	UserID    string
+	CreatedAt time.Time
+}
+
 type Repository interface {
 	SaveAuthorizationCode(context.Context, AuthorizationCode) error
 	ConsumeAuthorizationCode(context.Context, []byte, string, string, string, time.Time) (AuthorizationCode, error)
@@ -93,6 +100,9 @@ type Repository interface {
 	FindDeviceByUserCode(context.Context, []byte, time.Time) (DeviceAuthorization, error)
 	DecideDeviceAuthorization(context.Context, []byte, string, time.Time, []string, string, bool, time.Time) error
 	PollDeviceAuthorization(context.Context, []byte, string, time.Time) (DeviceAuthorization, error)
+	SaveOIDCClientSession(context.Context, OIDCClientSession) error
+	ListOIDCClientSessions(context.Context, string) ([]OIDCClientSession, error)
+	DeleteOIDCClientSessions(context.Context, string) error
 }
 
 type memoryAuthorizationCode struct {
@@ -117,6 +127,7 @@ type MemoryRepository struct {
 	accessTokens []memoryAccessToken
 	refresh      []memoryRefreshToken
 	devices      []DeviceAuthorization
+	oidcSessions []OIDCClientSession
 }
 
 func NewMemoryRepository() *MemoryRepository {
@@ -362,6 +373,45 @@ func (r *MemoryRepository) PollDeviceAuthorization(_ context.Context, deviceHash
 		}
 	}
 	return DeviceAuthorization{}, ErrGrantNotFound
+}
+
+func (r *MemoryRepository) SaveOIDCClientSession(_ context.Context, value OIDCClientSession) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.oidcSessions {
+		if r.oidcSessions[index].SessionID == value.SessionID &&
+			r.oidcSessions[index].ClientID == value.ClientID {
+			r.oidcSessions[index] = value
+			return nil
+		}
+	}
+	r.oidcSessions = append(r.oidcSessions, value)
+	return nil
+}
+
+func (r *MemoryRepository) ListOIDCClientSessions(_ context.Context, sessionID string) ([]OIDCClientSession, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]OIDCClientSession, 0)
+	for _, value := range r.oidcSessions {
+		if value.SessionID == sessionID {
+			result = append(result, value)
+		}
+	}
+	return result, nil
+}
+
+func (r *MemoryRepository) DeleteOIDCClientSessions(_ context.Context, sessionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := r.oidcSessions[:0]
+	for _, value := range r.oidcSessions {
+		if value.SessionID != sessionID {
+			result = append(result, value)
+		}
+	}
+	r.oidcSessions = result
+	return nil
 }
 
 func cloneBytes(value []byte) []byte {

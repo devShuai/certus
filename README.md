@@ -22,7 +22,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - 外部 OIDC Discovery、授权码 + PKCE、state/nonce 校验与账号自动建档
 - OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
 - RFC 7662 Token Introspection 与 RFC 7009 访问/刷新令牌撤销
-- OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS、UserInfo、重新认证与 RP-Initiated Logout
+- OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS、UserInfo、重新认证、RP-Initiated Logout 与 Back-Channel Logout
 - OAuth 设备授权码、浏览器确认和标准轮询错误
 - CAS 1.0/2.0/3.0 Service Ticket 校验、PGT/PT 代理认证、Gateway、Renew 和后端单点登出
 - 可选 PostgreSQL 连接池与内嵌、带校验和的自动迁移
@@ -242,6 +242,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
   "post_logout_redirect_uris": [
     "https://finance.example.com/logout/callback"
   ],
+  "backchannel_logout_uri": "https://finance.example.com/oidc/backchannel-logout",
+  "backchannel_logout_session_required": true,
   "login_methods": [
     "password",
     "ldap"
@@ -290,6 +292,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
     "post_logout_redirect_uris": [
       "https://finance.example.com/logout/callback"
     ],
+    "backchannel_logout_uri": "https://finance.example.com/oidc/backchannel-logout",
+    "backchannel_logout_session_required": true,
     "scopes": [
       "openid",
       "profile",
@@ -380,6 +384,8 @@ OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开�
 OIDC 授权请求支持 `prompt=none`、`prompt=login` 与非负整数 `max_age`。静默认证无法完成时，Certus 会将 `login_required` 和原始 `state` 返回到已登记的精确回调地址；强制重新认证使用 5 分钟有效、绑定完整授权请求且完成后即失效的签名事务。授权码签发记录认证时间，后续 ID Token 始终携带 `auth_time`。
 
 OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oauth2/logout`。Certus 验证签名、发行者、受众及当前用户后撤销对应统一会话；仅当 `post_logout_redirect_uri` 与客户端独立登记的退出回调完全一致时才携带可选 `state` 跳回业务系统。
+
+配置 `backchannel_logout_uri` 后，Certus 会记录每个统一会话访问过的 OIDC 客户端。用户退出、RP-Initiated Logout、账户或管理员撤销会话、改密/重置密码以及管理员重置 MFA 时，服务端会向相关客户端并行 POST 带签名 `logout+jwt` 的 `logout_token`。令牌包含 `iss`、`sub`、`aud`、`iat`、`exp`、`jti`、`sid` 与标准退出 `events`，不包含 `nonce`；单次注销投递共用 5 秒超时且不跟随重定向。
 
 ## 运维与密钥轮换
 

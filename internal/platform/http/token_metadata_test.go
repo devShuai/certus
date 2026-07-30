@@ -105,6 +105,8 @@ func TestTokenIntrospectionAndRevocation(t *testing.T) {
 		`"introspection_endpoint":"https://auth.example.com/oauth2/introspect"`,
 		`"revocation_endpoint":"https://auth.example.com/oauth2/revoke"`,
 		`"end_session_endpoint":"https://auth.example.com/oauth2/logout"`,
+		`"backchannel_logout_supported":true`,
+		`"backchannel_logout_session_supported":true`,
 	} {
 		if !strings.Contains(discovery.Body.String(), endpoint) {
 			t.Fatalf("discovery missing %s: %s", endpoint, discovery.Body.String())

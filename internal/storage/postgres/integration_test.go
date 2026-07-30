@@ -13,6 +13,7 @@ import (
 	"certus/internal/client"
 	"certus/internal/identity"
 	"certus/internal/mfa"
+	"certus/internal/oauth"
 	"certus/internal/oidc"
 	"certus/internal/session"
 
@@ -64,15 +65,17 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	}
 
 	registered, _, err := client.New(client.CreateClient{
-		ID:                     "integration",
-		Name:                   "Integration",
-		ApplicationType:        client.ApplicationPublic,
-		Protocols:              []client.Protocol{client.ProtocolOAuth21},
-		GrantTypes:             []client.GrantType{client.GrantAuthorizationCode},
-		RedirectURIs:           []string{"https://app.example.com/callback"},
-		PostLogoutRedirectURIs: []string{"https://app.example.com/logout/callback"},
-		LoginMethods:           []client.LoginMethod{client.LoginPassword},
-		AllowedScopes:          []string{"openid", "roles"},
+		ID:                               "integration",
+		Name:                             "Integration",
+		ApplicationType:                  client.ApplicationPublic,
+		Protocols:                        []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:                       []client.GrantType{client.GrantAuthorizationCode},
+		RedirectURIs:                     []string{"https://app.example.com/callback"},
+		PostLogoutRedirectURIs:           []string{"https://app.example.com/logout/callback"},
+		BackchannelLogoutURI:             "https://app.example.com/oidc/backchannel-logout",
+		BackchannelLogoutSessionRequired: true,
+		LoginMethods:                     []client.LoginMethod{client.LoginPassword},
+		AllowedScopes:                    []string{"openid", "roles"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +86,9 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	}
 	storedClient, err := clientRepository.Find(ctx, registered.ID)
 	if err != nil || len(storedClient.PostLogoutRedirectURIs) != 1 ||
-		storedClient.PostLogoutRedirectURIs[0] != "https://app.example.com/logout/callback" {
+		storedClient.PostLogoutRedirectURIs[0] != "https://app.example.com/logout/callback" ||
+		storedClient.BackchannelLogoutURI != "https://app.example.com/oidc/backchannel-logout" ||
+		!storedClient.BackchannelLogoutSessionRequired {
 		t.Fatalf("client logout redirect round trip failed: %#v %v", storedClient, err)
 	}
 
@@ -115,6 +120,22 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	found, err := sessions.Find(ctx, rawSession)
 	if err != nil || found.ID != current.ID || found.AssuranceLevel != "urn:certus:aal:2" {
 		t.Fatalf("session repository round trip failed: %#v %v", found, err)
+	}
+	oauthRepository := NewOAuthRepository(pool)
+	if err := oauthRepository.SaveOIDCClientSession(ctx, oauth.OIDCClientSession{
+		SessionID: current.ID,
+		ClientID:  registered.ID,
+		UserID:    user.ID,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oidcSessions, err := oauthRepository.ListOIDCClientSessions(ctx, current.ID)
+	if err != nil || len(oidcSessions) != 1 || oidcSessions[0].ClientID != registered.ID {
+		t.Fatalf("OIDC client session round trip failed: %#v %v", oidcSessions, err)
+	}
+	if err := oauthRepository.DeleteOIDCClientSessions(ctx, current.ID); err != nil {
+		t.Fatal(err)
 	}
 
 	accessRepository := NewAccessRepository(pool)

@@ -277,12 +277,14 @@ func (s *server) resetAdminUserMFA(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "重置多因素认证失败")
 		return
 	}
+	revokedSessions := s.sessionsForRevocation(r.Context(), userID, "")
 	revoked, err := s.sessions.RevokeAll(r.Context(), userID, "")
 	if err != nil {
 		s.logger.Error("revoke sessions after admin MFA reset", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "server_error", "重置多因素认证后撤销会话失败")
 		return
 	}
+	s.cleanupRevokedSessions(r.Context(), revokedSessions)
 	s.recordAudit(r, audit.Event{
 		EventType: "mfa.reset_by_admin",
 		Outcome:   audit.OutcomeSuccess,

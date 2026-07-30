@@ -473,3 +473,48 @@ func scanDevice(scanner deviceScanner) (oauth.DeviceAuthorization, error) {
 	}
 	return value, nil
 }
+
+func (r *OAuthRepository) SaveOIDCClientSession(ctx context.Context, value oauth.OIDCClientSession) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO oidc_client_sessions (session_id, client_id, user_id, created_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (session_id, client_id)
+		DO UPDATE SET user_id = excluded.user_id, created_at = excluded.created_at`,
+		value.SessionID, value.ClientID, value.UserID, value.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("save OIDC client session: %w", err)
+	}
+	return nil
+}
+
+func (r *OAuthRepository) ListOIDCClientSessions(ctx context.Context, sessionID string) ([]oauth.OIDCClientSession, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT session_id::text, client_id, user_id::text, created_at
+		FROM oidc_client_sessions
+		WHERE session_id = $1
+		ORDER BY client_id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list OIDC client sessions: %w", err)
+	}
+	defer rows.Close()
+	result := make([]oauth.OIDCClientSession, 0)
+	for rows.Next() {
+		var value oauth.OIDCClientSession
+		if err := rows.Scan(&value.SessionID, &value.ClientID, &value.UserID, &value.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan OIDC client session: %w", err)
+		}
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate OIDC client sessions: %w", err)
+	}
+	return result, nil
+}
+
+func (r *OAuthRepository) DeleteOIDCClientSessions(ctx context.Context, sessionID string) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM oidc_client_sessions WHERE session_id = $1`, sessionID); err != nil {
+		return fmt.Errorf("delete OIDC client sessions: %w", err)
+	}
+	return nil
+}

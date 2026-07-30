@@ -13,27 +13,29 @@ type clientRegistrationResponse struct {
 }
 
 type integrationParameters struct {
-	SupportedProtocols          []client.Protocol  `json:"supported_protocols"`
-	Issuer                      string             `json:"issuer,omitempty"`
-	DiscoveryURL                string             `json:"discovery_url,omitempty"`
-	ClientID                    string             `json:"client_id"`
-	ClientSecret                string             `json:"client_secret,omitempty"`
-	ClientAuthenticationMethod  string             `json:"client_authentication_method,omitempty"`
-	AuthorizationEndpoint       string             `json:"authorization_endpoint,omitempty"`
-	TokenEndpoint               string             `json:"token_endpoint,omitempty"`
-	IntrospectionEndpoint       string             `json:"introspection_endpoint,omitempty"`
-	RevocationEndpoint          string             `json:"revocation_endpoint,omitempty"`
-	DeviceAuthorizationEndpoint string             `json:"device_authorization_endpoint,omitempty"`
-	UserInfoEndpoint            string             `json:"userinfo_endpoint,omitempty"`
-	EndSessionEndpoint          string             `json:"end_session_endpoint,omitempty"`
-	JWKSURI                     string             `json:"jwks_uri,omitempty"`
-	RedirectURIs                []string           `json:"redirect_uris,omitempty"`
-	PostLogoutRedirectURIs      []string           `json:"post_logout_redirect_uris,omitempty"`
-	Scopes                      []string           `json:"scopes,omitempty"`
-	ResponseTypes               []string           `json:"response_types,omitempty"`
-	GrantTypes                  []client.GrantType `json:"grant_types,omitempty"`
-	PKCE                        map[string]any     `json:"pkce,omitempty"`
-	CAS                         *casIntegration    `json:"cas,omitempty"`
+	SupportedProtocols               []client.Protocol  `json:"supported_protocols"`
+	Issuer                           string             `json:"issuer,omitempty"`
+	DiscoveryURL                     string             `json:"discovery_url,omitempty"`
+	ClientID                         string             `json:"client_id"`
+	ClientSecret                     string             `json:"client_secret,omitempty"`
+	ClientAuthenticationMethod       string             `json:"client_authentication_method,omitempty"`
+	AuthorizationEndpoint            string             `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint                    string             `json:"token_endpoint,omitempty"`
+	IntrospectionEndpoint            string             `json:"introspection_endpoint,omitempty"`
+	RevocationEndpoint               string             `json:"revocation_endpoint,omitempty"`
+	DeviceAuthorizationEndpoint      string             `json:"device_authorization_endpoint,omitempty"`
+	UserInfoEndpoint                 string             `json:"userinfo_endpoint,omitempty"`
+	EndSessionEndpoint               string             `json:"end_session_endpoint,omitempty"`
+	JWKSURI                          string             `json:"jwks_uri,omitempty"`
+	RedirectURIs                     []string           `json:"redirect_uris,omitempty"`
+	PostLogoutRedirectURIs           []string           `json:"post_logout_redirect_uris,omitempty"`
+	BackchannelLogoutURI             string             `json:"backchannel_logout_uri,omitempty"`
+	BackchannelLogoutSessionRequired bool               `json:"backchannel_logout_session_required,omitempty"`
+	Scopes                           []string           `json:"scopes,omitempty"`
+	ResponseTypes                    []string           `json:"response_types,omitempty"`
+	GrantTypes                       []client.GrantType `json:"grant_types,omitempty"`
+	PKCE                             map[string]any     `json:"pkce,omitempty"`
+	CAS                              *casIntegration    `json:"cas,omitempty"`
 }
 
 type casIntegration struct {
@@ -224,6 +226,8 @@ func (s *server) integrationParameters(item client.Client, secret string) integr
 		parameters.JWKSURI = s.cfg.Issuer + "/oauth2/jwks"
 		parameters.RedirectURIs = item.RedirectURIs
 		parameters.PostLogoutRedirectURIs = item.PostLogoutRedirectURIs
+		parameters.BackchannelLogoutURI = item.BackchannelLogoutURI
+		parameters.BackchannelLogoutSessionRequired = item.BackchannelLogoutSessionRequired
 		parameters.Scopes = item.AllowedScopes
 		parameters.GrantTypes = item.GrantTypes
 		parameters.ClientAuthenticationMethod = "none"

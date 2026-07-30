@@ -64,63 +64,69 @@ const (
 )
 
 type Client struct {
-	ID                     string          `json:"id"`
-	Name                   string          `json:"name"`
-	Description            string          `json:"description,omitempty"`
-	ApplicationType        ApplicationType `json:"application_type"`
-	Protocols              []Protocol      `json:"protocols"`
-	GrantTypes             []GrantType     `json:"grant_types,omitempty"`
-	RedirectURIs           []string        `json:"redirect_uris"`
-	PostLogoutRedirectURIs []string        `json:"post_logout_redirect_uris,omitempty"`
-	LoginMethods           []LoginMethod   `json:"login_methods"`
-	AllowedScopes          []string        `json:"allowed_scopes"`
-	CASVersion             CASVersion      `json:"cas_version,omitempty"`
-	CASServiceURLs         []string        `json:"cas_service_urls,omitempty"`
-	CASProxy               bool            `json:"cas_proxy"`
-	CASGateway             bool            `json:"cas_gateway"`
-	CASRenew               bool            `json:"cas_renew"`
-	CASSingleLogout        bool            `json:"cas_single_logout"`
-	Enabled                bool            `json:"enabled"`
-	ArchivedAt             *time.Time      `json:"archived_at,omitempty"`
-	SecretHash             []byte          `json:"-"`
+	ID                               string          `json:"id"`
+	Name                             string          `json:"name"`
+	Description                      string          `json:"description,omitempty"`
+	ApplicationType                  ApplicationType `json:"application_type"`
+	Protocols                        []Protocol      `json:"protocols"`
+	GrantTypes                       []GrantType     `json:"grant_types,omitempty"`
+	RedirectURIs                     []string        `json:"redirect_uris"`
+	PostLogoutRedirectURIs           []string        `json:"post_logout_redirect_uris,omitempty"`
+	BackchannelLogoutURI             string          `json:"backchannel_logout_uri,omitempty"`
+	BackchannelLogoutSessionRequired bool            `json:"backchannel_logout_session_required"`
+	LoginMethods                     []LoginMethod   `json:"login_methods"`
+	AllowedScopes                    []string        `json:"allowed_scopes"`
+	CASVersion                       CASVersion      `json:"cas_version,omitempty"`
+	CASServiceURLs                   []string        `json:"cas_service_urls,omitempty"`
+	CASProxy                         bool            `json:"cas_proxy"`
+	CASGateway                       bool            `json:"cas_gateway"`
+	CASRenew                         bool            `json:"cas_renew"`
+	CASSingleLogout                  bool            `json:"cas_single_logout"`
+	Enabled                          bool            `json:"enabled"`
+	ArchivedAt                       *time.Time      `json:"archived_at,omitempty"`
+	SecretHash                       []byte          `json:"-"`
 }
 
 type CreateClient struct {
-	ID                     string          `json:"id"`
-	Name                   string          `json:"name"`
-	Description            string          `json:"description"`
-	ApplicationType        ApplicationType `json:"application_type"`
-	Protocols              []Protocol      `json:"protocols"`
-	GrantTypes             []GrantType     `json:"grant_types"`
-	RedirectURIs           []string        `json:"redirect_uris"`
-	PostLogoutRedirectURIs []string        `json:"post_logout_redirect_uris"`
-	LoginMethods           []LoginMethod   `json:"login_methods"`
-	AllowedScopes          []string        `json:"allowed_scopes"`
-	CASVersion             CASVersion      `json:"cas_version"`
-	CASServiceURLs         []string        `json:"cas_service_urls"`
-	CASProxy               bool            `json:"cas_proxy"`
-	CASGateway             bool            `json:"cas_gateway"`
-	CASRenew               bool            `json:"cas_renew"`
-	CASSingleLogout        bool            `json:"cas_single_logout"`
-	Enabled                *bool           `json:"enabled"`
+	ID                               string          `json:"id"`
+	Name                             string          `json:"name"`
+	Description                      string          `json:"description"`
+	ApplicationType                  ApplicationType `json:"application_type"`
+	Protocols                        []Protocol      `json:"protocols"`
+	GrantTypes                       []GrantType     `json:"grant_types"`
+	RedirectURIs                     []string        `json:"redirect_uris"`
+	PostLogoutRedirectURIs           []string        `json:"post_logout_redirect_uris"`
+	BackchannelLogoutURI             string          `json:"backchannel_logout_uri"`
+	BackchannelLogoutSessionRequired bool            `json:"backchannel_logout_session_required"`
+	LoginMethods                     []LoginMethod   `json:"login_methods"`
+	AllowedScopes                    []string        `json:"allowed_scopes"`
+	CASVersion                       CASVersion      `json:"cas_version"`
+	CASServiceURLs                   []string        `json:"cas_service_urls"`
+	CASProxy                         bool            `json:"cas_proxy"`
+	CASGateway                       bool            `json:"cas_gateway"`
+	CASRenew                         bool            `json:"cas_renew"`
+	CASSingleLogout                  bool            `json:"cas_single_logout"`
+	Enabled                          *bool           `json:"enabled"`
 }
 
 type ReplaceClient struct {
-	Name                   string        `json:"name"`
-	Description            string        `json:"description"`
-	Protocols              []Protocol    `json:"protocols"`
-	GrantTypes             []GrantType   `json:"grant_types"`
-	RedirectURIs           []string      `json:"redirect_uris"`
-	PostLogoutRedirectURIs []string      `json:"post_logout_redirect_uris"`
-	LoginMethods           []LoginMethod `json:"login_methods"`
-	AllowedScopes          []string      `json:"allowed_scopes"`
-	CASVersion             CASVersion    `json:"cas_version"`
-	CASServiceURLs         []string      `json:"cas_service_urls"`
-	CASProxy               bool          `json:"cas_proxy"`
-	CASGateway             bool          `json:"cas_gateway"`
-	CASRenew               bool          `json:"cas_renew"`
-	CASSingleLogout        bool          `json:"cas_single_logout"`
-	Enabled                *bool         `json:"enabled"`
+	Name                             string        `json:"name"`
+	Description                      string        `json:"description"`
+	Protocols                        []Protocol    `json:"protocols"`
+	GrantTypes                       []GrantType   `json:"grant_types"`
+	RedirectURIs                     []string      `json:"redirect_uris"`
+	PostLogoutRedirectURIs           []string      `json:"post_logout_redirect_uris"`
+	BackchannelLogoutURI             string        `json:"backchannel_logout_uri"`
+	BackchannelLogoutSessionRequired bool          `json:"backchannel_logout_session_required"`
+	LoginMethods                     []LoginMethod `json:"login_methods"`
+	AllowedScopes                    []string      `json:"allowed_scopes"`
+	CASVersion                       CASVersion    `json:"cas_version"`
+	CASServiceURLs                   []string      `json:"cas_service_urls"`
+	CASProxy                         bool          `json:"cas_proxy"`
+	CASGateway                       bool          `json:"cas_gateway"`
+	CASRenew                         bool          `json:"cas_renew"`
+	CASSingleLogout                  bool          `json:"cas_single_logout"`
+	Enabled                          *bool         `json:"enabled"`
 }
 
 func (c Client) AllowsRedirectURI(candidate string) bool {
@@ -260,23 +266,25 @@ var scopePattern = regexp.MustCompile(`^[a-zA-Z0-9._:/-]{1,64}$`)
 
 func New(input CreateClient) (Client, string, error) {
 	item := Client{
-		ID:                     strings.ToLower(strings.TrimSpace(input.ID)),
-		Name:                   strings.TrimSpace(input.Name),
-		Description:            strings.TrimSpace(input.Description),
-		ApplicationType:        input.ApplicationType,
-		Protocols:              uniqueProtocols(input.Protocols),
-		GrantTypes:             uniqueGrantTypes(input.GrantTypes),
-		RedirectURIs:           uniqueStrings(input.RedirectURIs),
-		PostLogoutRedirectURIs: uniqueStrings(input.PostLogoutRedirectURIs),
-		LoginMethods:           uniqueMethods(input.LoginMethods),
-		AllowedScopes:          uniqueStrings(input.AllowedScopes),
-		CASVersion:             input.CASVersion,
-		CASServiceURLs:         uniqueStrings(input.CASServiceURLs),
-		CASProxy:               input.CASProxy,
-		CASGateway:             input.CASGateway,
-		CASRenew:               input.CASRenew,
-		CASSingleLogout:        input.CASSingleLogout,
-		Enabled:                true,
+		ID:                               strings.ToLower(strings.TrimSpace(input.ID)),
+		Name:                             strings.TrimSpace(input.Name),
+		Description:                      strings.TrimSpace(input.Description),
+		ApplicationType:                  input.ApplicationType,
+		Protocols:                        uniqueProtocols(input.Protocols),
+		GrantTypes:                       uniqueGrantTypes(input.GrantTypes),
+		RedirectURIs:                     uniqueStrings(input.RedirectURIs),
+		PostLogoutRedirectURIs:           uniqueStrings(input.PostLogoutRedirectURIs),
+		BackchannelLogoutURI:             strings.TrimSpace(input.BackchannelLogoutURI),
+		BackchannelLogoutSessionRequired: input.BackchannelLogoutSessionRequired,
+		LoginMethods:                     uniqueMethods(input.LoginMethods),
+		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
+		CASVersion:                       input.CASVersion,
+		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
+		CASProxy:                         input.CASProxy,
+		CASGateway:                       input.CASGateway,
+		CASRenew:                         input.CASRenew,
+		CASSingleLogout:                  input.CASSingleLogout,
+		Enabled:                          true,
 	}
 	if input.Enabled != nil {
 		item.Enabled = *input.Enabled
@@ -319,24 +327,26 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 		enabled = *input.Enabled
 	}
 	item := Client{
-		ID:                     current.ID,
-		Name:                   strings.TrimSpace(input.Name),
-		Description:            strings.TrimSpace(input.Description),
-		ApplicationType:        current.ApplicationType,
-		Protocols:              uniqueProtocols(input.Protocols),
-		GrantTypes:             uniqueGrantTypes(input.GrantTypes),
-		RedirectURIs:           uniqueStrings(input.RedirectURIs),
-		PostLogoutRedirectURIs: uniqueStrings(input.PostLogoutRedirectURIs),
-		LoginMethods:           uniqueMethods(input.LoginMethods),
-		AllowedScopes:          uniqueStrings(input.AllowedScopes),
-		CASVersion:             input.CASVersion,
-		CASServiceURLs:         uniqueStrings(input.CASServiceURLs),
-		CASProxy:               input.CASProxy,
-		CASGateway:             input.CASGateway,
-		CASRenew:               input.CASRenew,
-		CASSingleLogout:        input.CASSingleLogout,
-		Enabled:                enabled,
-		SecretHash:             slices.Clone(current.SecretHash),
+		ID:                               current.ID,
+		Name:                             strings.TrimSpace(input.Name),
+		Description:                      strings.TrimSpace(input.Description),
+		ApplicationType:                  current.ApplicationType,
+		Protocols:                        uniqueProtocols(input.Protocols),
+		GrantTypes:                       uniqueGrantTypes(input.GrantTypes),
+		RedirectURIs:                     uniqueStrings(input.RedirectURIs),
+		PostLogoutRedirectURIs:           uniqueStrings(input.PostLogoutRedirectURIs),
+		BackchannelLogoutURI:             strings.TrimSpace(input.BackchannelLogoutURI),
+		BackchannelLogoutSessionRequired: input.BackchannelLogoutSessionRequired,
+		LoginMethods:                     uniqueMethods(input.LoginMethods),
+		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
+		CASVersion:                       input.CASVersion,
+		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
+		CASProxy:                         input.CASProxy,
+		CASGateway:                       input.CASGateway,
+		CASRenew:                         input.CASRenew,
+		CASSingleLogout:                  input.CASSingleLogout,
+		Enabled:                          enabled,
+		SecretHash:                       slices.Clone(current.SecretHash),
 	}
 	if item.SupportsOAuth() && len(item.GrantTypes) == 0 {
 		item.GrantTypes = []GrantType{GrantAuthorizationCode, GrantRefreshToken}
@@ -427,6 +437,16 @@ func (c Client) Validate() error {
 		if !validEndpointURL(redirectURI) {
 			return fmt.Errorf("%w: invalid post_logout_redirect_uri %q", ErrInvalid, redirectURI)
 		}
+	}
+	if c.BackchannelLogoutURI != "" {
+		if !c.SupportsOAuth() {
+			return fmt.Errorf("%w: backchannel_logout_uri requires OAuth/OIDC", ErrInvalid)
+		}
+		if !validEndpointURL(c.BackchannelLogoutURI) {
+			return fmt.Errorf("%w: invalid backchannel_logout_uri %q", ErrInvalid, c.BackchannelLogoutURI)
+		}
+	} else if c.BackchannelLogoutSessionRequired {
+		return fmt.Errorf("%w: backchannel_logout_session_required requires backchannel_logout_uri", ErrInvalid)
 	}
 	interactive := c.SupportsProtocol(ProtocolCAS) ||
 		c.SupportsGrant(GrantAuthorizationCode) ||

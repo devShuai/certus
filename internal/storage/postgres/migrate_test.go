@@ -156,3 +156,18 @@ func TestOIDCLogoutMigration(t *testing.T) {
 		t.Fatal("OIDC logout migration does not create the post-logout redirect registry")
 	}
 }
+
+func TestOIDCBackchannelLogoutMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/014_oidc_backchannel_logout.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN backchannel_logout_uri",
+		"CREATE TABLE oidc_client_sessions",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("OIDC back-channel logout migration does not contain %s", expected)
+		}
+	}
+}

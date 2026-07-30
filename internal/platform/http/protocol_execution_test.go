@@ -449,6 +449,109 @@ func TestOIDCRPInitiatedLogout(t *testing.T) {
 	}
 }
 
+func TestOIDCBackchannelLogout(t *testing.T) {
+	logoutTokens := make(chan string, 2)
+	relyingParty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oidc/backchannel-logout" {
+			t.Errorf("unexpected back-channel path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method != http.MethodPost ||
+			!strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+			t.Errorf("invalid back-channel request: %s %s", r.Method, r.Header.Get("Content-Type"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse back-channel logout: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		logoutTokens <- r.Form.Get("logout_token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer relyingParty.Close()
+
+	handler := newProtocolTestHandlerWithBackchannel(
+		t,
+		relyingParty.URL+"/cas",
+		relyingParty.URL+"/oidc/backchannel-logout",
+		relyingParty.Client(),
+	)
+	browser := newTestBrowser(handler)
+	browser.login(t, "/portal")
+	authorizeQuery := oidcAuthorizationQuery("backchannel-state")
+	authorized := browser.request(t, http.MethodGet, "/oauth2/authorize?"+authorizeQuery.Encode(), "", "")
+	callback, err := url.Parse(authorized.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"integration"},
+		"code":          {callback.Query().Get("code")},
+		"redirect_uri":  {"https://app.example.com/callback"},
+		"code_verifier": {strings.Repeat("v", 64)},
+	}
+	tokenResponse := browser.request(t, http.MethodPost, "/oauth2/token", tokenForm.Encode(), "application/x-www-form-urlencoded")
+	if tokenResponse.Code != http.StatusOK {
+		t.Fatalf("token for back-channel logout: %d %s", tokenResponse.Code, tokenResponse.Body.String())
+	}
+
+	logoutForm := url.Values{"csrf_token": {browser.cookies[csrfCookieName].Value}}
+	loggedOut := browser.request(t, http.MethodPost, "/logout", logoutForm.Encode(), "application/x-www-form-urlencoded")
+	if loggedOut.Code != http.StatusSeeOther {
+		t.Fatalf("local logout: %d %s", loggedOut.Code, loggedOut.Body.String())
+	}
+	var logoutToken string
+	select {
+	case logoutToken = <-logoutTokens:
+	default:
+		t.Fatal("OIDC back-channel logout was not sent")
+	}
+	if len(logoutTokens) != 0 {
+		t.Fatal("OIDC back-channel logout was sent more than once")
+	}
+	parts := strings.Split(logoutToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid logout token: %s", logoutToken)
+	}
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header map[string]any
+	if err := json.Unmarshal(headerJSON, &header); err != nil || header["typ"] != "logout+jwt" || header["alg"] != "RS256" {
+		t.Fatalf("invalid logout token header: %s %v", headerJSON, err)
+	}
+	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := claims["events"].(map[string]any)
+	subject, _ := claims["sub"].(string)
+	sessionID, _ := claims["sid"].(string)
+	tokenID, _ := claims["jti"].(string)
+	if claims["iss"] != "https://auth.example.com" ||
+		claims["aud"] != "integration" ||
+		subject == "" ||
+		sessionID == "" ||
+		tokenID == "" ||
+		claims["iat"] == nil ||
+		claims["exp"] == nil ||
+		events[oidcBackchannelLogoutEvent] == nil {
+		t.Fatalf("logout token missing required claims: %s", claimsJSON)
+	}
+	if _, exists := claims["nonce"]; exists {
+		t.Fatalf("logout token contains prohibited nonce: %s", claimsJSON)
+	}
+}
+
 func oidcAuthorizationQuery(state string) url.Values {
 	verifier := strings.Repeat("v", 64)
 	sum := sha256.Sum256([]byte(verifier))
@@ -465,6 +568,15 @@ func oidcAuthorizationQuery(state string) url.Values {
 }
 
 func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...*http.Client) http.Handler {
+	return newProtocolTestHandlerWithBackchannel(t, serviceURL, "", outboundClients...)
+}
+
+func newProtocolTestHandlerWithBackchannel(
+	t *testing.T,
+	serviceURL string,
+	backchannelLogoutURI string,
+	outboundClients ...*http.Client,
+) http.Handler {
 	t.Helper()
 	user, err := identity.NewUser(identity.CreateUser{
 		Username:    "alice",
@@ -479,21 +591,23 @@ func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...
 		t.Fatal(err)
 	}
 	clients := client.NewMemoryRepository(client.Client{
-		ID:                     "integration",
-		Name:                   "Integration",
-		ApplicationType:        client.ApplicationPublic,
-		Protocols:              []client.Protocol{client.ProtocolOAuth21, client.ProtocolCAS},
-		GrantTypes:             []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken, client.GrantDeviceCode},
-		RedirectURIs:           []string{"https://app.example.com/callback"},
-		PostLogoutRedirectURIs: []string{"https://app.example.com/logout/callback"},
-		LoginMethods:           []client.LoginMethod{client.LoginPassword},
-		AllowedScopes:          []string{"openid", "profile", "email", "roles"},
-		CASVersion:             client.CASVersion3,
-		CASServiceURLs:         []string{serviceURL},
-		CASProxy:               true,
-		CASRenew:               true,
-		CASSingleLogout:        true,
-		Enabled:                true,
+		ID:                               "integration",
+		Name:                             "Integration",
+		ApplicationType:                  client.ApplicationPublic,
+		Protocols:                        []client.Protocol{client.ProtocolOAuth21, client.ProtocolCAS},
+		GrantTypes:                       []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken, client.GrantDeviceCode},
+		RedirectURIs:                     []string{"https://app.example.com/callback"},
+		PostLogoutRedirectURIs:           []string{"https://app.example.com/logout/callback"},
+		BackchannelLogoutURI:             backchannelLogoutURI,
+		BackchannelLogoutSessionRequired: backchannelLogoutURI != "",
+		LoginMethods:                     []client.LoginMethod{client.LoginPassword},
+		AllowedScopes:                    []string{"openid", "profile", "email", "roles"},
+		CASVersion:                       client.CASVersion3,
+		CASServiceURLs:                   []string{serviceURL},
+		CASProxy:                         true,
+		CASRenew:                         true,
+		CASSingleLogout:                  true,
+		Enabled:                          true,
 	})
 	accessRepository := access.NewMemoryRepository()
 	role, err := access.NewRole("integration", access.CreateRole{Code: "approver", Name: "审批人"}, time.Now())

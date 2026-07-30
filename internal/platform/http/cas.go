@@ -450,6 +450,10 @@ func (s *server) casLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
 		_ = s.sessions.Revoke(r.Context(), current.ID)
+		s.notifyOIDCBackchannelLogout(r.Context(), []oidcLogoutSession{{
+			SessionID: current.ID,
+			UserID:    current.UserID,
+		}})
 	}
 	s.clearSessionCookie(w)
 	target := r.URL.Query().Get("service")

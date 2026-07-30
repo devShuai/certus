@@ -80,7 +80,7 @@ func (s *server) revokeAccountSession(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "撤销会话失败")
 		return
 	}
-	_ = s.cas.DeleteServiceSessions(r.Context(), sessionID)
+	s.cleanupRevokedSessions(r.Context(), []session.Session{{ID: sessionID, UserID: current.UserID}})
 	if sessionID == current.ID {
 		s.clearSessionCookie(w)
 	}
@@ -126,9 +126,12 @@ func (s *server) changeAccountPassword(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_password", err.Error())
 		return
 	}
+	revokedSessions := s.sessionsForRevocation(r.Context(), current.UserID, current.ID)
 	revoked, revokeErr := s.sessions.RevokeAll(r.Context(), current.UserID, current.ID)
 	if revokeErr != nil {
 		s.logger.Error("revoke other sessions after password change", "error", revokeErr)
+	} else {
+		s.cleanupRevokedSessions(r.Context(), revokedSessions)
 	}
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(current.UserID),
@@ -194,9 +197,12 @@ func (s *server) resetAccountPassword(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_password", err.Error())
 		return
 	}
+	revokedSessions := s.sessionsForRevocation(r.Context(), userID, "")
 	revoked, revokeErr := s.sessions.RevokeAll(r.Context(), userID, "")
 	if revokeErr != nil {
 		s.logger.Error("revoke sessions after password reset", "error", revokeErr)
+	} else {
+		s.cleanupRevokedSessions(r.Context(), revokedSessions)
 	}
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(userID),
@@ -235,7 +241,7 @@ func (s *server) revokeAdminUserSession(w http.ResponseWriter, r *http.Request) 
 		writeProblem(w, http.StatusInternalServerError, "server_error", "撤销会话失败")
 		return
 	}
-	_ = s.cas.DeleteServiceSessions(r.Context(), sessionID)
+	s.cleanupRevokedSessions(r.Context(), []session.Session{{ID: sessionID, UserID: userID}})
 	s.recordAudit(r, audit.Event{
 		EventType: "session.revoked_by_admin",
 		Outcome:   audit.OutcomeSuccess,
@@ -259,9 +265,7 @@ func (s *server) revokeAllAdminUserSessions(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, http.StatusInternalServerError, "server_error", "撤销会话失败")
 		return
 	}
-	for _, item := range items {
-		_ = s.cas.DeleteServiceSessions(r.Context(), item.ID)
-	}
+	s.cleanupRevokedSessions(r.Context(), items)
 	s.recordAudit(r, audit.Event{
 		EventType: "session.revoked_all_by_admin",
 		Outcome:   audit.OutcomeSuccess,

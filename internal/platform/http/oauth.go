@@ -447,6 +447,16 @@ func (s *server) issueUserTokens(
 		if err != nil {
 			return nil, err
 		}
+		if sessionID != "" && registered.BackchannelLogoutURI != "" {
+			if err := s.oauth.SaveOIDCClientSession(r.Context(), oauth.OIDCClientSession{
+				SessionID: sessionID,
+				ClientID:  registered.ID,
+				UserID:    userID,
+				CreatedAt: now,
+			}); err != nil {
+				return nil, err
+			}
+		}
 		response["id_token"] = idToken
 	}
 	return response, nil
@@ -757,17 +767,21 @@ func (s *server) oidcLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	revokedSessions := make(map[string]struct{}, 2)
+	logoutSessions := make([]oidcLogoutSession, 0, 2)
 	if sessionID != "" {
 		_ = s.cas.DeleteServiceSessions(r.Context(), sessionID)
 		_ = s.sessions.Revoke(r.Context(), sessionID)
 		revokedSessions[sessionID] = struct{}{}
+		logoutSessions = append(logoutSessions, oidcLogoutSession{SessionID: sessionID, UserID: subject})
 	}
 	if authenticated {
 		if _, alreadyRevoked := revokedSessions[current.ID]; !alreadyRevoked {
 			_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
 			_ = s.sessions.Revoke(r.Context(), current.ID)
+			logoutSessions = append(logoutSessions, oidcLogoutSession{SessionID: current.ID, UserID: current.UserID})
 		}
 	}
+	s.notifyOIDCBackchannelLogout(r.Context(), logoutSessions)
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(subject),
 		EventType:   "logout.oidc",
@@ -829,6 +843,8 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"id_token_signing_alg_values_supported":         []string{"RS256"},
 		"acr_values_supported":                          []string{"urn:certus:aal:1", "urn:certus:aal:2"},
 		"claims_supported":                              []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "sid", "nonce", "acr", "amr", "name", "preferred_username", "email", "roles", "permissions"},
+		"backchannel_logout_supported":                  true,
+		"backchannel_logout_session_supported":          true,
 	})
 }
 
