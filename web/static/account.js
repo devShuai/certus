@@ -288,6 +288,36 @@ function renderMFA() {
   setupForm.classList.remove("hidden");
 }
 
+function renderMFAQRCode(rows) {
+  const container = document.querySelector("#mfa-qr-code");
+  container.replaceChildren();
+  if (!Array.isArray(rows) || !rows.length || rows.some((row) => typeof row !== "string" || row.length !== rows.length || /[^01]/.test(row))) {
+    container.append(accountElement("span", { className: "muted", text: "二维码生成失败，请使用下方密钥手动添加。" }));
+    return;
+  }
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  svg.setAttribute("viewBox", `0 0 ${rows.length} ${rows.length}`);
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  svg.setAttribute("shape-rendering", "crispEdges");
+  const background = document.createElementNS(namespace, "rect");
+  background.setAttribute("width", String(rows.length));
+  background.setAttribute("height", String(rows.length));
+  background.setAttribute("fill", "#fff");
+  const modules = document.createElementNS(namespace, "path");
+  const path = [];
+  rows.forEach((row, y) => {
+    [...row].forEach((value, x) => {
+      if (value === "1") path.push(`M${x} ${y}h1v1h-1z`);
+    });
+  });
+  modules.setAttribute("d", path.join(""));
+  modules.setAttribute("fill", "#14161f");
+  svg.append(background, modules);
+  container.append(svg);
+}
+
 document.querySelector("#mfa-setup-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -303,6 +333,7 @@ document.querySelector("#mfa-setup-form").addEventListener("submit", async (even
     accountState.recoveryCodes = setup.recovery_codes || [];
     document.querySelector("#mfa-secret").textContent = setup.secret;
     document.querySelector("#mfa-uri").value = setup.otpauth_uri;
+    renderMFAQRCode(setup.qr_code_rows);
     const codes = document.querySelector("#recovery-codes");
     codes.replaceChildren(...accountState.recoveryCodes.map((code) => accountElement("code", { text: code })));
     document.querySelector("#mfa-setup-result").classList.remove("hidden");
@@ -343,6 +374,7 @@ document.querySelector("#mfa-enable-form").addEventListener("submit", async (eve
     document.querySelector("#recovery-codes").replaceChildren();
     document.querySelector("#mfa-secret").textContent = "";
     document.querySelector("#mfa-uri").value = "";
+    document.querySelector("#mfa-qr-code").replaceChildren();
     document.querySelector("#mfa-setup-result").classList.add("hidden");
     await loadMFA();
     setAccountStatus("多因素认证已启用。", "success");

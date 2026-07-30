@@ -77,12 +77,22 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("setup MFA: %d %s", response.Code, response.Body.String())
 	}
-	var setup mfa.Setup
-	if err := json.Unmarshal(response.Body.Bytes(), &setup); err != nil {
+	var setupResponse mfaSetupResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &setupResponse); err != nil {
 		t.Fatal(err)
 	}
+	setup := setupResponse.Setup
 	if len(setup.RecoveryCodes) != 10 || setup.Secret == "" || setup.OTPAuthURI == "" {
 		t.Fatalf("incomplete MFA setup: %#v", setup)
+	}
+	if len(setupResponse.QRCodeRows) == 0 {
+		t.Fatal("MFA setup did not include QR code rows")
+	}
+	for _, row := range setupResponse.QRCodeRows {
+		if len(row) != len(setupResponse.QRCodeRows) ||
+			strings.Trim(row, "01") != "" {
+			t.Fatalf("invalid QR code row: %q", row)
+		}
 	}
 	code := testTOTP(t, setup.Secret, time.Now())
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/account/mfa/totp/enable", strings.NewReader(

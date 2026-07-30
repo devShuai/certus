@@ -9,12 +9,41 @@ import (
 	"certus/internal/audit"
 	"certus/internal/identity"
 	"certus/internal/mfa"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type mfaLoginPageData struct {
 	Title     string
 	CSRFToken string
 	Error     string
+}
+
+type mfaSetupResponse struct {
+	mfa.Setup
+	QRCodeRows []string `json:"qr_code_rows"`
+}
+
+func enrollmentQRCodeRows(value string) ([]string, error) {
+	code, err := qrcode.New(value, qrcode.Medium)
+	if err != nil {
+		return nil, err
+	}
+	bitmap := code.Bitmap()
+	rows := make([]string, len(bitmap))
+	for y, modules := range bitmap {
+		var row strings.Builder
+		row.Grow(len(modules))
+		for _, dark := range modules {
+			if dark {
+				row.WriteByte('1')
+			} else {
+				row.WriteByte('0')
+			}
+		}
+		rows[y] = row.String()
+	}
+	return rows, nil
 }
 
 func (s *server) beginMFAChallenge(w http.ResponseWriter, r *http.Request, userID, returnTo, method, clientID string) {
@@ -202,12 +231,21 @@ func (s *server) setupAccountMFA(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "创建多因素认证配置失败")
 		return
 	}
+	qrCodeRows, err := enrollmentQRCodeRows(setup.OTPAuthURI)
+	if err != nil {
+		s.logger.Error("generate account MFA QR code", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "生成认证器二维码失败")
+		return
+	}
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(user.ID),
 		EventType:   "mfa.setup_started",
 		Outcome:     audit.OutcomeSuccess,
 	})
-	writeJSON(w, http.StatusCreated, setup)
+	writeJSON(w, http.StatusCreated, mfaSetupResponse{
+		Setup:      setup,
+		QRCodeRows: qrCodeRows,
+	})
 }
 
 func (s *server) enableAccountMFA(w http.ResponseWriter, r *http.Request) {

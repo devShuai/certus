@@ -50,8 +50,12 @@
       </form>
       <div id="mfa-setup-result" class="mfa-setup-result hidden">
         <p class="warning">下列恢复码只显示一次。请保存到离线安全位置，切勿发送给他人。</p>
+        <div class="mfa-qr-panel">
+          <div><strong>扫描二维码</strong><p class="muted">使用支持 TOTP 的认证器扫描，然后输入生成的 6 位动态口令。</p></div>
+          <div id="mfa-qr-code" class="mfa-qr-code" role="img" aria-label="TOTP 认证器二维码"></div>
+        </div>
         <label>TOTP 密钥<code id="mfa-secret"></code></label>
-        <label>认证器 URI<textarea id="mfa-uri" rows="3" readonly></textarea></label>
+        <details class="mfa-manual"><summary>无法扫码？查看手动接入 URI</summary><label>认证器 URI<textarea id="mfa-uri" rows="3" readonly></textarea></label></details>
         <div class="section-heading"><strong>恢复码</strong><button id="copy-recovery-codes" class="secondary" type="button">复制恢复码</button></div>
         <div id="recovery-codes" class="recovery-codes"></div>
         <form id="mfa-enable-form" class="stack">

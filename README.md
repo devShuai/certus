@@ -214,7 +214,7 @@ POST   /api/v1/account/mfa/recovery-codes
 DELETE /api/v1/account/mfa/totp
 ```
 
-`GET` 响应中的 `csrf_token` 必须通过 `X-CSRF-Token` 请求头传给所有账号安全写接口，并同时携带登录会话 Cookie。注册 TOTP 前还会重新验证当前密码；`setup` 返回 `otpauth_uri`、Base32 密钥和 10 枚仅显示一次的高熵恢复码。恢复码重新生成同时要求当前密码和一个有效的动态口令或现有恢复码，成功后在同一事务中废止全部旧码并返回 10 枚只显示一次的新码。
+`GET` 响应中的 `csrf_token` 必须通过 `X-CSRF-Token` 请求头传给所有账号安全写接口，并同时携带登录会话 Cookie。注册 TOTP 前还会重新验证当前密码；`setup` 返回 `otpauth_uri`、Base32 密钥、用于本地 SVG 渲染的 `qr_code_rows` 和 10 枚仅显示一次的高熵恢复码。账户安全页会直接展示可供认证器扫描的二维码，不依赖外部图片或二维码服务。恢复码重新生成同时要求当前密码和一个有效的动态口令或现有恢复码，成功后在同一事务中废止全部旧码并返回 10 枚只显示一次的新码。
 
 TOTP 使用 RFC 6238 的 30 秒时间步与 HMAC-SHA-1 兼容模式，允许前后各一个时间步的时钟偏差。服务端原子记录最后成功时间步，拒绝同一动态口令重放；恢复码仅存 SHA-256 哈希且成功后立即作废。启用 MFA 的账号在密码、LDAP 或外部 OIDC 主认证后都必须完成第二步验证；若所需密钥版本缺失或密文无法解密，Certus 会拒绝降级登录。OIDC ID Token 同时下发 `amr` 与 `acr`（`urn:certus:aal:1` / `urn:certus:aal:2`）。
 
