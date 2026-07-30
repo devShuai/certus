@@ -25,8 +25,10 @@ type integrationParameters struct {
 	RevocationEndpoint          string             `json:"revocation_endpoint,omitempty"`
 	DeviceAuthorizationEndpoint string             `json:"device_authorization_endpoint,omitempty"`
 	UserInfoEndpoint            string             `json:"userinfo_endpoint,omitempty"`
+	EndSessionEndpoint          string             `json:"end_session_endpoint,omitempty"`
 	JWKSURI                     string             `json:"jwks_uri,omitempty"`
 	RedirectURIs                []string           `json:"redirect_uris,omitempty"`
+	PostLogoutRedirectURIs      []string           `json:"post_logout_redirect_uris,omitempty"`
 	Scopes                      []string           `json:"scopes,omitempty"`
 	ResponseTypes               []string           `json:"response_types,omitempty"`
 	GrantTypes                  []client.GrantType `json:"grant_types,omitempty"`
@@ -218,8 +220,10 @@ func (s *server) integrationParameters(item client.Client, secret string) integr
 		parameters.IntrospectionEndpoint = s.cfg.Issuer + "/oauth2/introspect"
 		parameters.RevocationEndpoint = s.cfg.Issuer + "/oauth2/revoke"
 		parameters.UserInfoEndpoint = s.cfg.Issuer + "/oauth2/userinfo"
+		parameters.EndSessionEndpoint = s.cfg.Issuer + "/oauth2/logout"
 		parameters.JWKSURI = s.cfg.Issuer + "/oauth2/jwks"
 		parameters.RedirectURIs = item.RedirectURIs
+		parameters.PostLogoutRedirectURIs = item.PostLogoutRedirectURIs
 		parameters.Scopes = item.AllowedScopes
 		parameters.GrantTypes = item.GrantTypes
 		parameters.ClientAuthenticationMethod = "none"

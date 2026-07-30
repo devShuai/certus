@@ -217,7 +217,7 @@ func (s *server) deviceCodeToken(w http.ResponseWriter, r *http.Request, registe
 		return
 	}
 	response, err := s.issueUserTokens(
-		r, registered, record.UserID, record.Scope, "",
+		r, registered, record.UserID, "", record.Scope, "",
 		record.AuthenticatedAt, record.AuthMethods, record.AssuranceLevel, true,
 	)
 	if err != nil {

@@ -372,6 +372,83 @@ func TestOIDCAuthenticationRequestPrompts(t *testing.T) {
 	}
 }
 
+func TestOIDCRPInitiatedLogout(t *testing.T) {
+	handler := newProtocolTestHandler(t, "https://service.example.com")
+	browser := newTestBrowser(handler)
+	browser.login(t, "/portal")
+
+	authorizeQuery := oidcAuthorizationQuery("logout-state")
+	authorized := browser.request(t, http.MethodGet, "/oauth2/authorize?"+authorizeQuery.Encode(), "", "")
+	callback, err := url.Parse(authorized.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := callback.Query().Get("code")
+	if authorized.Code != http.StatusFound || code == "" {
+		t.Fatalf("authorize for logout: %d %s", authorized.Code, authorized.Header().Get("Location"))
+	}
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {"integration"},
+		"code":          {code},
+		"redirect_uri":  {"https://app.example.com/callback"},
+		"code_verifier": {strings.Repeat("v", 64)},
+	}
+	tokenResponse := browser.request(t, http.MethodPost, "/oauth2/token", tokenForm.Encode(), "application/x-www-form-urlencoded")
+	var tokens map[string]any
+	if tokenResponse.Code != http.StatusOK {
+		t.Fatalf("token for logout: %d %s", tokenResponse.Code, tokenResponse.Body.String())
+	}
+	if err := json.Unmarshal(tokenResponse.Body.Bytes(), &tokens); err != nil {
+		t.Fatal(err)
+	}
+	idToken, _ := tokens["id_token"].(string)
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("missing ID token: %#v", tokens)
+	}
+	claims, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !strings.Contains(string(claims), `"sid":`) {
+		t.Fatalf("ID token missing session identifier: %s %v", claims, err)
+	}
+
+	logoutQuery := url.Values{
+		"id_token_hint":            {idToken},
+		"post_logout_redirect_uri": {"https://app.example.com/logout/callback"},
+		"state":                    {"logout-return-state"},
+	}
+	loggedOut := browser.request(t, http.MethodGet, "/oauth2/logout?"+logoutQuery.Encode(), "", "")
+	logoutCallback, err := url.Parse(loggedOut.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loggedOut.Code != http.StatusFound ||
+		logoutCallback.String() != "https://app.example.com/logout/callback?state=logout-return-state" {
+		t.Fatalf("unexpected logout response: %d %s", loggedOut.Code, loggedOut.Header().Get("Location"))
+	}
+	account := browser.request(t, http.MethodGet, "/account", "", "")
+	if account.Code != http.StatusFound || !strings.HasPrefix(account.Header().Get("Location"), "/login?") {
+		t.Fatalf("OIDC logout did not revoke the Certus session: %d %s", account.Code, account.Header().Get("Location"))
+	}
+
+	postLogout := browser.request(
+		t,
+		http.MethodPost,
+		"/oauth2/logout",
+		url.Values{"id_token_hint": {idToken}}.Encode(),
+		"application/x-www-form-urlencoded",
+	)
+	if postLogout.Code != http.StatusFound || postLogout.Header().Get("Location") != "/login" {
+		t.Fatalf("POST logout was not idempotent: %d %s", postLogout.Code, postLogout.Header().Get("Location"))
+	}
+
+	logoutQuery.Set("post_logout_redirect_uri", "https://attacker.example.com/callback")
+	rejected := browser.request(t, http.MethodGet, "/oauth2/logout?"+logoutQuery.Encode(), "", "")
+	if rejected.Code != http.StatusBadRequest || strings.Contains(rejected.Header().Get("Location"), "attacker.example.com") {
+		t.Fatalf("unregistered logout redirect was accepted: %d %s", rejected.Code, rejected.Header().Get("Location"))
+	}
+}
+
 func oidcAuthorizationQuery(state string) url.Values {
 	verifier := strings.Repeat("v", 64)
 	sum := sha256.Sum256([]byte(verifier))
@@ -402,20 +479,21 @@ func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...
 		t.Fatal(err)
 	}
 	clients := client.NewMemoryRepository(client.Client{
-		ID:              "integration",
-		Name:            "Integration",
-		ApplicationType: client.ApplicationPublic,
-		Protocols:       []client.Protocol{client.ProtocolOAuth21, client.ProtocolCAS},
-		GrantTypes:      []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken, client.GrantDeviceCode},
-		RedirectURIs:    []string{"https://app.example.com/callback"},
-		LoginMethods:    []client.LoginMethod{client.LoginPassword},
-		AllowedScopes:   []string{"openid", "profile", "email", "roles"},
-		CASVersion:      client.CASVersion3,
-		CASServiceURLs:  []string{serviceURL},
-		CASProxy:        true,
-		CASRenew:        true,
-		CASSingleLogout: true,
-		Enabled:         true,
+		ID:                     "integration",
+		Name:                   "Integration",
+		ApplicationType:        client.ApplicationPublic,
+		Protocols:              []client.Protocol{client.ProtocolOAuth21, client.ProtocolCAS},
+		GrantTypes:             []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken, client.GrantDeviceCode},
+		RedirectURIs:           []string{"https://app.example.com/callback"},
+		PostLogoutRedirectURIs: []string{"https://app.example.com/logout/callback"},
+		LoginMethods:           []client.LoginMethod{client.LoginPassword},
+		AllowedScopes:          []string{"openid", "profile", "email", "roles"},
+		CASVersion:             client.CASVersion3,
+		CASServiceURLs:         []string{serviceURL},
+		CASProxy:               true,
+		CASRenew:               true,
+		CASSingleLogout:        true,
+		Enabled:                true,
 	})
 	accessRepository := access.NewMemoryRepository()
 	role, err := access.NewRole("integration", access.CreateRole{Code: "approver", Name: "审批人"}, time.Now())

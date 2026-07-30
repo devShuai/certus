@@ -481,6 +481,7 @@ function openClient(client) {
   clientForm.elements.application_type.disabled = true;
   clientForm.elements.allowed_scopes.value = (client.allowed_scopes || []).join(" ");
   clientForm.elements.redirect_uris.value = (client.redirect_uris || []).join("\n");
+  clientForm.elements.post_logout_redirect_uris.value = (client.post_logout_redirect_uris || []).join("\n");
   clientForm.elements.cas_version.value = client.cas_version || "3.0";
   clientForm.elements.cas_service_urls.value = (client.cas_service_urls || []).join("\n");
   clientForm.elements.cas_proxy.checked = Boolean(client.cas_proxy);
@@ -513,6 +514,7 @@ clientForm.addEventListener("submit", async (event) => {
     protocols: data.getAll("protocols"),
     grant_types: data.getAll("grant_types"),
     redirect_uris: lines(data.get("redirect_uris")),
+    post_logout_redirect_uris: lines(data.get("post_logout_redirect_uris")),
     login_methods: data.getAll("login_methods"),
     allowed_scopes: words(data.get("allowed_scopes")),
     cas_version: data.get("cas_version"),

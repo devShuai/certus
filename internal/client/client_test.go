@@ -10,10 +10,11 @@ import (
 
 func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 	repository := NewMemoryRepository(Client{
-		ID:           "specus",
-		RedirectURIs: []string{"https://specus.example.com/callback"},
-		LoginMethods: []LoginMethod{LoginPassword},
-		Enabled:      true,
+		ID:                     "specus",
+		RedirectURIs:           []string{"https://specus.example.com/callback"},
+		PostLogoutRedirectURIs: []string{"https://specus.example.com/logout"},
+		LoginMethods:           []LoginMethod{LoginPassword},
+		Enabled:                true,
 	})
 
 	first, err := repository.Find(context.Background(), "specus")
@@ -21,25 +22,29 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	first.RedirectURIs[0] = "https://attacker.example.com"
+	first.PostLogoutRedirectURIs[0] = "https://attacker.example.com/logout"
 	first.LoginMethods[0] = LoginOIDC
 
 	second, err := repository.Find(context.Background(), "specus")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.RedirectURIs[0] != "https://specus.example.com/callback" || second.LoginMethods[0] != LoginPassword {
+	if second.RedirectURIs[0] != "https://specus.example.com/callback" ||
+		second.PostLogoutRedirectURIs[0] != "https://specus.example.com/logout" ||
+		second.LoginMethods[0] != LoginPassword {
 		t.Fatal("repository state was mutated through returned client")
 	}
 }
 
 func TestNewConfidentialClientReturnsSecretOnce(t *testing.T) {
 	item, secret, err := New(CreateClient{
-		ID:              "finance",
-		Name:            "Finance",
-		ApplicationType: ApplicationConfidential,
-		RedirectURIs:    []string{"https://finance.example.com/oidc/callback"},
-		LoginMethods:    []LoginMethod{LoginPassword},
-		AllowedScopes:   []string{"openid", "profile"},
+		ID:                     "finance",
+		Name:                   "Finance",
+		ApplicationType:        ApplicationConfidential,
+		RedirectURIs:           []string{"https://finance.example.com/oidc/callback"},
+		PostLogoutRedirectURIs: []string{"https://finance.example.com/logout/callback"},
+		LoginMethods:           []LoginMethod{LoginPassword},
+		AllowedScopes:          []string{"openid", "profile"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +130,22 @@ func TestAllowsRedirectURIRequiresExactAbsoluteURI(t *testing.T) {
 	for _, test := range cases {
 		if got := item.AllowsRedirectURI(test.uri); got != test.want {
 			t.Errorf("AllowsRedirectURI(%q) = %v, want %v", test.uri, got, test.want)
+		}
+	}
+}
+
+func TestAllowsPostLogoutRedirectURIRequiresExactRegistration(t *testing.T) {
+	item := Client{PostLogoutRedirectURIs: []string{"https://specus.example.com/logout?source=certus"}}
+	if !item.AllowsPostLogoutRedirectURI("https://specus.example.com/logout?source=certus") {
+		t.Fatal("registered post-logout redirect URI was rejected")
+	}
+	for _, candidate := range []string{
+		"https://specus.example.com/logout",
+		"https://specus.example.com/logout?source=other",
+		"https://attacker.example.com/logout",
+	} {
+		if item.AllowsPostLogoutRedirectURI(candidate) {
+			t.Fatalf("unregistered post-logout redirect URI was accepted: %s", candidate)
 		}
 	}
 }

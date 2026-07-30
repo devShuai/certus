@@ -146,3 +146,13 @@ func TestAuthenticationContextMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestOIDCLogoutMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/013_oidc_logout.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "CREATE TABLE oauth_client_post_logout_redirect_uris") {
+		t.Fatal("OIDC logout migration does not create the post-logout redirect registry")
+	}
+}

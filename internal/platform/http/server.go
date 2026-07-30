@@ -236,6 +236,8 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("POST /oauth2/token", s.token)
 	mux.HandleFunc("POST /oauth2/introspect", s.introspect)
 	mux.HandleFunc("POST /oauth2/revoke", s.revokeToken)
+	mux.HandleFunc("GET /oauth2/logout", s.oidcLogout)
+	mux.HandleFunc("POST /oauth2/logout", s.oidcLogout)
 	mux.HandleFunc("POST /oauth2/device_authorization", s.deviceAuthorization)
 	mux.HandleFunc("GET /oauth2/userinfo", s.userinfo)
 	mux.HandleFunc("POST /oauth2/userinfo", s.userinfo)

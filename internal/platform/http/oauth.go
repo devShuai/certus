@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"certus/internal/audit"
 	"certus/internal/client"
 	"certus/internal/identity"
 	"certus/internal/oauth"
@@ -25,6 +26,7 @@ const (
 	accessTokenLifetime       = 15 * time.Minute
 	refreshTokenLifetime      = 30 * 24 * time.Hour
 	deviceCodeLifetime        = 15 * time.Minute
+	oidcLogoutHintMaxAge      = 24 * time.Hour
 )
 
 func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +281,7 @@ func (s *server) authorizationCodeToken(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	response, err := s.issueUserTokens(
-		r, registered, record.UserID, record.Scope, record.Nonce,
+		r, registered, record.UserID, record.SessionID, record.Scope, record.Nonce,
 		record.AuthenticatedAt, record.AuthMethods, record.AssuranceLevel, true,
 	)
 	if err != nil {
@@ -371,6 +373,7 @@ func (s *server) issueUserTokens(
 	r *http.Request,
 	registered client.Client,
 	userID string,
+	sessionID string,
 	scopes []string,
 	nonce string,
 	authenticatedAt time.Time,
@@ -426,6 +429,9 @@ func (s *server) issueUserTokens(
 		}
 		if nonce != "" {
 			claims["nonce"] = nonce
+		}
+		if sessionID != "" {
+			claims["sid"] = sessionID
 		}
 		if slices.Contains(scopes, "profile") {
 			claims["name"] = user.DisplayName
@@ -709,6 +715,98 @@ func (s *server) jwks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.signer.JWKS())
 }
 
+func (s *server) oidcLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid_request", "invalid logout request")
+			return
+		}
+	} else {
+		r.Form = r.URL.Query()
+	}
+	hint := r.Form.Get("id_token_hint")
+	registered, subject, sessionID, ok := s.validIDTokenHint(r, hint)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", "id_token_hint is invalid")
+		return
+	}
+	if clientID := r.Form.Get("client_id"); clientID != "" && clientID != registered.ID {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", "client_id does not match id_token_hint")
+		return
+	}
+	target := "/login"
+	if redirectURI := r.Form.Get("post_logout_redirect_uri"); redirectURI != "" {
+		if !registered.AllowsPostLogoutRedirectURI(redirectURI) {
+			writeProblem(w, http.StatusBadRequest, "invalid_request", "post_logout_redirect_uri is not registered")
+			return
+		}
+		redirect, _ := url.Parse(redirectURI)
+		if state := r.Form.Get("state"); state != "" {
+			query := redirect.Query()
+			query.Set("state", state)
+			redirect.RawQuery = query.Encode()
+		}
+		target = redirect.String()
+	}
+	current, authenticated := s.currentSession(r)
+	if authenticated && current.UserID != subject {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", "id_token_hint does not match the current user")
+		return
+	}
+	revokedSessions := make(map[string]struct{}, 2)
+	if sessionID != "" {
+		_ = s.cas.DeleteServiceSessions(r.Context(), sessionID)
+		_ = s.sessions.Revoke(r.Context(), sessionID)
+		revokedSessions[sessionID] = struct{}{}
+	}
+	if authenticated {
+		if _, alreadyRevoked := revokedSessions[current.ID]; !alreadyRevoked {
+			_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
+			_ = s.sessions.Revoke(r.Context(), current.ID)
+		}
+	}
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(subject),
+		EventType:   "logout.oidc",
+		ClientID:    auditClient(registered.ID),
+		Outcome:     audit.OutcomeSuccess,
+		Details:     map[string]any{"session_id": sessionID},
+	})
+	s.clearSessionCookie(w)
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func (s *server) validIDTokenHint(r *http.Request, hint string) (client.Client, string, string, bool) {
+	if hint == "" {
+		return client.Client{}, "", "", false
+	}
+	claims, err := s.signer.Verify(hint)
+	if err != nil {
+		return client.Client{}, "", "", false
+	}
+	issuer, _ := claims["iss"].(string)
+	subject, _ := claims["sub"].(string)
+	audience, _ := claims["aud"].(string)
+	issuedAt, _ := claims["iat"].(float64)
+	expiration, _ := claims["exp"].(float64)
+	now := s.now().UTC().Unix()
+	if issuer != s.cfg.Issuer || subject == "" || audience == "" ||
+		int64(issuedAt) <= 0 || int64(expiration) <= int64(issuedAt) ||
+		int64(issuedAt) > now+30 ||
+		int64(issuedAt) < now-int64(oidcLogoutHintMaxAge/time.Second) {
+		return client.Client{}, "", "", false
+	}
+	registered, err := s.clients.Find(r.Context(), audience)
+	if err != nil || !registered.SupportsOAuth() {
+		return client.Client{}, "", "", false
+	}
+	sessionID, _ := claims["sid"].(string)
+	return registered, subject, sessionID, true
+}
+
 func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                        s.cfg.Issuer,
@@ -718,6 +816,7 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"revocation_endpoint":                           s.cfg.Issuer + "/oauth2/revoke",
 		"device_authorization_endpoint":                 s.cfg.Issuer + "/oauth2/device_authorization",
 		"userinfo_endpoint":                             s.cfg.Issuer + "/oauth2/userinfo",
+		"end_session_endpoint":                          s.cfg.Issuer + "/oauth2/logout",
 		"jwks_uri":                                      s.cfg.Issuer + "/oauth2/jwks",
 		"response_types_supported":                      []string{"code"},
 		"grant_types_supported":                         []string{string(client.GrantAuthorizationCode), string(client.GrantRefreshToken), string(client.GrantClientCredentials), string(client.GrantDeviceCode)},
@@ -729,7 +828,7 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"subject_types_supported":                       []string{"public"},
 		"id_token_signing_alg_values_supported":         []string{"RS256"},
 		"acr_values_supported":                          []string{"urn:certus:aal:1", "urn:certus:aal:2"},
-		"claims_supported":                              []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "name", "preferred_username", "email", "roles", "permissions"},
+		"claims_supported":                              []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "sid", "nonce", "acr", "amr", "name", "preferred_username", "email", "roles", "permissions"},
 	})
 }
 

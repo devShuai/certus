@@ -101,7 +101,11 @@ func TestTokenIntrospectionAndRevocation(t *testing.T) {
 
 	discovery := httptest.NewRecorder()
 	handler.ServeHTTP(discovery, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
-	for _, endpoint := range []string{`"introspection_endpoint":"https://auth.example.com/oauth2/introspect"`, `"revocation_endpoint":"https://auth.example.com/oauth2/revoke"`} {
+	for _, endpoint := range []string{
+		`"introspection_endpoint":"https://auth.example.com/oauth2/introspect"`,
+		`"revocation_endpoint":"https://auth.example.com/oauth2/revoke"`,
+		`"end_session_endpoint":"https://auth.example.com/oauth2/logout"`,
+	} {
 		if !strings.Contains(discovery.Body.String(), endpoint) {
 			t.Fatalf("discovery missing %s: %s", endpoint, discovery.Body.String())
 		}

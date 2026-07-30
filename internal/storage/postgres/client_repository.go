@@ -124,6 +124,16 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 			return client.Client{}, fmt.Errorf("insert replacement redirect URI: %w", err)
 		}
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_client_post_logout_redirect_uris WHERE client_id = $1`, item.ID); err != nil {
+		return client.Client{}, fmt.Errorf("replace client post-logout redirect URIs: %w", err)
+	}
+	for _, redirectURI := range item.PostLogoutRedirectURIs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_post_logout_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2)`, item.ID, redirectURI); err != nil {
+			return client.Client{}, fmt.Errorf("insert replacement post-logout redirect URI: %w", err)
+		}
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM oauth_client_login_methods WHERE client_id = $1`, item.ID); err != nil {
 		return client.Client{}, fmt.Errorf("replace client login methods: %w", err)
 	}
@@ -219,6 +229,13 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 			return client.Client{}, fmt.Errorf("insert redirect URI: %w", err)
 		}
 	}
+	for _, redirectURI := range item.PostLogoutRedirectURIs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_post_logout_redirect_uris (client_id, redirect_uri)
+			VALUES ($1, $2)`, item.ID, redirectURI); err != nil {
+			return client.Client{}, fmt.Errorf("insert post-logout redirect URI: %w", err)
+		}
+	}
 	for position, method := range item.LoginMethods {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO oauth_client_login_methods (client_id, method, position)
@@ -307,6 +324,28 @@ func (r *ClientRepository) loadRelations(ctx context.Context, item *client.Clien
 	redirectRows.Close()
 	if err != nil {
 		return fmt.Errorf("iterate redirect URIs: %w", err)
+	}
+
+	postLogoutRows, err := r.pool.Query(ctx, `
+		SELECT redirect_uri
+		FROM oauth_client_post_logout_redirect_uris
+		WHERE client_id = $1
+		ORDER BY redirect_uri`, item.ID)
+	if err != nil {
+		return fmt.Errorf("list post-logout redirect URIs: %w", err)
+	}
+	for postLogoutRows.Next() {
+		var redirectURI string
+		if err := postLogoutRows.Scan(&redirectURI); err != nil {
+			postLogoutRows.Close()
+			return fmt.Errorf("scan post-logout redirect URI: %w", err)
+		}
+		item.PostLogoutRedirectURIs = append(item.PostLogoutRedirectURIs, redirectURI)
+	}
+	err = postLogoutRows.Err()
+	postLogoutRows.Close()
+	if err != nil {
+		return fmt.Errorf("iterate post-logout redirect URIs: %w", err)
 	}
 
 	methodRows, err := r.pool.Query(ctx, `

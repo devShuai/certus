@@ -64,20 +64,27 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	}
 
 	registered, _, err := client.New(client.CreateClient{
-		ID:              "integration",
-		Name:            "Integration",
-		ApplicationType: client.ApplicationPublic,
-		Protocols:       []client.Protocol{client.ProtocolOAuth21},
-		GrantTypes:      []client.GrantType{client.GrantAuthorizationCode},
-		RedirectURIs:    []string{"https://app.example.com/callback"},
-		LoginMethods:    []client.LoginMethod{client.LoginPassword},
-		AllowedScopes:   []string{"openid", "roles"},
+		ID:                     "integration",
+		Name:                   "Integration",
+		ApplicationType:        client.ApplicationPublic,
+		Protocols:              []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:             []client.GrantType{client.GrantAuthorizationCode},
+		RedirectURIs:           []string{"https://app.example.com/callback"},
+		PostLogoutRedirectURIs: []string{"https://app.example.com/logout/callback"},
+		LoginMethods:           []client.LoginMethod{client.LoginPassword},
+		AllowedScopes:          []string{"openid", "roles"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewClientRepository(pool).Create(ctx, registered); err != nil {
+	clientRepository := NewClientRepository(pool)
+	if _, err := clientRepository.Create(ctx, registered); err != nil {
 		t.Fatal(err)
+	}
+	storedClient, err := clientRepository.Find(ctx, registered.ID)
+	if err != nil || len(storedClient.PostLogoutRedirectURIs) != 1 ||
+		storedClient.PostLogoutRedirectURIs[0] != "https://app.example.com/logout/callback" {
+		t.Fatalf("client logout redirect round trip failed: %#v %v", storedClient, err)
 	}
 
 	user, err := identity.NewUser(identity.CreateUser{
