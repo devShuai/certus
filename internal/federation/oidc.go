@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"certus/internal/config"
 	"certus/internal/identity"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -15,7 +14,7 @@ import (
 )
 
 type OIDCAuthenticator struct {
-	config       config.ExternalOIDCConfig
+	config       ExternalOIDCConfig
 	redirectURL  string
 	httpClient   *http.Client
 	mu           sync.Mutex
@@ -23,7 +22,7 @@ type OIDCAuthenticator struct {
 	oauth2Config *oauth2.Config
 }
 
-func NewOIDCAuthenticator(cfg config.ExternalOIDCConfig, redirectURL string, client *http.Client) *OIDCAuthenticator {
+func NewOIDCAuthenticator(cfg ExternalOIDCConfig, redirectURL string, client *http.Client) *OIDCAuthenticator {
 	return &OIDCAuthenticator{config: cfg, redirectURL: redirectURL, httpClient: client}
 }
 
@@ -96,8 +95,12 @@ func (a *OIDCAuthenticator) Exchange(ctx context.Context, code, nonce, verifier 
 		value := strings.TrimSpace(claims.Email)
 		email = &value
 	}
+	providerID := strings.TrimSpace(a.config.ProviderID)
+	if providerID == "" {
+		providerID = "oidc:" + a.config.Issuer
+	}
 	return identity.ExternalProfile{
-		ProviderID:   "oidc:" + a.config.Issuer,
+		ProviderID:   providerID,
 		Subject:      claims.Subject,
 		Username:     username,
 		DisplayName:  claims.Name,
@@ -107,6 +110,11 @@ func (a *OIDCAuthenticator) Exchange(ctx context.Context, code, nonce, verifier 
 			"issuer": a.config.Issuer,
 		},
 	}, nil
+}
+
+func (a *OIDCAuthenticator) Probe(ctx context.Context) error {
+	_, _, err := a.configuration(ctx)
+	return err
 }
 
 func (a *OIDCAuthenticator) configuration(ctx context.Context) (*oidc.Provider, *oauth2.Config, error) {
@@ -123,12 +131,16 @@ func (a *OIDCAuthenticator) configuration(ctx context.Context) (*oidc.Provider, 
 		return nil, nil, fmt.Errorf("%w: discover OIDC provider: %v", ErrUnavailable, err)
 	}
 	a.provider = provider
+	scopes := append([]string(nil), a.config.Scopes...)
+	if len(scopes) == 0 {
+		scopes = []string{oidc.ScopeOpenID, oidc.ScopeProfile, oidc.ScopeEmail}
+	}
 	a.oauth2Config = &oauth2.Config{
 		ClientID:     a.config.ClientID,
 		ClientSecret: a.config.ClientSecret,
 		Endpoint:     provider.Endpoint(),
 		RedirectURL:  a.redirectURL,
-		Scopes:       []string{oidc.ScopeOpenID, oidc.ScopeProfile, oidc.ScopeEmail},
+		Scopes:       scopes,
 	}
 	return a.provider, a.oauth2Config, nil
 }

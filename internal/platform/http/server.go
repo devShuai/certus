@@ -29,29 +29,30 @@ import (
 )
 
 type server struct {
-	cfg            config.Config
-	logger         *slog.Logger
-	templates      *template.Template
-	clients        client.Repository
-	users          identity.UserRepository
-	externalUsers  identity.ExternalIdentityRepository
-	passwords      *identity.PasswordService
-	sessions       *session.Service
-	oauth          oauth.Repository
-	cas            cas.Repository
-	accessControl  access.Repository
-	administrators administration.Repository
-	audit          audit.Repository
-	mfa            *mfa.Service
-	maintenance    *maintenance.Service
-	signer         *oidc.Signer
-	rateLimits     *ratelimit.Service
-	metrics        *metrics.Registry
-	readiness      func(context.Context) error
-	outbound       *http.Client
-	ldap           *federation.LDAPAuthenticator
-	externalOIDC   *federation.OIDCAuthenticator
-	now            func() time.Time
+	cfg             config.Config
+	logger          *slog.Logger
+	templates       *template.Template
+	clients         client.Repository
+	users           identity.UserRepository
+	externalUsers   identity.ExternalIdentityRepository
+	identitySources *federation.SourceService
+	passwords       *identity.PasswordService
+	sessions        *session.Service
+	oauth           oauth.Repository
+	cas             cas.Repository
+	accessControl   access.Repository
+	administrators  administration.Repository
+	audit           audit.Repository
+	mfa             *mfa.Service
+	maintenance     *maintenance.Service
+	signer          *oidc.Signer
+	rateLimits      *ratelimit.Service
+	metrics         *metrics.Registry
+	readiness       func(context.Context) error
+	outbound        *http.Client
+	ldap            *federation.LDAPAuthenticator
+	externalOIDC    *federation.OIDCAuthenticator
+	now             func() time.Time
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -113,6 +114,7 @@ type Dependencies struct {
 	Metrics            *metrics.Registry
 	Readiness          func(context.Context) error
 	OutboundHTTPClient *http.Client
+	IdentitySources    federation.SourceRepository
 }
 
 func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Logger, dependencies Dependencies) (http.Handler, error) {
@@ -144,6 +146,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	if dependencies.RateLimits == nil {
 		dependencies.RateLimits = ratelimit.NewMemoryRepository()
 	}
+	if dependencies.IdentitySources == nil {
+		dependencies.IdentitySources = federation.NewMemorySourceRepository()
+	}
 	if dependencies.Metrics == nil {
 		dependencies.Metrics = metrics.NewRegistry()
 	}
@@ -171,12 +176,16 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		outbound = &configured
 	}
 	s := &server{
-		cfg:            cfg,
-		logger:         logger,
-		templates:      templates,
-		clients:        dependencies.Clients,
-		users:          dependencies.Users,
-		externalUsers:  externalUsers,
+		cfg:           cfg,
+		logger:        logger,
+		templates:     templates,
+		clients:       dependencies.Clients,
+		users:         dependencies.Users,
+		externalUsers: externalUsers,
+		identitySources: federation.NewSourceService(
+			dependencies.IdentitySources,
+			cfg.SecretEncryptionKeys,
+		),
 		passwords:      identity.NewPasswordService(dependencies.Passwords),
 		sessions:       session.NewService(dependencies.Sessions, 12*time.Hour),
 		oauth:          dependencies.OAuth,
@@ -239,6 +248,12 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/signing-keys", s.requireAdmin(administration.PermissionSecurityRead, http.HandlerFunc(s.listSigningKeys)))
 	mux.Handle("POST /api/v1/admin/signing-keys/rotate", s.requireAdmin(administration.PermissionSecurityWrite, http.HandlerFunc(s.rotateSigningKey)))
 	mux.Handle("POST /api/v1/admin/maintenance/cleanup", s.requireAdmin(administration.PermissionMaintenanceExecute, http.HandlerFunc(s.runMaintenance)))
+	mux.Handle("GET /api/v1/admin/identity-sources", s.requireAdmin(administration.PermissionSourcesRead, http.HandlerFunc(s.listIdentitySources)))
+	mux.Handle("POST /api/v1/admin/identity-sources", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.createIdentitySource)))
+	mux.Handle("GET /api/v1/admin/identity-sources/{sourceID}", s.requireAdmin(administration.PermissionSourcesRead, http.HandlerFunc(s.getIdentitySource)))
+	mux.Handle("PUT /api/v1/admin/identity-sources/{sourceID}", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.replaceIdentitySource)))
+	mux.Handle("DELETE /api/v1/admin/identity-sources/{sourceID}", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.archiveIdentitySource)))
+	mux.Handle("POST /api/v1/admin/identity-sources/{sourceID}/probe", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.probeIdentitySource)))
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.listAdminClients)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.createClient)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getAdminClient)))

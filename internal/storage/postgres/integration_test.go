@@ -17,6 +17,7 @@ import (
 	"certus/internal/administration"
 	"certus/internal/audit"
 	"certus/internal/client"
+	"certus/internal/federation"
 	"certus/internal/identity"
 	"certus/internal/mfa"
 	"certus/internal/oauth"
@@ -100,6 +101,48 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		!storedClient.BackchannelLogoutSessionRequired ||
 		storedClient.TokenEndpointAuthMethod != client.TokenEndpointAuthSecretPost {
 		t.Fatalf("client logout redirect round trip failed: %#v %v", storedClient, err)
+	}
+
+	sourceKeyRing, err := secrets.ParseKeyRing(
+		"source-test=" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{13}, 32)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRepository := NewSourceRepository(pool)
+	sourceService := federation.NewSourceService(sourceRepository, sourceKeyRing)
+	createdSource, err := sourceService.Create(ctx, federation.CreateSource{
+		ID:   "workforce",
+		Name: "Workforce SSO",
+		Type: federation.SourceOIDC,
+		OIDC: &federation.OIDCSourceInput{
+			Issuer:       "https://id.example.com",
+			ClientID:     "certus",
+			ClientSecret: "upstream-secret",
+			Scopes:       []string{"openid", "profile", "email"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedSource, err := sourceRepository.Find(ctx, createdSource.ID)
+	if err != nil || !storedSource.SecretConfigured ||
+		storedSource.SecretKeyID != "source-test" ||
+		storedSource.OIDC == nil ||
+		storedSource.OIDC.ClientID != "certus" {
+		t.Fatalf("identity source round trip failed: %#v %v", storedSource, err)
+	}
+	sourceAuthenticator, err := sourceService.OIDCAuthenticator(
+		ctx,
+		storedSource.ID,
+		"https://auth.example.com/login/oidc/callback",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("build stored OIDC source authenticator: %v", err)
+	}
+	if sourceAuthenticator.Label() != "Workforce SSO" {
+		t.Fatalf("unexpected stored OIDC source label: %q", sourceAuthenticator.Label())
 	}
 
 	user, err := identity.NewUser(identity.CreateUser{

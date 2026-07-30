@@ -34,6 +34,8 @@ const (
 	PermissionUsersWrite         Permission = "admin.users.write"
 	PermissionClientsRead        Permission = "admin.clients.read"
 	PermissionClientsWrite       Permission = "admin.clients.write"
+	PermissionSourcesRead        Permission = "admin.identity_sources.read"
+	PermissionSourcesWrite       Permission = "admin.identity_sources.write"
 	PermissionAccessRead         Permission = "admin.access.read"
 	PermissionAccessWrite        Permission = "admin.access.write"
 	PermissionAuditRead          Permission = "admin.audit.read"
@@ -85,6 +87,8 @@ var definitions = []RoleDefinition{
 		Permissions: []Permission{
 			PermissionUsersRead,
 			PermissionUsersWrite,
+			PermissionSourcesRead,
+			PermissionSourcesWrite,
 		},
 	},
 	{
@@ -97,6 +101,7 @@ var definitions = []RoleDefinition{
 			PermissionAccessRead,
 			PermissionAccessWrite,
 			PermissionUsersRead,
+			PermissionSourcesRead,
 		},
 	},
 	{
@@ -109,6 +114,8 @@ var definitions = []RoleDefinition{
 			PermissionMaintenanceExecute,
 			PermissionAuditRead,
 			PermissionUsersRead,
+			PermissionSourcesRead,
+			PermissionSourcesWrite,
 		},
 	},
 	{
@@ -122,6 +129,7 @@ var definitions = []RoleDefinition{
 			PermissionAuditRead,
 			PermissionSecurityRead,
 			PermissionAdminRolesRead,
+			PermissionSourcesRead,
 		},
 	},
 }

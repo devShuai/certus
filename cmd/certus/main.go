@@ -17,6 +17,7 @@ import (
 	"certus/internal/cas"
 	"certus/internal/client"
 	"certus/internal/config"
+	"certus/internal/federation"
 	"certus/internal/identity"
 	"certus/internal/maintenance"
 	"certus/internal/metrics"
@@ -66,6 +67,7 @@ func main() {
 	var maintenanceRepository maintenance.Repository
 	var keys oidc.KeyRepository = &oidc.MemoryKeyRepository{}
 	var rateLimits ratelimit.Repository = ratelimit.NewMemoryRepository()
+	var identitySources federation.SourceRepository = federation.NewMemorySourceRepository()
 	readiness := func(context.Context) error { return nil }
 	maintenanceRepository = maintenance.NewMemoryRepository(keys)
 	if cfg.DatabaseURL != "" {
@@ -123,6 +125,24 @@ func main() {
 		}
 		keys = keyRepository
 		rateLimits = postgres.NewRateLimitRepository(pool)
+		sourceRepository := postgres.NewSourceRepository(pool)
+		rewrappedSourceSecrets, err := federation.RewrapSourceSecrets(
+			ctx,
+			sourceRepository,
+			cfg.SecretEncryptionKeys,
+		)
+		if err != nil {
+			logger.Error("encrypt identity source secrets", "error", err)
+			os.Exit(1)
+		}
+		if rewrappedSourceSecrets > 0 {
+			logger.Info(
+				"identity source secrets encrypted",
+				"count", rewrappedSourceSecrets,
+				"encryption_key_id", cfg.SecretEncryptionKeys.PrimaryID(),
+			)
+		}
+		identitySources = sourceRepository
 		readiness = pool.Ping
 		metricRegistry.SetDatabaseStatsProvider(func() metrics.DatabaseStats {
 			stats := pool.Stat()
@@ -154,21 +174,22 @@ func main() {
 	go maintenanceService.Run(ctx, cfg.CleanupInterval, logger)
 
 	handler, err := httpserver.NewWithDependencies(ctx, cfg, logger, httpserver.Dependencies{
-		Clients:        clients,
-		Users:          users,
-		Passwords:      passwords,
-		Sessions:       sessions,
-		OAuth:          oauthRepository,
-		CAS:            casRepository,
-		Access:         accessRepository,
-		Administration: administrationRepository,
-		Audit:          auditRepository,
-		MFA:            mfaRepository,
-		Maintenance:    maintenanceService,
-		Keys:           keys,
-		RateLimits:     rateLimits,
-		Metrics:        metricRegistry,
-		Readiness:      readiness,
+		Clients:         clients,
+		Users:           users,
+		Passwords:       passwords,
+		Sessions:        sessions,
+		OAuth:           oauthRepository,
+		CAS:             casRepository,
+		Access:          accessRepository,
+		Administration:  administrationRepository,
+		Audit:           auditRepository,
+		MFA:             mfaRepository,
+		Maintenance:     maintenanceService,
+		Keys:            keys,
+		RateLimits:      rateLimits,
+		Metrics:         metricRegistry,
+		Readiness:       readiness,
+		IdentitySources: identitySources,
 	})
 	if err != nil {
 		logger.Error("initialize protocol execution", "error", err)

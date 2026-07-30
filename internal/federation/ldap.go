@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"certus/internal/config"
 	"certus/internal/identity"
 
 	ldap "github.com/go-ldap/ldap/v3"
@@ -22,11 +21,11 @@ var (
 )
 
 type LDAPAuthenticator struct {
-	config  config.LDAPConfig
+	config  LDAPConfig
 	timeout time.Duration
 }
 
-func NewLDAPAuthenticator(cfg config.LDAPConfig) *LDAPAuthenticator {
+func NewLDAPAuthenticator(cfg LDAPConfig) *LDAPAuthenticator {
 	return &LDAPAuthenticator{config: cfg, timeout: 5 * time.Second}
 }
 
@@ -48,31 +47,11 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 	default:
 	}
 
-	endpoint, _ := url.Parse(a.config.URL)
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		ServerName: endpoint.Hostname(),
-	}
-	connection, err := ldap.DialURL(
-		a.config.URL,
-		ldap.DialWithDialer(&net.Dialer{Timeout: a.timeout}),
-		ldap.DialWithTLSConfig(tlsConfig),
-	)
+	connection, err := a.connect(ctx)
 	if err != nil {
-		return identity.ExternalProfile{}, fmt.Errorf("%w: connect LDAP: %v", ErrUnavailable, err)
+		return identity.ExternalProfile{}, err
 	}
 	defer connection.Close()
-	connection.SetTimeout(a.timeout)
-	if a.config.StartTLS {
-		if err := connection.StartTLS(tlsConfig); err != nil {
-			return identity.ExternalProfile{}, fmt.Errorf("%w: start LDAP TLS: %v", ErrUnavailable, err)
-		}
-	}
-	if a.config.BindDN != "" {
-		if err := connection.Bind(a.config.BindDN, a.config.BindPassword); err != nil {
-			return identity.ExternalProfile{}, fmt.Errorf("%w: LDAP search bind failed", ErrUnavailable)
-		}
-	}
 
 	filter := strings.ReplaceAll(a.config.UserFilter, "{username}", ldap.EscapeFilter(username))
 	attributes := uniqueAttributes(
@@ -112,8 +91,12 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 	if emailValue != "" {
 		email = &emailValue
 	}
+	providerID := strings.TrimSpace(a.config.ProviderID)
+	if providerID == "" {
+		providerID = "ldap"
+	}
 	return identity.ExternalProfile{
-		ProviderID:   "ldap",
+		ProviderID:   providerID,
 		Subject:      entry.DN,
 		Username:     resolvedUsername,
 		DisplayName:  displayName,
@@ -123,6 +106,55 @@ func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password
 			"dn": entry.DN,
 		},
 	}, nil
+}
+
+func (a *LDAPAuthenticator) Probe(ctx context.Context) error {
+	if !a.Enabled() {
+		return ErrUnavailable
+	}
+	connection, err := a.connect(ctx)
+	if err != nil {
+		return err
+	}
+	return connection.Close()
+}
+
+func (a *LDAPAuthenticator) connect(ctx context.Context) (*ldap.Conn, error) {
+	if !a.Enabled() {
+		return nil, ErrUnavailable
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	endpoint, _ := url.Parse(a.config.URL)
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: endpoint.Hostname(),
+	}
+	connection, err := ldap.DialURL(
+		a.config.URL,
+		ldap.DialWithDialer(&net.Dialer{Timeout: a.timeout}),
+		ldap.DialWithTLSConfig(tlsConfig),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: connect LDAP: %v", ErrUnavailable, err)
+	}
+	connection.SetTimeout(a.timeout)
+	if a.config.StartTLS {
+		if err := connection.StartTLS(tlsConfig); err != nil {
+			connection.Close()
+			return nil, fmt.Errorf("%w: start LDAP TLS: %v", ErrUnavailable, err)
+		}
+	}
+	if a.config.BindDN != "" {
+		if err := connection.Bind(a.config.BindDN, a.config.BindPassword); err != nil {
+			connection.Close()
+			return nil, fmt.Errorf("%w: LDAP search bind failed", ErrUnavailable)
+		}
+	}
+	return connection, nil
 }
 
 func uniqueAttributes(values ...string) []string {

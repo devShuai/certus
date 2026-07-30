@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"certus/internal/federation"
 	"certus/internal/mfa"
 	"certus/internal/ratelimit"
 	"certus/internal/secrets"
@@ -44,32 +45,8 @@ type RateLimitConfig struct {
 	Device        ratelimit.Policy
 }
 
-type LDAPConfig struct {
-	URL                  string
-	StartTLS             bool
-	BaseDN               string
-	BindDN               string
-	BindPassword         string
-	UserFilter           string
-	UsernameAttribute    string
-	DisplayNameAttribute string
-	EmailAttribute       string
-}
-
-func (c LDAPConfig) Enabled() bool {
-	return c.URL != ""
-}
-
-type ExternalOIDCConfig struct {
-	Issuer       string
-	ClientID     string
-	ClientSecret string
-	Label        string
-}
-
-func (c ExternalOIDCConfig) Enabled() bool {
-	return c.Issuer != ""
-}
+type LDAPConfig = federation.LDAPConfig
+type ExternalOIDCConfig = federation.ExternalOIDCConfig
 
 func Load() (Config, error) {
 	cfg := Config{

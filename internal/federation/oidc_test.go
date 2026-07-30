@@ -15,8 +15,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"certus/internal/config"
 )
 
 func TestOIDCAuthenticatorUsesPKCEAndValidatesNonce(t *testing.T) {
@@ -81,7 +79,7 @@ func TestOIDCAuthenticatorUsesPKCEAndValidatesNonce(t *testing.T) {
 	defer provider.Close()
 	issuer = provider.URL
 
-	authenticator := NewOIDCAuthenticator(config.ExternalOIDCConfig{
+	authenticator := NewOIDCAuthenticator(ExternalOIDCConfig{
 		Issuer:       issuer,
 		ClientID:     "certus",
 		ClientSecret: "secret",
