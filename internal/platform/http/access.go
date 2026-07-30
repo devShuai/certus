@@ -423,7 +423,7 @@ func (s *server) replaceUserRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getEffectiveAccess(w http.ResponseWriter, r *http.Request) {
-	registered, ok := s.authenticateConfidentialOAuthClient(w, r)
+	registered, ok := s.authenticateConfidentialOAuthClientBasic(w, r)
 	if !ok {
 		return
 	}

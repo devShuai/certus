@@ -54,11 +54,53 @@ func TestNewConfidentialClientReturnsSecretOnce(t *testing.T) {
 	if len(secret) < 40 || len(item.SecretHash) != 32 {
 		t.Fatalf("secret was not generated securely: secret=%d hash=%d", len(secret), len(item.SecretHash))
 	}
+	if item.TokenEndpointAuthMethod != TokenEndpointAuthSecretBasic {
+		t.Fatalf("unexpected default client authentication method: %s", item.TokenEndpointAuthMethod)
+	}
 	if item.BackchannelLogoutURI == "" || !item.BackchannelLogoutSessionRequired {
 		t.Fatalf("back-channel logout metadata was not retained: %#v", item)
 	}
 	if strings.Contains(string(item.SecretHash), secret) {
 		t.Fatal("raw secret was retained in client")
+	}
+}
+
+func TestClientAuthenticationMethodMatchesApplicationType(t *testing.T) {
+	confidential, _, err := New(CreateClient{
+		ID:                      "finance-api",
+		Name:                    "Finance API",
+		ApplicationType:         ApplicationConfidential,
+		TokenEndpointAuthMethod: TokenEndpointAuthSecretPost,
+		Protocols:               []Protocol{ProtocolOAuth21},
+		GrantTypes:              []GrantType{GrantClientCredentials},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confidential.TokenEndpointAuthMethod != TokenEndpointAuthSecretPost {
+		t.Fatalf("client_secret_post was not retained: %#v", confidential)
+	}
+	for _, input := range []CreateClient{
+		{
+			ID:                      "invalid-public",
+			Name:                    "Invalid Public",
+			ApplicationType:         ApplicationPublic,
+			TokenEndpointAuthMethod: TokenEndpointAuthSecretPost,
+			RedirectURIs:            []string{"https://app.example.com/callback"},
+			LoginMethods:            []LoginMethod{LoginPassword},
+		},
+		{
+			ID:                      "invalid-confidential",
+			Name:                    "Invalid Confidential",
+			ApplicationType:         ApplicationConfidential,
+			TokenEndpointAuthMethod: TokenEndpointAuthNone,
+			Protocols:               []Protocol{ProtocolOAuth21},
+			GrantTypes:              []GrantType{GrantClientCredentials},
+		},
+	} {
+		if _, _, err := New(input); err == nil {
+			t.Fatalf("invalid client authentication method was accepted: %#v", input)
+		}
 	}
 }
 

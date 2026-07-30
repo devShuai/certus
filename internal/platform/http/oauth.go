@@ -576,32 +576,63 @@ func (s *server) validateOAuthUserGrant(
 }
 
 func (s *server) authenticateOAuthClient(w http.ResponseWriter, r *http.Request) (client.Client, bool) {
-	clientID := r.Form.Get("client_id")
+	clientIDs := r.PostForm["client_id"]
+	secrets := r.PostForm["client_secret"]
+	if len(clientIDs) > 1 || len(secrets) > 1 {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "client credentials must not be repeated")
+		return client.Client{}, false
+	}
+	formClientID := strings.TrimSpace(r.PostForm.Get("client_id"))
+	basicID, basicSecret, usedBasic := r.BasicAuth()
+	usedPost := len(secrets) == 1
+	if usedBasic && usedPost {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "multiple client authentication methods are not allowed")
+		return client.Client{}, false
+	}
+	if usedBasic && formClientID != "" && formClientID != basicID {
+		s.writeInvalidOAuthClient(w, client.TokenEndpointAuthSecretBasic)
+		return client.Client{}, false
+	}
+	clientID := formClientID
 	secret := ""
-	usedBasic := false
-	if basicID, basicSecret, ok := r.BasicAuth(); ok {
-		usedBasic = true
+	authenticationMethod := client.TokenEndpointAuthNone
+	switch {
+	case usedBasic:
 		clientID = basicID
 		secret = basicSecret
+		authenticationMethod = client.TokenEndpointAuthSecretBasic
+	case usedPost:
+		secret = r.PostForm.Get("client_secret")
+		authenticationMethod = client.TokenEndpointAuthSecretPost
 	}
 	registered, err := s.clients.Find(r.Context(), clientID)
 	if err != nil || !registered.Enabled || !registered.SupportsOAuth() {
-		w.Header().Set("WWW-Authenticate", `Basic realm="certus-token"`)
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		s.writeInvalidOAuthClient(w, authenticationMethod)
+		return client.Client{}, false
+	}
+	if authenticationMethod != registered.EffectiveTokenEndpointAuthMethod() {
+		s.writeInvalidOAuthClient(w, authenticationMethod)
 		return client.Client{}, false
 	}
 	if registered.ApplicationType == client.ApplicationConfidential {
-		hash := sha256.Sum256([]byte(secret))
-		if secret == "" || subtle.ConstantTimeCompare(hash[:], registered.SecretHash) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="certus-token"`)
-			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		if !validOAuthClientSecret(registered, secret) {
+			s.writeInvalidOAuthClient(w, authenticationMethod)
 			return client.Client{}, false
 		}
-	} else if usedBasic {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "public clients must not use a client secret")
-		return client.Client{}, false
 	}
 	return registered, true
+}
+
+func (s *server) writeInvalidOAuthClient(w http.ResponseWriter, method client.TokenEndpointAuthMethod) {
+	if method == client.TokenEndpointAuthSecretBasic || method == client.TokenEndpointAuthNone {
+		w.Header().Set("WWW-Authenticate", `Basic realm="certus-token"`)
+	}
+	writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+}
+
+func validOAuthClientSecret(registered client.Client, secret string) bool {
+	hash := sha256.Sum256([]byte(secret))
+	return secret != "" && subtle.ConstantTimeCompare(hash[:], registered.SecretHash) == 1
 }
 
 func (s *server) authenticateConfidentialOAuthClient(w http.ResponseWriter, r *http.Request) (client.Client, bool) {
@@ -612,6 +643,26 @@ func (s *server) authenticateConfidentialOAuthClient(w http.ResponseWriter, r *h
 	if registered.ApplicationType != client.ApplicationConfidential {
 		w.Header().Set("WWW-Authenticate", `Basic realm="certus-token-metadata"`)
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "confidential client authentication is required")
+		return client.Client{}, false
+	}
+	return registered, true
+}
+
+func (s *server) authenticateConfidentialOAuthClientBasic(w http.ResponseWriter, r *http.Request) (client.Client, bool) {
+	clientID, secret, ok := r.BasicAuth()
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Basic realm="certus-access"`)
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "confidential client authentication is required")
+		return client.Client{}, false
+	}
+	registered, err := s.clients.Find(r.Context(), clientID)
+	if err != nil ||
+		!registered.Enabled ||
+		!registered.SupportsOAuth() ||
+		registered.ApplicationType != client.ApplicationConfidential ||
+		!validOAuthClientSecret(registered, secret) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="certus-access"`)
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return client.Client{}, false
 	}
 	return registered, true
@@ -935,9 +986,9 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"jwks_uri":                                      s.cfg.Issuer + "/oauth2/jwks",
 		"response_types_supported":                      []string{"code"},
 		"grant_types_supported":                         []string{string(client.GrantAuthorizationCode), string(client.GrantRefreshToken), string(client.GrantClientCredentials), string(client.GrantDeviceCode)},
-		"token_endpoint_auth_methods_supported":         []string{"client_secret_basic", "none"},
-		"introspection_endpoint_auth_methods_supported": []string{"client_secret_basic"},
-		"revocation_endpoint_auth_methods_supported":    []string{"client_secret_basic", "none"},
+		"token_endpoint_auth_methods_supported":         []string{"client_secret_basic", "client_secret_post", "none"},
+		"introspection_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
+		"revocation_endpoint_auth_methods_supported":    []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":              []string{"S256"},
 		"scopes_supported":                              []string{"openid", "profile", "email", "roles"},
 		"subject_types_supported":                       []string{"public"},

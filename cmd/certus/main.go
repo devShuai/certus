@@ -201,15 +201,16 @@ func main() {
 
 func defaultClients() client.Repository {
 	return client.NewMemoryRepository(client.Client{
-		ID:              "specus",
-		Name:            "Specus",
-		Description:     "示例接入系统",
-		ApplicationType: client.ApplicationPublic,
-		Protocols:       []client.Protocol{client.ProtocolOAuth21},
-		GrantTypes:      []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken},
-		RedirectURIs:    []string{"http://localhost:3000/callback"},
-		LoginMethods:    []client.LoginMethod{client.LoginPassword, client.LoginLDAP},
-		AllowedScopes:   []string{"openid", "profile", "email"},
-		Enabled:         true,
+		ID:                      "specus",
+		Name:                    "Specus",
+		Description:             "示例接入系统",
+		ApplicationType:         client.ApplicationPublic,
+		TokenEndpointAuthMethod: client.TokenEndpointAuthNone,
+		Protocols:               []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:              []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken},
+		RedirectURIs:            []string{"http://localhost:3000/callback"},
+		LoginMethods:            []client.LoginMethod{client.LoginPassword, client.LoginLDAP},
+		AllowedScopes:           []string{"openid", "profile", "email"},
+		Enabled:                 true,
 	})
 }

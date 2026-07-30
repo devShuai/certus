@@ -244,10 +244,7 @@ func (s *server) integrationParameters(item client.Client, secret string) integr
 		parameters.BackchannelLogoutSessionRequired = item.BackchannelLogoutSessionRequired
 		parameters.Scopes = item.AllowedScopes
 		parameters.GrantTypes = item.GrantTypes
-		parameters.ClientAuthenticationMethod = "none"
-		if item.ApplicationType == client.ApplicationConfidential {
-			parameters.ClientAuthenticationMethod = "client_secret_basic"
-		}
+		parameters.ClientAuthenticationMethod = string(item.EffectiveTokenEndpointAuthMethod())
 		if item.SupportsGrant(client.GrantAuthorizationCode) {
 			parameters.ResponseTypes = []string{"code"}
 			parameters.PKCE = map[string]any{

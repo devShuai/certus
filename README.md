@@ -259,6 +259,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
   "name": "Finance",
   "description": "财务系统",
   "application_type": "confidential",
+  "token_endpoint_auth_method": "client_secret_basic",
   "protocols": [
     "oauth2.0",
     "oauth2.1",
@@ -362,7 +363,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
 }
 ```
 
-`public` 客户端不生成密钥；`confidential` 客户端的明文密钥只在创建响应中出现一次，Certus 只保存 SHA-256 哈希。非本机回环地址的回调必须使用 HTTPS，回调地址在授权时执行精确匹配。
+`public` 客户端固定使用 `none` 且不生成密钥；`confidential` 客户端可选择 `client_secret_basic`（默认、推荐）或 `client_secret_post`。所选方式会统一应用于 Token、Device Authorization、Introspection 和 Revocation 端点；同一请求同时提交 Basic 与表单密钥会被拒绝。机密客户端的明文密钥只在创建或轮换响应中出现一次，Certus 只保存 SHA-256 哈希。非本机回环地址的回调必须使用 HTTPS，回调地址在授权时执行精确匹配。
 
 `PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可停止新登录，并立即撤销该客户端的授权码、访问令牌、刷新令牌和待处理设备授权。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端；历史令牌和授权记录不会物理删除，但令牌会被标记为已撤销，审计引用得以保留。
 
@@ -414,6 +415,7 @@ GET /api/v1/access/users/{user_id}
 
 - OAuth 2.0：授权码 + PKCE、刷新令牌、客户端凭据、设备码
 - OAuth 2.1：授权码 + PKCE、刷新令牌、客户端凭据、设备码
+- OAuth 客户端认证：`none`、`client_secret_basic`、`client_secret_post`
 - OAuth 令牌管理：受客户端认证保护的 Introspection 与幂等 Revocation
 - OpenID Connect：通过 `openid` scope 为 OAuth 登录提供用户身份
 - CAS 1.0、2.0、3.0：Service Ticket 校验参数

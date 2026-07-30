@@ -556,6 +556,20 @@ function renderClientSelectors() {
   if (select.value) loadAccessData(select.value).catch((error) => setStatus(error.message, "error"));
 }
 
+function syncClientAuthenticationMethod(forceDisabled = false) {
+  const applicationType = clientForm.elements.application_type.value;
+  const authenticationMethod = clientForm.elements.token_endpoint_auth_method;
+  if (applicationType === "public") {
+    authenticationMethod.value = "none";
+    authenticationMethod.disabled = true;
+    return;
+  }
+  if (authenticationMethod.value === "none") {
+    authenticationMethod.value = "client_secret_basic";
+  }
+  authenticationMethod.disabled = forceDisabled || !can("admin.clients.write");
+}
+
 function resetClientForm() {
   clientForm.reset();
   for (const field of clientForm.elements) {
@@ -563,11 +577,13 @@ function resetClientForm() {
   }
   clientForm.elements.id.readOnly = false;
   clientForm.elements.application_type.disabled = !can("admin.clients.write");
+  clientForm.elements.token_endpoint_auth_method.value = "client_secret_basic";
   clientForm.elements.allowed_scopes.value = "openid profile email";
   clientForm.elements.enabled.checked = true;
   setCheckedValues(clientForm, "protocols", ["oauth2.1"]);
   setCheckedValues(clientForm, "grant_types", ["authorization_code", "refresh_token"]);
   setCheckedValues(clientForm, "login_methods", ["password"]);
+  syncClientAuthenticationMethod();
   document.querySelector("#client-editor-title").textContent = "配置跳转登录";
   document.querySelector("#rotate-client-secret").classList.add("hidden");
   document.querySelector("#archive-client").classList.add("hidden");
@@ -588,6 +604,7 @@ function openClient(client) {
   clientForm.elements.description.value = client.description || "";
   clientForm.elements.application_type.value = client.application_type;
   clientForm.elements.application_type.disabled = true;
+  clientForm.elements.token_endpoint_auth_method.value = client.token_endpoint_auth_method || (client.application_type === "confidential" ? "client_secret_basic" : "none");
   clientForm.elements.allowed_scopes.value = (client.allowed_scopes || []).join(" ");
   clientForm.elements.redirect_uris.value = (client.redirect_uris || []).join("\n");
   clientForm.elements.post_logout_redirect_uris.value = (client.post_logout_redirect_uris || []).join("\n");
@@ -605,6 +622,7 @@ function openClient(client) {
   setCheckedValues(clientForm, "login_methods", client.login_methods);
   const archived = Boolean(client.archived_at);
   for (const field of clientForm.elements) field.disabled = archived || !can("admin.clients.write");
+  syncClientAuthenticationMethod(archived);
   document.querySelector("#client-editor-title").textContent = `${client.name} · ${client.id}`;
   document.querySelector("#rotate-client-secret").classList.toggle(
     "hidden",
@@ -620,6 +638,7 @@ function openClient(client) {
 
 document.querySelector("#new-client").addEventListener("click", openNewClient);
 document.querySelector('[data-action="close-client"]').addEventListener("click", () => document.querySelector("#client-editor").classList.add("hidden"));
+clientForm.elements.application_type.addEventListener("change", () => syncClientAuthenticationMethod());
 
 clientForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -628,6 +647,7 @@ clientForm.addEventListener("submit", async (event) => {
   const payload = {
     name: data.get("name"),
     description: data.get("description"),
+    token_endpoint_auth_method: data.get("token_endpoint_auth_method") || "none",
     protocols: data.getAll("protocols"),
     grant_types: data.getAll("grant_types"),
     redirect_uris: lines(data.get("redirect_uris")),

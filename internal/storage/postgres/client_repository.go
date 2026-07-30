@@ -27,6 +27,7 @@ func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 		       allowed_scopes, enabled, client_secret_hash, cas_version,
 		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 		       backchannel_logout_uri, backchannel_logout_session_required,
+		       token_endpoint_auth_method,
 		       archived_at
 		FROM oauth_clients
 		ORDER BY name, id`)
@@ -58,6 +59,7 @@ func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, 
 		       allowed_scopes, enabled, client_secret_hash, cas_version,
 		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 		       backchannel_logout_uri, backchannel_logout_session_required,
+		       token_endpoint_auth_method,
 		       archived_at
 		FROM oauth_clients
 		WHERE id = $1`, id))
@@ -96,6 +98,7 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 		    cas_single_logout = $13,
 		    backchannel_logout_uri = $14,
 		    backchannel_logout_session_required = $15,
+		    token_endpoint_auth_method = $16,
 		    updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		item.ID,
@@ -113,6 +116,7 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 		item.CASSingleLogout,
 		item.BackchannelLogoutURI,
 		item.BackchannelLogoutSessionRequired,
+		item.EffectiveTokenEndpointAuthMethod(),
 	)
 	if err != nil {
 		return client.Client{}, fmt.Errorf("replace client: %w", err)
@@ -204,9 +208,10 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 			id, name, description, application_type, protocols, grant_types,
 			allowed_scopes, enabled, client_secret_hash, cas_version,
 			cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
-			backchannel_logout_uri, backchannel_logout_session_required
+			backchannel_logout_uri, backchannel_logout_session_required,
+			token_endpoint_auth_method
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
 		item.ID,
 		item.Name,
 		item.Description,
@@ -224,6 +229,7 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 		item.CASSingleLogout,
 		item.BackchannelLogoutURI,
 		item.BackchannelLogoutSessionRequired,
+		item.EffectiveTokenEndpointAuthMethod(),
 	)
 	if isUniqueViolation(err) {
 		return client.Client{}, client.ErrConflict
@@ -281,6 +287,7 @@ func scanClient(scanner interface{ Scan(...any) error }) (client.Client, error) 
 		&item.CASSingleLogout,
 		&item.BackchannelLogoutURI,
 		&item.BackchannelLogoutSessionRequired,
+		&item.TokenEndpointAuthMethod,
 		&archivedAt,
 	)
 	if err != nil {

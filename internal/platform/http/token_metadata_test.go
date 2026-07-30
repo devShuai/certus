@@ -84,6 +84,15 @@ func TestTokenIntrospectionAndRevocation(t *testing.T) {
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("introspection accepted invalid client: %d %s", unauthorized.Code, unauthorized.Body.String())
 	}
+	postAuthentication := url.Values{
+		"client_id":     {registered.ID},
+		"client_secret": {secret},
+		"token":         {accessToken},
+	}
+	wrongMethod := oauthPostFormRequest(t, handler, "/oauth2/introspect", postAuthentication)
+	if wrongMethod.Code != http.StatusUnauthorized {
+		t.Fatalf("client_secret_basic client used client_secret_post: %d %s", wrongMethod.Code, wrongMethod.Body.String())
+	}
 
 	revocation := oauthFormRequest(t, handler, "/oauth2/revoke", introspectionForm, registered.ID, secret)
 	if revocation.Code != http.StatusOK || revocation.Body.Len() != 0 {
@@ -108,6 +117,9 @@ func TestTokenIntrospectionAndRevocation(t *testing.T) {
 		`"backchannel_logout_supported":true`,
 		`"backchannel_logout_session_supported":true`,
 		`"prompt_values_supported":["none","login","consent"]`,
+		`"token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"]`,
+		`"introspection_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"]`,
+		`"revocation_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"]`,
 	} {
 		if !strings.Contains(discovery.Body.String(), endpoint) {
 			t.Fatalf("discovery missing %s: %s", endpoint, discovery.Body.String())

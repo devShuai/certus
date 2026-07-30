@@ -25,6 +25,7 @@ func TestCreateClientReturnsIntegrationParameters(t *testing.T) {
 		"name":"Finance",
 		"description":"财务系统",
 		"application_type":"confidential",
+		"token_endpoint_auth_method":"client_secret_post",
 		"protocols":["oauth2.0","oauth2.1","cas"],
 		"grant_types":["authorization_code","refresh_token","client_credentials"],
 		"redirect_uris":["https://finance.example.com/oidc/callback"],
@@ -51,6 +52,7 @@ func TestCreateClientReturnsIntegrationParameters(t *testing.T) {
 	for _, expected := range []string{
 		`"client_id":"finance"`,
 		`"client_secret":"`,
+		`"client_authentication_method":"client_secret_post"`,
 		`"issuer":"https://auth.example.com"`,
 		`"authorization_endpoint":"https://auth.example.com/oauth2/authorize"`,
 		`"end_session_endpoint":"https://auth.example.com/oauth2/logout"`,
@@ -106,8 +108,10 @@ func TestClientLifecycleAPIs(t *testing.T) {
 		"id":"resource-api",
 		"name":"Resource API",
 		"application_type":"confidential",
+		"token_endpoint_auth_method":"client_secret_post",
 		"protocols":["oauth2.1"],
-		"grant_types":["client_credentials"],
+		"grant_types":["client_credentials","urn:ietf:params:oauth:grant-type:device_code"],
+		"login_methods":["password"],
 		"allowed_scopes":["openid","api.read"]
 	}`
 	created := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", createBody)
@@ -133,21 +137,68 @@ func TestClientLifecycleAPIs(t *testing.T) {
 		t.Fatal("secret rotation did not return a new one-time secret")
 	}
 	tokenForm := url.Values{
-		"grant_type": {string(client.GrantClientCredentials)},
-		"scope":      {"api.read"},
+		"grant_type":    {string(client.GrantClientCredentials)},
+		"scope":         {"api.read"},
+		"client_id":     {"resource-api"},
+		"client_secret": {originalSecret},
 	}
-	if oldToken := oauthFormRequest(t, handler, "/oauth2/token", tokenForm, "resource-api", originalSecret); oldToken.Code != http.StatusUnauthorized {
+	if oldToken := oauthPostFormRequest(t, handler, "/oauth2/token", tokenForm); oldToken.Code != http.StatusUnauthorized {
 		t.Fatalf("old secret remained valid: %d %s", oldToken.Code, oldToken.Body.String())
 	}
-	if newToken := oauthFormRequest(t, handler, "/oauth2/token", tokenForm, "resource-api", newSecret); newToken.Code != http.StatusOK {
+	tokenForm.Set("client_secret", newSecret)
+	newToken := oauthPostFormRequest(t, handler, "/oauth2/token", tokenForm)
+	if newToken.Code != http.StatusOK {
 		t.Fatalf("new secret was not valid: %d %s", newToken.Code, newToken.Body.String())
+	}
+	var issued map[string]any
+	if err := json.Unmarshal(newToken.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+	accessToken, _ := issued["access_token"].(string)
+	metadataForm := url.Values{
+		"client_id":     {"resource-api"},
+		"client_secret": {newSecret},
+		"token":         {accessToken},
+	}
+	introspection := oauthPostFormRequest(t, handler, "/oauth2/introspect", metadataForm)
+	if introspection.Code != http.StatusOK || !strings.Contains(introspection.Body.String(), `"active":true`) {
+		t.Fatalf("client_secret_post introspection failed: %d %s", introspection.Code, introspection.Body.String())
+	}
+	revocation := oauthPostFormRequest(t, handler, "/oauth2/revoke", metadataForm)
+	if revocation.Code != http.StatusOK {
+		t.Fatalf("client_secret_post revocation failed: %d %s", revocation.Code, revocation.Body.String())
+	}
+	introspection = oauthPostFormRequest(t, handler, "/oauth2/introspect", metadataForm)
+	if introspection.Code != http.StatusOK || !strings.Contains(introspection.Body.String(), `"active":false`) {
+		t.Fatalf("revoked post-authenticated token remained active: %d %s", introspection.Code, introspection.Body.String())
+	}
+	dualAuthentication := httptest.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader(tokenForm.Encode()))
+	dualAuthentication.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	dualAuthentication.SetBasicAuth("resource-api", newSecret)
+	dualResponse := httptest.NewRecorder()
+	handler.ServeHTTP(dualResponse, dualAuthentication)
+	if dualResponse.Code != http.StatusBadRequest ||
+		!strings.Contains(dualResponse.Body.String(), `"invalid_request"`) {
+		t.Fatalf("multiple client authentication methods were accepted: %d %s", dualResponse.Code, dualResponse.Body.String())
+	}
+	deviceForm := url.Values{
+		"client_id":     {"resource-api"},
+		"client_secret": {newSecret},
+		"scope":         {"openid"},
+	}
+	deviceAuthorization := oauthPostFormRequest(t, handler, "/oauth2/device_authorization", deviceForm)
+	if deviceAuthorization.Code != http.StatusOK ||
+		!strings.Contains(deviceAuthorization.Body.String(), `"device_code"`) {
+		t.Fatalf("client_secret_post device authorization failed: %d %s", deviceAuthorization.Code, deviceAuthorization.Body.String())
 	}
 
 	disabled := adminJSONRequest(t, handler, http.MethodPut, "/api/v1/admin/clients/resource-api", `{
 		"name":"Resource API v2",
 		"description":"updated",
+		"token_endpoint_auth_method":"client_secret_post",
 		"protocols":["oauth2.1"],
-		"grant_types":["client_credentials"],
+		"grant_types":["client_credentials","urn:ietf:params:oauth:grant-type:device_code"],
+		"login_methods":["password"],
 		"allowed_scopes":["openid","api.read"],
 		"enabled":false
 	}`)
@@ -168,6 +219,7 @@ func TestClientLifecycleAPIs(t *testing.T) {
 	}
 	updateArchived := adminJSONRequest(t, handler, http.MethodPut, "/api/v1/admin/clients/resource-api", `{
 		"name":"Archived",
+		"token_endpoint_auth_method":"client_secret_post",
 		"protocols":["oauth2.1"],
 		"grant_types":["client_credentials"],
 		"allowed_scopes":["openid","api.read"]
@@ -175,6 +227,20 @@ func TestClientLifecycleAPIs(t *testing.T) {
 	if updateArchived.Code != http.StatusConflict || !strings.Contains(updateArchived.Body.String(), `"client_archived"`) {
 		t.Fatalf("archived client was mutable: %d %s", updateArchived.Code, updateArchived.Body.String())
 	}
+}
+
+func oauthPostFormRequest(
+	t *testing.T,
+	handler http.Handler,
+	target string,
+	form url.Values,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 func adminJSONRequest(t *testing.T, handler http.Handler, method, target, body string) *httptest.ResponseRecorder {

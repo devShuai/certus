@@ -38,6 +38,14 @@ const (
 	ApplicationConfidential ApplicationType = "confidential"
 )
 
+type TokenEndpointAuthMethod string
+
+const (
+	TokenEndpointAuthNone        TokenEndpointAuthMethod = "none"
+	TokenEndpointAuthSecretBasic TokenEndpointAuthMethod = "client_secret_basic"
+	TokenEndpointAuthSecretPost  TokenEndpointAuthMethod = "client_secret_post"
+)
+
 type Protocol string
 
 const (
@@ -64,69 +72,72 @@ const (
 )
 
 type Client struct {
-	ID                               string          `json:"id"`
-	Name                             string          `json:"name"`
-	Description                      string          `json:"description,omitempty"`
-	ApplicationType                  ApplicationType `json:"application_type"`
-	Protocols                        []Protocol      `json:"protocols"`
-	GrantTypes                       []GrantType     `json:"grant_types,omitempty"`
-	RedirectURIs                     []string        `json:"redirect_uris"`
-	PostLogoutRedirectURIs           []string        `json:"post_logout_redirect_uris,omitempty"`
-	BackchannelLogoutURI             string          `json:"backchannel_logout_uri,omitempty"`
-	BackchannelLogoutSessionRequired bool            `json:"backchannel_logout_session_required"`
-	LoginMethods                     []LoginMethod   `json:"login_methods"`
-	AllowedScopes                    []string        `json:"allowed_scopes"`
-	CASVersion                       CASVersion      `json:"cas_version,omitempty"`
-	CASServiceURLs                   []string        `json:"cas_service_urls,omitempty"`
-	CASProxy                         bool            `json:"cas_proxy"`
-	CASGateway                       bool            `json:"cas_gateway"`
-	CASRenew                         bool            `json:"cas_renew"`
-	CASSingleLogout                  bool            `json:"cas_single_logout"`
-	Enabled                          bool            `json:"enabled"`
-	ArchivedAt                       *time.Time      `json:"archived_at,omitempty"`
-	SecretHash                       []byte          `json:"-"`
+	ID                               string                  `json:"id"`
+	Name                             string                  `json:"name"`
+	Description                      string                  `json:"description,omitempty"`
+	ApplicationType                  ApplicationType         `json:"application_type"`
+	TokenEndpointAuthMethod          TokenEndpointAuthMethod `json:"token_endpoint_auth_method"`
+	Protocols                        []Protocol              `json:"protocols"`
+	GrantTypes                       []GrantType             `json:"grant_types,omitempty"`
+	RedirectURIs                     []string                `json:"redirect_uris"`
+	PostLogoutRedirectURIs           []string                `json:"post_logout_redirect_uris,omitempty"`
+	BackchannelLogoutURI             string                  `json:"backchannel_logout_uri,omitempty"`
+	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
+	LoginMethods                     []LoginMethod           `json:"login_methods"`
+	AllowedScopes                    []string                `json:"allowed_scopes"`
+	CASVersion                       CASVersion              `json:"cas_version,omitempty"`
+	CASServiceURLs                   []string                `json:"cas_service_urls,omitempty"`
+	CASProxy                         bool                    `json:"cas_proxy"`
+	CASGateway                       bool                    `json:"cas_gateway"`
+	CASRenew                         bool                    `json:"cas_renew"`
+	CASSingleLogout                  bool                    `json:"cas_single_logout"`
+	Enabled                          bool                    `json:"enabled"`
+	ArchivedAt                       *time.Time              `json:"archived_at,omitempty"`
+	SecretHash                       []byte                  `json:"-"`
 }
 
 type CreateClient struct {
-	ID                               string          `json:"id"`
-	Name                             string          `json:"name"`
-	Description                      string          `json:"description"`
-	ApplicationType                  ApplicationType `json:"application_type"`
-	Protocols                        []Protocol      `json:"protocols"`
-	GrantTypes                       []GrantType     `json:"grant_types"`
-	RedirectURIs                     []string        `json:"redirect_uris"`
-	PostLogoutRedirectURIs           []string        `json:"post_logout_redirect_uris"`
-	BackchannelLogoutURI             string          `json:"backchannel_logout_uri"`
-	BackchannelLogoutSessionRequired bool            `json:"backchannel_logout_session_required"`
-	LoginMethods                     []LoginMethod   `json:"login_methods"`
-	AllowedScopes                    []string        `json:"allowed_scopes"`
-	CASVersion                       CASVersion      `json:"cas_version"`
-	CASServiceURLs                   []string        `json:"cas_service_urls"`
-	CASProxy                         bool            `json:"cas_proxy"`
-	CASGateway                       bool            `json:"cas_gateway"`
-	CASRenew                         bool            `json:"cas_renew"`
-	CASSingleLogout                  bool            `json:"cas_single_logout"`
-	Enabled                          *bool           `json:"enabled"`
+	ID                               string                  `json:"id"`
+	Name                             string                  `json:"name"`
+	Description                      string                  `json:"description"`
+	ApplicationType                  ApplicationType         `json:"application_type"`
+	TokenEndpointAuthMethod          TokenEndpointAuthMethod `json:"token_endpoint_auth_method"`
+	Protocols                        []Protocol              `json:"protocols"`
+	GrantTypes                       []GrantType             `json:"grant_types"`
+	RedirectURIs                     []string                `json:"redirect_uris"`
+	PostLogoutRedirectURIs           []string                `json:"post_logout_redirect_uris"`
+	BackchannelLogoutURI             string                  `json:"backchannel_logout_uri"`
+	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
+	LoginMethods                     []LoginMethod           `json:"login_methods"`
+	AllowedScopes                    []string                `json:"allowed_scopes"`
+	CASVersion                       CASVersion              `json:"cas_version"`
+	CASServiceURLs                   []string                `json:"cas_service_urls"`
+	CASProxy                         bool                    `json:"cas_proxy"`
+	CASGateway                       bool                    `json:"cas_gateway"`
+	CASRenew                         bool                    `json:"cas_renew"`
+	CASSingleLogout                  bool                    `json:"cas_single_logout"`
+	Enabled                          *bool                   `json:"enabled"`
 }
 
 type ReplaceClient struct {
-	Name                             string        `json:"name"`
-	Description                      string        `json:"description"`
-	Protocols                        []Protocol    `json:"protocols"`
-	GrantTypes                       []GrantType   `json:"grant_types"`
-	RedirectURIs                     []string      `json:"redirect_uris"`
-	PostLogoutRedirectURIs           []string      `json:"post_logout_redirect_uris"`
-	BackchannelLogoutURI             string        `json:"backchannel_logout_uri"`
-	BackchannelLogoutSessionRequired bool          `json:"backchannel_logout_session_required"`
-	LoginMethods                     []LoginMethod `json:"login_methods"`
-	AllowedScopes                    []string      `json:"allowed_scopes"`
-	CASVersion                       CASVersion    `json:"cas_version"`
-	CASServiceURLs                   []string      `json:"cas_service_urls"`
-	CASProxy                         bool          `json:"cas_proxy"`
-	CASGateway                       bool          `json:"cas_gateway"`
-	CASRenew                         bool          `json:"cas_renew"`
-	CASSingleLogout                  bool          `json:"cas_single_logout"`
-	Enabled                          *bool         `json:"enabled"`
+	Name                             string                  `json:"name"`
+	Description                      string                  `json:"description"`
+	TokenEndpointAuthMethod          TokenEndpointAuthMethod `json:"token_endpoint_auth_method"`
+	Protocols                        []Protocol              `json:"protocols"`
+	GrantTypes                       []GrantType             `json:"grant_types"`
+	RedirectURIs                     []string                `json:"redirect_uris"`
+	PostLogoutRedirectURIs           []string                `json:"post_logout_redirect_uris"`
+	BackchannelLogoutURI             string                  `json:"backchannel_logout_uri"`
+	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
+	LoginMethods                     []LoginMethod           `json:"login_methods"`
+	AllowedScopes                    []string                `json:"allowed_scopes"`
+	CASVersion                       CASVersion              `json:"cas_version"`
+	CASServiceURLs                   []string                `json:"cas_service_urls"`
+	CASProxy                         bool                    `json:"cas_proxy"`
+	CASGateway                       bool                    `json:"cas_gateway"`
+	CASRenew                         bool                    `json:"cas_renew"`
+	CASSingleLogout                  bool                    `json:"cas_single_logout"`
+	Enabled                          *bool                   `json:"enabled"`
 }
 
 func (c Client) AllowsRedirectURI(candidate string) bool {
@@ -270,6 +281,7 @@ func New(input CreateClient) (Client, string, error) {
 		Name:                             strings.TrimSpace(input.Name),
 		Description:                      strings.TrimSpace(input.Description),
 		ApplicationType:                  input.ApplicationType,
+		TokenEndpointAuthMethod:          input.TokenEndpointAuthMethod,
 		Protocols:                        uniqueProtocols(input.Protocols),
 		GrantTypes:                       uniqueGrantTypes(input.GrantTypes),
 		RedirectURIs:                     uniqueStrings(input.RedirectURIs),
@@ -291,6 +303,9 @@ func New(input CreateClient) (Client, string, error) {
 	}
 	if item.ApplicationType == "" {
 		item.ApplicationType = ApplicationPublic
+	}
+	if item.TokenEndpointAuthMethod == "" {
+		item.TokenEndpointAuthMethod = defaultTokenEndpointAuthMethod(item.ApplicationType)
 	}
 	if len(item.Protocols) == 0 {
 		item.Protocols = []Protocol{ProtocolOAuth21}
@@ -331,6 +346,7 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 		Name:                             strings.TrimSpace(input.Name),
 		Description:                      strings.TrimSpace(input.Description),
 		ApplicationType:                  current.ApplicationType,
+		TokenEndpointAuthMethod:          input.TokenEndpointAuthMethod,
 		Protocols:                        uniqueProtocols(input.Protocols),
 		GrantTypes:                       uniqueGrantTypes(input.GrantTypes),
 		RedirectURIs:                     uniqueStrings(input.RedirectURIs),
@@ -347,6 +363,9 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 		CASSingleLogout:                  input.CASSingleLogout,
 		Enabled:                          enabled,
 		SecretHash:                       slices.Clone(current.SecretHash),
+	}
+	if item.TokenEndpointAuthMethod == "" {
+		item.TokenEndpointAuthMethod = defaultTokenEndpointAuthMethod(item.ApplicationType)
 	}
 	if item.SupportsOAuth() && len(item.GrantTypes) == 0 {
 		item.GrantTypes = []GrantType{GrantAuthorizationCode, GrantRefreshToken}
@@ -387,6 +406,17 @@ func (c Client) Validate() error {
 	}
 	if c.ApplicationType != ApplicationPublic && c.ApplicationType != ApplicationConfidential {
 		return fmt.Errorf("%w: unsupported application_type", ErrInvalid)
+	}
+	switch c.ApplicationType {
+	case ApplicationPublic:
+		if c.TokenEndpointAuthMethod != TokenEndpointAuthNone {
+			return fmt.Errorf("%w: public clients require token_endpoint_auth_method none", ErrInvalid)
+		}
+	case ApplicationConfidential:
+		if c.TokenEndpointAuthMethod != TokenEndpointAuthSecretBasic &&
+			c.TokenEndpointAuthMethod != TokenEndpointAuthSecretPost {
+			return fmt.Errorf("%w: confidential clients require client_secret_basic or client_secret_post", ErrInvalid)
+		}
 	}
 	if len(c.Protocols) == 0 {
 		return fmt.Errorf("%w: at least one protocol is required", ErrInvalid)
@@ -493,6 +523,20 @@ func (c Client) SupportsOAuth() bool {
 
 func (c Client) SupportsGrant(grant GrantType) bool {
 	return slices.Contains(c.GrantTypes, grant)
+}
+
+func (c Client) EffectiveTokenEndpointAuthMethod() TokenEndpointAuthMethod {
+	if c.TokenEndpointAuthMethod == "" {
+		return defaultTokenEndpointAuthMethod(c.ApplicationType)
+	}
+	return c.TokenEndpointAuthMethod
+}
+
+func defaultTokenEndpointAuthMethod(applicationType ApplicationType) TokenEndpointAuthMethod {
+	if applicationType == ApplicationConfidential {
+		return TokenEndpointAuthSecretBasic
+	}
+	return TokenEndpointAuthNone
 }
 
 func validEndpointURL(value string) bool {
