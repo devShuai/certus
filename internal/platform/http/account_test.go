@@ -57,6 +57,22 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	consentAccess := oauth.AccessToken{
+		Hash: []byte("consent-access"), ClientID: "integration", UserID: user.ID, SessionID: current.ID,
+		FamilyID: "consent-family", Scope: []string{"openid"}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	consentRefresh := oauth.RefreshToken{
+		Hash: []byte("consent-refresh"), FamilyID: "consent-family", ClientID: "integration",
+		UserID: user.ID, SessionID: current.ID, Scope: []string{"openid"},
+		IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := oauthRepository.SaveAccessToken(ctx, consentAccess); err != nil {
+		t.Fatal(err)
+	}
+	if err := oauthRepository.SaveRefreshToken(ctx, consentRefresh); err != nil {
+		t.Fatal(err)
+	}
 	handler, err := NewWithDependencies(ctx, config.Config{
 		Issuer: "https://auth.example.com", AdminToken: strings.Repeat("a", 32),
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)), Dependencies{
@@ -134,6 +150,12 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 	}
 	if _, err := oauthRepository.FindConsent(ctx, user.ID, "integration"); !errors.Is(err, oauth.ErrConsentNotFound) {
 		t.Fatalf("account consent was not revoked: %v", err)
+	}
+	if _, err := oauthRepository.FindAccessToken(ctx, consentAccess.Hash, now); !errors.Is(err, oauth.ErrGrantNotFound) {
+		t.Fatalf("account consent revocation left access token active: %v", err)
+	}
+	if _, err := oauthRepository.FindRefreshToken(ctx, consentRefresh.Hash, now); !errors.Is(err, oauth.ErrGrantNotFound) {
+		t.Fatalf("account consent revocation left refresh token active: %v", err)
 	}
 
 	request = httptest.NewRequest(http.MethodPut, "/api/v1/account/password", strings.NewReader(

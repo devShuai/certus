@@ -142,6 +142,13 @@ func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "更新接入系统失败")
 		return
 	}
+	if !item.Enabled {
+		if err := s.oauth.RevokeClientTokens(r.Context(), item.ID, s.now().UTC()); err != nil {
+			s.logger.Error("revoke OAuth tokens for disabled client", "client_id", item.ID, "error", err)
+			writeProblem(w, http.StatusInternalServerError, "server_error", "禁用接入系统后撤销令牌失败")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, clientRegistrationResponse{
 		Client:      item,
 		Integration: s.integrationParameters(item, ""),
@@ -181,7 +188,9 @@ func (s *server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) archiveClient(w http.ResponseWriter, r *http.Request) {
-	err := s.clients.Archive(r.Context(), r.PathValue("clientID"), s.now().UTC())
+	clientID := r.PathValue("clientID")
+	now := s.now().UTC()
+	err := s.clients.Archive(r.Context(), clientID, now)
 	if errors.Is(err, client.ErrNotFound) {
 		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
 		return
@@ -189,6 +198,11 @@ func (s *server) archiveClient(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger.Error("archive client", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "server_error", "归档接入系统失败")
+		return
+	}
+	if err := s.oauth.RevokeClientTokens(r.Context(), clientID, now); err != nil {
+		s.logger.Error("revoke OAuth tokens for archived client", "client_id", clientID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "归档接入系统后撤销令牌失败")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

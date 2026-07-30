@@ -285,6 +285,11 @@ func (s *server) resetAdminUserMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cleanupRevokedSessions(r.Context(), revokedSessions)
+	if err := s.oauth.RevokeUserTokens(r.Context(), userID, "", s.now().UTC()); err != nil {
+		s.logger.Error("revoke OAuth tokens after admin MFA reset", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "重置多因素认证后撤销 OAuth 令牌失败")
+		return
+	}
 	s.recordAudit(r, audit.Event{
 		EventType: "mfa.reset_by_admin",
 		Outcome:   audit.OutcomeSuccess,

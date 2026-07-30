@@ -181,3 +181,20 @@ func TestOAuthConsentMigration(t *testing.T) {
 		t.Fatal("OAuth consent migration does not create the consent registry")
 	}
 }
+
+func TestOAuthSessionRevocationMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/017_oauth_session_revocation.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN revoked_at",
+		"ADD COLUMN session_id",
+		"UPDATE oauth_refresh_tokens",
+		"oauth_refresh_tokens_active_session",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("OAuth session revocation migration does not contain %s", expected)
+		}
+	}
+}

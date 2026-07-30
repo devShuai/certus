@@ -144,7 +144,7 @@ func (s *server) revokeAccountConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := r.PathValue("clientID")
-	err := s.oauth.DeleteConsent(r.Context(), current.UserID, clientID)
+	err := s.oauth.DeleteConsent(r.Context(), current.UserID, clientID, s.now().UTC())
 	if errors.Is(err, oauth.ErrConsentNotFound) {
 		writeProblem(w, http.StatusNotFound, "not_found", "应用授权不存在")
 		return
@@ -202,6 +202,9 @@ func (s *server) changeAccountPassword(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("revoke other sessions after password change", "error", revokeErr)
 	} else {
 		s.cleanupRevokedSessions(r.Context(), revokedSessions)
+	}
+	if err := s.oauth.RevokeUserTokens(r.Context(), current.UserID, current.ID, s.now().UTC()); err != nil {
+		s.logger.Error("revoke other OAuth tokens after password change", "error", err)
 	}
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(current.UserID),
@@ -274,6 +277,9 @@ func (s *server) resetAccountPassword(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.cleanupRevokedSessions(r.Context(), revokedSessions)
 	}
+	if err := s.oauth.RevokeUserTokens(r.Context(), userID, "", s.now().UTC()); err != nil {
+		s.logger.Error("revoke OAuth tokens after password reset", "error", err)
+	}
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(userID),
 		EventType:   "password.reset",
@@ -336,6 +342,11 @@ func (s *server) revokeAllAdminUserSessions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.cleanupRevokedSessions(r.Context(), items)
+	if err := s.oauth.RevokeUserTokens(r.Context(), userID, "", s.now().UTC()); err != nil {
+		s.logger.Error("revoke OAuth tokens after admin session revocation", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "撤销 OAuth 令牌失败")
+		return
+	}
 	s.recordAudit(r, audit.Event{
 		EventType: "session.revoked_all_by_admin",
 		Outcome:   audit.OutcomeSuccess,

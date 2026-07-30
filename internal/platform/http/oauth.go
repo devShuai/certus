@@ -326,38 +326,62 @@ func (s *server) refreshToken(w http.ResponseWriter, r *http.Request, registered
 		return
 	}
 	raw := r.Form.Get("refresh_token")
-	replacementRaw, err := security.RandomToken(48)
-	if raw == "" || err != nil {
+	if raw == "" {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh token is invalid")
 		return
 	}
 	now := s.now().UTC()
+	var scopes []string
+	if scopeValue := strings.TrimSpace(r.Form.Get("scope")); scopeValue != "" {
+		requested, err := requestedScopes(scopeValue, registered, false)
+		if err != nil {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "scope must not exceed the original grant")
+			return
+		}
+		scopes = requested
+	}
+	replacementRaw, err := security.RandomToken(48)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
+		return
+	}
 	replacement := oauth.RefreshToken{
 		Hash:      security.HashToken(replacementRaw),
 		ClientID:  registered.ID,
+		Scope:     scopes,
 		IssuedAt:  now,
 		ExpiresAt: now.Add(refreshTokenLifetime),
 	}
-	// The repository atomically copies the authoritative family, user and scope
-	// values from the current token after validating the client.
 	current, err := s.oauth.RotateRefreshToken(r.Context(), security.HashToken(raw), replacement, now)
+	if errors.Is(err, oauth.ErrInvalidScope) {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "scope must not exceed the original grant")
+		return
+	}
 	if err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh token is invalid, expired or reused")
 		return
 	}
-	// Some repositories require the replacement fields up front; persistently
-	// backed repositories validate these values inside the same transaction.
-	if replacement.FamilyID == "" {
-		replacement.FamilyID = current.FamilyID
+	if scopes == nil {
+		scopes = append([]string(nil), current.Scope...)
 	}
-	response, err := s.issueAccessToken(r, registered.ID, current.UserID, current.FamilyID, current.Scope)
+	if _, err := s.validateOAuthUserGrant(
+		r.Context(), current.UserID, current.ClientID, current.SessionID, scopes,
+	); err != nil {
+		_ = s.oauth.RevokeRefreshToken(r.Context(), security.HashToken(replacementRaw), registered.ID, s.now().UTC())
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh token grant is no longer active")
+		return
+	}
+	response, err := s.issueAccessToken(
+		r, registered.ID, current.UserID, current.SessionID, current.FamilyID, scopes,
+	)
 	if err != nil {
+		_ = s.oauth.RevokeRefreshToken(r.Context(), security.HashToken(replacementRaw), registered.ID, s.now().UTC())
 		s.logger.Error("issue refreshed access token", "error", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
 		return
 	}
 	response["refresh_token"] = replacementRaw
-	response["scope"] = strings.Join(current.Scope, " ")
+	response["scope"] = strings.Join(scopes, " ")
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -389,7 +413,7 @@ func (s *server) clientCredentialsToken(w http.ResponseWriter, r *http.Request, 
 		writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "roles is not valid with client_credentials")
 		return
 	}
-	response, err := s.issueAccessToken(r, registered.ID, "", "", scopes)
+	response, err := s.issueAccessToken(r, registered.ID, "", "", "", scopes)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
 		return
@@ -409,9 +433,11 @@ func (s *server) issueUserTokens(
 	assuranceLevel string,
 	allowRefresh bool,
 ) (map[string]any, error) {
-	user, err := s.users.Find(r.Context(), userID)
-	if err != nil || user.Status != identity.UserActive {
-		return nil, errors.New("user is unavailable")
+	user, err := s.validateOAuthUserGrant(
+		r.Context(), userID, registered.ID, sessionID, scopes,
+	)
+	if err != nil {
+		return nil, err
 	}
 	var refreshRaw, familyID string
 	if allowRefresh && registered.SupportsGrant(client.GrantRefreshToken) {
@@ -424,7 +450,7 @@ func (s *server) issueUserTokens(
 			return nil, err
 		}
 	}
-	response, err := s.issueAccessToken(r, registered.ID, userID, familyID, scopes)
+	response, err := s.issueAccessToken(r, registered.ID, userID, sessionID, familyID, scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -435,6 +461,7 @@ func (s *server) issueUserTokens(
 			FamilyID:  familyID,
 			ClientID:  registered.ID,
 			UserID:    userID,
+			SessionID: sessionID,
 			Scope:     scopes,
 			IssuedAt:  now,
 			ExpiresAt: now.Add(refreshTokenLifetime),
@@ -490,7 +517,11 @@ func (s *server) issueUserTokens(
 	return response, nil
 }
 
-func (s *server) issueAccessToken(r *http.Request, clientID, userID, familyID string, scopes []string) (map[string]any, error) {
+func (s *server) issueAccessToken(
+	r *http.Request,
+	clientID, userID, sessionID, familyID string,
+	scopes []string,
+) (map[string]any, error) {
 	raw, err := security.RandomToken(48)
 	if err != nil {
 		return nil, err
@@ -500,6 +531,7 @@ func (s *server) issueAccessToken(r *http.Request, clientID, userID, familyID st
 		Hash:      security.HashToken(raw),
 		ClientID:  clientID,
 		UserID:    userID,
+		SessionID: sessionID,
 		FamilyID:  familyID,
 		Scope:     scopes,
 		IssuedAt:  now,
@@ -513,6 +545,31 @@ func (s *server) issueAccessToken(r *http.Request, clientID, userID, familyID st
 		"expires_in":   int(accessTokenLifetime / time.Second),
 		"scope":        strings.Join(scopes, " "),
 	}, nil
+}
+
+func (s *server) validateOAuthUserGrant(
+	ctx context.Context,
+	userID, clientID, sessionID string,
+	scopes []string,
+) (identity.User, error) {
+	user, err := s.users.Find(ctx, userID)
+	if err != nil || user.Status != identity.UserActive {
+		return identity.User{}, errors.New("user is unavailable")
+	}
+	if sessionID != "" {
+		active, err := s.sessions.IsActive(ctx, userID, sessionID)
+		if err != nil {
+			return identity.User{}, fmt.Errorf("check OAuth grant session: %w", err)
+		}
+		if !active {
+			return identity.User{}, errors.New("OAuth grant session is inactive")
+		}
+	}
+	consent, err := s.oauth.FindConsent(ctx, userID, clientID)
+	if err != nil || !consent.Covers(scopes) {
+		return identity.User{}, errors.New("OAuth consent is unavailable")
+	}
+	return user, nil
 }
 
 func (s *server) authenticateOAuthClient(w http.ResponseWriter, r *http.Request) (client.Client, bool) {
@@ -611,8 +668,10 @@ func (s *server) writeAccessTokenIntrospection(w http.ResponseWriter, r *http.Re
 		"iss":        s.cfg.Issuer,
 	}
 	if token.UserID != "" {
-		user, err := s.users.Find(r.Context(), token.UserID)
-		if err != nil || user.Status != identity.UserActive {
+		user, err := s.validateOAuthUserGrant(
+			r.Context(), token.UserID, token.ClientID, token.SessionID, token.Scope,
+		)
+		if err != nil {
 			writeJSON(w, http.StatusOK, map[string]bool{"active": false})
 			return
 		}
@@ -628,8 +687,10 @@ func (s *server) writeAccessTokenIntrospection(w http.ResponseWriter, r *http.Re
 }
 
 func (s *server) writeRefreshTokenIntrospection(w http.ResponseWriter, r *http.Request, token oauth.RefreshToken) {
-	user, err := s.users.Find(r.Context(), token.UserID)
-	if err != nil || user.Status != identity.UserActive {
+	user, err := s.validateOAuthUserGrant(
+		r.Context(), token.UserID, token.ClientID, token.SessionID, token.Scope,
+	)
+	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]bool{"active": false})
 		return
 	}
@@ -710,8 +771,10 @@ func (s *server) userinfo(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "access token is invalid or expired")
 		return
 	}
-	user, err := s.users.Find(r.Context(), token.UserID)
-	if err != nil || user.Status != identity.UserActive {
+	user, err := s.validateOAuthUserGrant(
+		r.Context(), token.UserID, token.ClientID, token.SessionID, token.Scope,
+	)
+	if err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "user is unavailable")
 		return
@@ -795,21 +858,19 @@ func (s *server) oidcLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	revokedSessions := make(map[string]struct{}, 2)
-	logoutSessions := make([]oidcLogoutSession, 0, 2)
+	logoutSessions := make([]session.Session, 0, 2)
 	if sessionID != "" {
-		_ = s.cas.DeleteServiceSessions(r.Context(), sessionID)
 		_ = s.sessions.Revoke(r.Context(), sessionID)
 		revokedSessions[sessionID] = struct{}{}
-		logoutSessions = append(logoutSessions, oidcLogoutSession{SessionID: sessionID, UserID: subject})
+		logoutSessions = append(logoutSessions, session.Session{ID: sessionID, UserID: subject})
 	}
 	if authenticated {
 		if _, alreadyRevoked := revokedSessions[current.ID]; !alreadyRevoked {
-			_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
 			_ = s.sessions.Revoke(r.Context(), current.ID)
-			logoutSessions = append(logoutSessions, oidcLogoutSession{SessionID: current.ID, UserID: current.UserID})
+			logoutSessions = append(logoutSessions, current)
 		}
 	}
-	s.notifyOIDCBackchannelLogout(r.Context(), logoutSessions)
+	s.cleanupRevokedSessions(r.Context(), logoutSessions)
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(subject),
 		EventType:   "logout.oidc",

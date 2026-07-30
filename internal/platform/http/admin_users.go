@@ -149,6 +149,17 @@ func (s *server) replaceUser(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "更新用户失败")
 		return
 	}
+	if user.Status != identity.UserActive {
+		activeSessions := s.sessionsForRevocation(r.Context(), user.ID, "")
+		if _, err := s.sessions.RevokeAll(r.Context(), user.ID, ""); err != nil {
+			s.logger.Error("revoke sessions for inactive user", "user_id", user.ID, "error", err)
+		} else {
+			s.cleanupRevokedSessions(r.Context(), activeSessions)
+		}
+		if err := s.oauth.RevokeUserTokens(r.Context(), user.ID, "", s.now().UTC()); err != nil {
+			s.logger.Error("revoke OAuth tokens for inactive user", "user_id", user.ID, "error", err)
+		}
+	}
 	writeJSON(w, http.StatusOK, user)
 }
 

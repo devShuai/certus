@@ -52,6 +52,16 @@ func (r *MemoryRepository) Find(_ context.Context, hash []byte, now time.Time) (
 	return Session{}, ErrNotFound
 }
 
+func (r *MemoryRepository) IsActive(_ context.Context, userID, id string, now time.Time) (bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	record, ok := r.records[id]
+	return ok &&
+		record.UserID == userID &&
+		record.revokedAt == nil &&
+		record.ExpiresAt.After(now), nil
+}
+
 func (r *MemoryRepository) ListByUser(_ context.Context, userID string, now time.Time) ([]Session, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

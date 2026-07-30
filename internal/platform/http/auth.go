@@ -450,12 +450,8 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if current, ok := s.currentSession(r); ok {
-		_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
 		_ = s.sessions.Revoke(r.Context(), current.ID)
-		s.notifyOIDCBackchannelLogout(r.Context(), []oidcLogoutSession{{
-			SessionID: current.ID,
-			UserID:    current.UserID,
-		}})
+		s.cleanupRevokedSessions(r.Context(), []session.Session{current})
 		s.recordAudit(r, audit.Event{
 			ActorUserID: auditActor(current.UserID),
 			EventType:   "logout",
@@ -573,6 +569,9 @@ func (s *server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("revoke sessions after admin password update", "error", err)
 	} else {
 		s.cleanupRevokedSessions(r.Context(), revokedSessions)
+	}
+	if err := s.oauth.RevokeUserTokens(r.Context(), userID, "", s.now().UTC()); err != nil {
+		s.logger.Error("revoke OAuth tokens after admin password update", "error", err)
 	}
 	s.recordAudit(r, audit.Event{
 		EventType: "password.set_by_admin",

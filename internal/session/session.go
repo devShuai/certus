@@ -27,6 +27,7 @@ type Session struct {
 type Repository interface {
 	Create(context.Context, Session, []byte, string, string) (Session, error)
 	Find(context.Context, []byte, time.Time) (Session, error)
+	IsActive(context.Context, string, string, time.Time) (bool, error)
 	ListByUser(context.Context, string, time.Time) ([]Session, error)
 	Revoke(context.Context, string, time.Time) error
 	RevokeForUser(context.Context, string, string, time.Time) error
@@ -93,6 +94,13 @@ func (s *Service) Revoke(ctx context.Context, id string) error {
 
 func (s *Service) ListByUser(ctx context.Context, userID string) ([]Session, error) {
 	return s.repository.ListByUser(ctx, userID, s.now().UTC())
+}
+
+func (s *Service) IsActive(ctx context.Context, userID, id string) (bool, error) {
+	if userID == "" || id == "" {
+		return false, nil
+	}
+	return s.repository.IsActive(ctx, userID, id, s.now().UTC())
 }
 
 func (s *Service) RevokeForUser(ctx context.Context, userID, id string) error {

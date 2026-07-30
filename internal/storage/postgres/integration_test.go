@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -121,6 +122,9 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if err != nil || found.ID != current.ID || found.AssuranceLevel != "urn:certus:aal:2" {
 		t.Fatalf("session repository round trip failed: %#v %v", found, err)
 	}
+	if active, err := sessions.IsActive(ctx, user.ID, current.ID); err != nil || !active {
+		t.Fatalf("PostgreSQL session active check failed: %v %v", active, err)
+	}
 	oauthRepository := NewOAuthRepository(pool)
 	if err := oauthRepository.SaveOIDCClientSession(ctx, oauth.OIDCClientSession{
 		SessionID: current.ID,
@@ -153,8 +157,58 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if err != nil || len(consents) != 1 {
 		t.Fatalf("list OAuth consents failed: %#v %v", consents, err)
 	}
-	if err := oauthRepository.DeleteConsent(ctx, user.ID, registered.ID); err != nil {
+	tokenTime := time.Now().UTC()
+	sessionAccess := oauth.AccessToken{
+		Hash: []byte("postgres-session-access"), ClientID: registered.ID, UserID: user.ID,
+		SessionID: current.ID, Scope: []string{"openid"}, IssuedAt: tokenTime, ExpiresAt: tokenTime.Add(time.Hour),
+	}
+	otherAccess := oauth.AccessToken{
+		Hash: []byte("postgres-other-access"), ClientID: registered.ID, UserID: user.ID,
+		Scope: []string{"openid"}, IssuedAt: tokenTime, ExpiresAt: tokenTime.Add(time.Hour),
+	}
+	sessionRefresh := oauth.RefreshToken{
+		Hash: []byte("postgres-session-refresh"), FamilyID: "f5597c29-e356-4ce9-9ebd-bd7fdd424bc4",
+		ClientID: registered.ID, UserID: user.ID, SessionID: current.ID,
+		Scope: []string{"openid"}, IssuedAt: tokenTime, ExpiresAt: tokenTime.Add(time.Hour),
+	}
+	for _, token := range []oauth.AccessToken{sessionAccess, otherAccess} {
+		if err := oauthRepository.SaveAccessToken(ctx, token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := oauthRepository.SaveRefreshToken(ctx, sessionRefresh); err != nil {
 		t.Fatal(err)
+	}
+	if err := oauthRepository.RevokeSessionTokens(ctx, user.ID, current.ID, tokenTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oauthRepository.FindAccessToken(ctx, sessionAccess.Hash, tokenTime); !errors.Is(err, oauth.ErrGrantNotFound) {
+		t.Fatalf("PostgreSQL session access token remained active: %v", err)
+	}
+	if _, err := oauthRepository.FindRefreshToken(ctx, sessionRefresh.Hash, tokenTime); !errors.Is(err, oauth.ErrGrantNotFound) {
+		t.Fatalf("PostgreSQL session refresh token remained active: %v", err)
+	}
+	if _, err := oauthRepository.FindAccessToken(ctx, otherAccess.Hash, tokenTime); err != nil {
+		t.Fatalf("PostgreSQL session revocation affected unrelated token: %v", err)
+	}
+	if err := oauthRepository.DeleteConsent(ctx, user.ID, registered.ID, tokenTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oauthRepository.FindAccessToken(ctx, otherAccess.Hash, tokenTime); !errors.Is(err, oauth.ErrGrantNotFound) {
+		t.Fatalf("PostgreSQL consent access token remained active: %v", err)
+	}
+	machineAccess := oauth.AccessToken{
+		Hash: []byte("postgres-machine-access"), ClientID: registered.ID, Scope: []string{"api.read"},
+		IssuedAt: tokenTime, ExpiresAt: tokenTime.Add(time.Hour),
+	}
+	if err := oauthRepository.SaveAccessToken(ctx, machineAccess); err != nil {
+		t.Fatal(err)
+	}
+	if err := oauthRepository.RevokeClientTokens(ctx, registered.ID, tokenTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oauthRepository.FindAccessToken(ctx, machineAccess.Hash, tokenTime); !errors.Is(err, oauth.ErrGrantNotFound) {
+		t.Fatalf("PostgreSQL client access token remained active: %v", err)
 	}
 
 	accessRepository := NewAccessRepository(pool)

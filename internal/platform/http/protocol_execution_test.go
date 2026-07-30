@@ -108,10 +108,53 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 		"grant_type":    {"refresh_token"},
 		"client_id":     {"integration"},
 		"refresh_token": {tokens["refresh_token"].(string)},
+		"scope":         {"openid profile"},
 	}
 	refreshed := browser.request(t, http.MethodPost, "/oauth2/token", refreshForm.Encode(), "application/x-www-form-urlencoded")
-	if refreshed.Code != http.StatusOK || !strings.Contains(refreshed.Body.String(), `"refresh_token"`) {
+	if refreshed.Code != http.StatusOK ||
+		!strings.Contains(refreshed.Body.String(), `"refresh_token"`) ||
+		!strings.Contains(refreshed.Body.String(), `"scope":"openid profile"`) {
 		t.Fatalf("refresh: %d %s", refreshed.Code, refreshed.Body.String())
+	}
+	var narrowedTokens map[string]any
+	if err := json.Unmarshal(refreshed.Body.Bytes(), &narrowedTokens); err != nil {
+		t.Fatal(err)
+	}
+	escalatedRefresh := refreshForm
+	escalatedRefresh.Set("refresh_token", narrowedTokens["refresh_token"].(string))
+	escalatedRefresh.Set("scope", "openid profile email")
+	escalated := browser.request(
+		t, http.MethodPost, "/oauth2/token",
+		escalatedRefresh.Encode(), "application/x-www-form-urlencoded",
+	)
+	if escalated.Code != http.StatusBadRequest || !strings.Contains(escalated.Body.String(), `"invalid_scope"`) {
+		t.Fatalf("refresh scope escalation was accepted: %d %s", escalated.Code, escalated.Body.String())
+	}
+	reused := browser.request(
+		t, http.MethodPost, "/oauth2/token",
+		url.Values{
+			"grant_type":    {"refresh_token"},
+			"client_id":     {"integration"},
+			"refresh_token": {tokens["refresh_token"].(string)},
+			"scope":         {"openid profile"},
+		}.Encode(), "application/x-www-form-urlencoded",
+	)
+	if reused.Code != http.StatusBadRequest || !strings.Contains(reused.Body.String(), `"invalid_grant"`) {
+		t.Fatalf("refresh token reuse was accepted: %d %s", reused.Code, reused.Body.String())
+	}
+	afterReuse := url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {"integration"},
+		"refresh_token": {narrowedTokens["refresh_token"].(string)},
+		"scope":         {"openid profile"},
+	}
+	revokedFamily := browser.request(
+		t, http.MethodPost, "/oauth2/token",
+		afterReuse.Encode(), "application/x-www-form-urlencoded",
+	)
+	if revokedFamily.Code != http.StatusBadRequest ||
+		!strings.Contains(revokedFamily.Body.String(), `"invalid_grant"`) {
+		t.Fatalf("refresh token family remained active after reuse: %d %s", revokedFamily.Code, revokedFamily.Body.String())
 	}
 
 	deviceForm := url.Values{
@@ -529,6 +572,28 @@ func TestOIDCRPInitiatedLogout(t *testing.T) {
 	account := browser.request(t, http.MethodGet, "/account", "", "")
 	if account.Code != http.StatusFound || !strings.HasPrefix(account.Header().Get("Location"), "/login?") {
 		t.Fatalf("OIDC logout did not revoke the Certus session: %d %s", account.Code, account.Header().Get("Location"))
+	}
+	userinfoRequest := httptest.NewRequest(http.MethodGet, "/oauth2/userinfo", nil)
+	userinfoRequest.Header.Set("Authorization", "Bearer "+tokens["access_token"].(string))
+	userinfo := httptest.NewRecorder()
+	handler.ServeHTTP(userinfo, userinfoRequest)
+	if userinfo.Code != http.StatusUnauthorized {
+		t.Fatalf("session access token remained active after logout: %d %s", userinfo.Code, userinfo.Body.String())
+	}
+	refreshAfterLogout := browser.request(
+		t,
+		http.MethodPost,
+		"/oauth2/token",
+		url.Values{
+			"grant_type":    {"refresh_token"},
+			"client_id":     {"integration"},
+			"refresh_token": {tokens["refresh_token"].(string)},
+		}.Encode(),
+		"application/x-www-form-urlencoded",
+	)
+	if refreshAfterLogout.Code != http.StatusBadRequest ||
+		!strings.Contains(refreshAfterLogout.Body.String(), `"invalid_grant"`) {
+		t.Fatalf("session refresh token remained active after logout: %d %s", refreshAfterLogout.Code, refreshAfterLogout.Body.String())
 	}
 
 	postLogout := browser.request(

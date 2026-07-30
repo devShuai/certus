@@ -79,7 +79,7 @@ func TestConsentLifecycleAndScopeExpansion(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("unexpected consent list: %#v %v", items, err)
 	}
-	if err := repository.DeleteConsent(ctx, "user", "client"); err != nil {
+	if err := repository.DeleteConsent(ctx, "user", "client", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.FindConsent(ctx, "user", "client"); !errors.Is(err, ErrConsentNotFound) {
@@ -102,6 +102,18 @@ func TestRefreshReuseRevokesReplacementFamily(t *testing.T) {
 	if err := repository.SaveRefreshToken(context.Background(), current); err != nil {
 		t.Fatal(err)
 	}
+	familyAccess := AccessToken{
+		Hash:      []byte("family-access"),
+		ClientID:  current.ClientID,
+		UserID:    current.UserID,
+		FamilyID:  current.FamilyID,
+		Scope:     current.Scope,
+		IssuedAt:  now,
+		ExpiresAt: now.Add(time.Hour),
+	}
+	if err := repository.SaveAccessToken(context.Background(), familyAccess); err != nil {
+		t.Fatal(err)
+	}
 	replacement := RefreshToken{
 		Hash:      []byte("replacement"),
 		ClientID:  "client",
@@ -116,6 +128,136 @@ func TestRefreshReuseRevokesReplacementFamily(t *testing.T) {
 	}
 	if _, err := repository.RotateRefreshToken(context.Background(), replacement.Hash, RefreshToken{Hash: []byte("next"), ClientID: "client"}, now); !errors.Is(err, ErrRefreshReuse) {
 		t.Fatalf("replacement family was not revoked: %v", err)
+	}
+	if _, err := repository.FindAccessToken(context.Background(), familyAccess.Hash, now); !errors.Is(err, ErrGrantNotFound) {
+		t.Fatalf("refresh reuse did not revoke family access tokens: %v", err)
+	}
+}
+
+func TestSessionAndConsentRevocation(t *testing.T) {
+	repository := NewMemoryRepository()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, err := repository.GrantConsent(ctx, "user", "client", []string{"openid", "profile"}, now); err != nil {
+		t.Fatal(err)
+	}
+	code := AuthorizationCode{
+		Hash:          []byte("session-code"),
+		ClientID:      "client",
+		UserID:        "user",
+		SessionID:     "session-a",
+		RedirectURI:   "https://app.example/callback",
+		CodeChallenge: "challenge",
+		Scope:         []string{"openid"},
+		ExpiresAt:     now.Add(time.Minute),
+	}
+	accessA := AccessToken{
+		Hash: []byte("access-a"), ClientID: "client", UserID: "user", SessionID: "session-a",
+		Scope: []string{"openid"}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	accessB := AccessToken{
+		Hash: []byte("access-b"), ClientID: "client", UserID: "user", SessionID: "session-b",
+		Scope: []string{"openid"}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	refreshB := RefreshToken{
+		Hash: []byte("refresh-b"), FamilyID: "family-b", ClientID: "client", UserID: "user",
+		SessionID: "session-b", Scope: []string{"openid"}, IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := repository.SaveAuthorizationCode(ctx, code); err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []AccessToken{accessA, accessB} {
+		if err := repository.SaveAccessToken(ctx, token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repository.SaveRefreshToken(ctx, refreshB); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RevokeSessionTokens(ctx, "user", "session-a", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.FindAccessToken(ctx, accessA.Hash, now); !errors.Is(err, ErrGrantNotFound) {
+		t.Fatalf("session access token remained active: %v", err)
+	}
+	if _, err := repository.ConsumeAuthorizationCode(
+		ctx, code.Hash, code.ClientID, code.RedirectURI, code.CodeChallenge, now,
+	); !errors.Is(err, ErrGrantNotFound) {
+		t.Fatalf("session authorization code remained active: %v", err)
+	}
+	if _, err := repository.FindAccessToken(ctx, accessB.Hash, now); err != nil {
+		t.Fatalf("unrelated session token was revoked: %v", err)
+	}
+	if err := repository.DeleteConsent(ctx, "user", "client", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.FindAccessToken(ctx, accessB.Hash, now); !errors.Is(err, ErrGrantNotFound) {
+		t.Fatalf("consent access token remained active: %v", err)
+	}
+	if _, err := repository.FindRefreshToken(ctx, refreshB.Hash, now); !errors.Is(err, ErrGrantNotFound) {
+		t.Fatalf("consent refresh token remained active: %v", err)
+	}
+}
+
+func TestDeviceApprovalGrantsConsent(t *testing.T) {
+	repository := NewMemoryRepository()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	device := DeviceAuthorization{
+		DeviceHash: []byte("device"), UserHash: []byte("user-code"), ClientID: "client",
+		Scope: []string{"openid", "profile"}, Status: DevicePending,
+		CreatedAt: now, ExpiresAt: now.Add(time.Minute), Interval: time.Second,
+	}
+	if err := repository.SaveDeviceAuthorization(ctx, device); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.DecideDeviceAuthorization(
+		ctx, device.UserHash, "user", now, []string{"pwd"}, "urn:certus:aal:1", true, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	consent, err := repository.FindConsent(ctx, "user", "client")
+	if err != nil || !consent.Covers(device.Scope) {
+		t.Fatalf("device approval did not grant consent: %#v %v", consent, err)
+	}
+}
+
+func TestClientRevocationIncludesMachineTokensAndPendingDevices(t *testing.T) {
+	repository := NewMemoryRepository()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	access := AccessToken{
+		Hash: []byte("machine-access"), ClientID: "client", Scope: []string{"api.read"},
+		IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	other := AccessToken{
+		Hash: []byte("other-access"), ClientID: "other", Scope: []string{"api.read"},
+		IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	for _, token := range []AccessToken{access, other} {
+		if err := repository.SaveAccessToken(ctx, token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	device := DeviceAuthorization{
+		DeviceHash: []byte("pending-device"), UserHash: []byte("pending-code"), ClientID: "client",
+		Scope: []string{"openid"}, Status: DevicePending,
+		CreatedAt: now, ExpiresAt: now.Add(time.Minute), Interval: time.Second,
+	}
+	if err := repository.SaveDeviceAuthorization(ctx, device); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RevokeClientTokens(ctx, "client", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.FindAccessToken(ctx, access.Hash, now); !errors.Is(err, ErrGrantNotFound) {
+		t.Fatalf("disabled client access token remained active: %v", err)
+	}
+	if _, err := repository.FindAccessToken(ctx, other.Hash, now); err != nil {
+		t.Fatalf("unrelated client access token was revoked: %v", err)
+	}
+	if _, err := repository.PollDeviceAuthorization(ctx, device.DeviceHash, device.ClientID, now); !errors.Is(err, ErrAccessDenied) {
+		t.Fatalf("pending device authorization was not denied: %v", err)
 	}
 }
 

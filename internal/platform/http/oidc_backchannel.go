@@ -49,7 +49,16 @@ func (s *server) sessionsForRevocation(ctx context.Context, userID, exceptID str
 
 func (s *server) cleanupRevokedSessions(ctx context.Context, sessions []session.Session) {
 	logoutSessions := make([]oidcLogoutSession, 0, len(sessions))
+	now := s.now().UTC()
 	for _, current := range sessions {
+		if err := s.oauth.RevokeSessionTokens(ctx, current.UserID, current.ID, now); err != nil {
+			s.logger.Error(
+				"revoke OAuth tokens for session",
+				"user_id", current.UserID,
+				"session_id", current.ID,
+				"error", err,
+			)
+		}
 		_ = s.cas.DeleteServiceSessions(ctx, current.ID)
 		logoutSessions = append(logoutSessions, oidcLogoutSession{
 			SessionID: current.ID,

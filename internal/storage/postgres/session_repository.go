@@ -69,6 +69,25 @@ func (r *SessionRepository) Find(ctx context.Context, hash []byte, now time.Time
 	return value, nil
 }
 
+func (r *SessionRepository) IsActive(ctx context.Context, userID, id string, now time.Time) (bool, error) {
+	var active bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM sessions
+			WHERE id = $1
+			  AND user_id = $2
+			  AND revoked_at IS NULL
+			  AND expires_at > $3
+		)`,
+		id, userID, now,
+	).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("check active session: %w", err)
+	}
+	return active, nil
+}
+
 func (r *SessionRepository) ListByUser(ctx context.Context, userID string, now time.Time) ([]session.Session, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id::text, user_id::text, authenticated_at, expires_at, last_seen_at,

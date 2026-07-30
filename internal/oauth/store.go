@@ -18,6 +18,7 @@ var (
 	ErrSlowDown             = errors.New("slow down")
 	ErrAccessDenied         = errors.New("access denied")
 	ErrConsentNotFound      = errors.New("consent not found")
+	ErrInvalidScope         = errors.New("invalid scope")
 )
 
 type AuthorizationCode struct {
@@ -40,6 +41,7 @@ type AccessToken struct {
 	Hash      []byte
 	ClientID  string
 	UserID    string
+	SessionID string
 	FamilyID  string
 	Scope     []string
 	IssuedAt  time.Time
@@ -51,6 +53,7 @@ type RefreshToken struct {
 	FamilyID  string
 	ClientID  string
 	UserID    string
+	SessionID string
 	Scope     []string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
@@ -97,8 +100,12 @@ type Consent struct {
 }
 
 func (c Consent) Covers(scopes []string) bool {
-	for _, scope := range scopes {
-		if !slices.Contains(c.Scopes, scope) {
+	return ScopesCover(c.Scopes, scopes)
+}
+
+func ScopesCover(granted, requested []string) bool {
+	for _, scope := range requested {
+		if !slices.Contains(granted, scope) {
 			return false
 		}
 	}
@@ -122,15 +129,19 @@ type Repository interface {
 	SaveOIDCClientSession(context.Context, OIDCClientSession) error
 	ListOIDCClientSessions(context.Context, string) ([]OIDCClientSession, error)
 	DeleteOIDCClientSessions(context.Context, string) error
+	RevokeSessionTokens(context.Context, string, string, time.Time) error
+	RevokeUserTokens(context.Context, string, string, time.Time) error
+	RevokeClientTokens(context.Context, string, time.Time) error
 	FindConsent(context.Context, string, string) (Consent, error)
 	GrantConsent(context.Context, string, string, []string, time.Time) (Consent, error)
 	ListConsentsByUser(context.Context, string) ([]Consent, error)
-	DeleteConsent(context.Context, string, string) error
+	DeleteConsent(context.Context, string, string, time.Time) error
 }
 
 type memoryAuthorizationCode struct {
 	AuthorizationCode
 	consumedAt *time.Time
+	revokedAt  *time.Time
 }
 
 type memoryRefreshToken struct {
@@ -181,6 +192,9 @@ func (r *MemoryRepository) ConsumeAuthorizationCode(_ context.Context, hash []by
 		}
 		if record.consumedAt != nil {
 			return AuthorizationCode{}, ErrGrantConsumed
+		}
+		if record.revokedAt != nil {
+			return AuthorizationCode{}, ErrGrantNotFound
 		}
 		if !record.ExpiresAt.After(now) {
 			return AuthorizationCode{}, ErrGrantExpired
@@ -273,15 +287,27 @@ func (r *MemoryRepository) RotateRefreshToken(_ context.Context, hash []byte, re
 					r.refresh[familyIndex].revokedAt = &value
 				}
 			}
+			for accessIndex := range r.accessTokens {
+				if r.accessTokens[accessIndex].FamilyID == record.FamilyID {
+					value := now
+					r.accessTokens[accessIndex].revokedAt = &value
+				}
+			}
 			return RefreshToken{}, ErrRefreshReuse
 		}
 		if !record.ExpiresAt.After(now) {
 			return RefreshToken{}, ErrGrantExpired
 		}
-		record.consumedAt = &now
 		replacement.FamilyID = record.FamilyID
 		replacement.UserID = record.UserID
-		replacement.Scope = append([]string(nil), record.Scope...)
+		replacement.SessionID = record.SessionID
+		if replacement.Scope == nil {
+			replacement.Scope = append([]string(nil), record.Scope...)
+		}
+		if !ScopesCover(record.Scope, replacement.Scope) {
+			return RefreshToken{}, ErrInvalidScope
+		}
+		record.consumedAt = &now
 		replacement.Hash = cloneBytes(replacement.Hash)
 		r.refresh = append(r.refresh, memoryRefreshToken{RefreshToken: replacement})
 		value := record.RefreshToken
@@ -358,6 +384,7 @@ func (r *MemoryRepository) DecideDeviceAuthorization(
 			value.AssuranceLevel = assuranceLevel
 			if approve {
 				value.Status = DeviceApproved
+				r.grantConsentLocked(userID, value.ClientID, value.Scope, now)
 			} else {
 				value.Status = DeviceDenied
 			}
@@ -438,6 +465,66 @@ func (r *MemoryRepository) DeleteOIDCClientSessions(_ context.Context, sessionID
 	return nil
 }
 
+func (r *MemoryRepository) RevokeSessionTokens(
+	_ context.Context,
+	userID, sessionID string,
+	now time.Time,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.revokeMatchingTokens(
+		func(candidateUserID, candidateSessionID, _ string) bool {
+			return candidateUserID == userID && candidateSessionID == sessionID
+		},
+		now,
+	)
+	return nil
+}
+
+func (r *MemoryRepository) RevokeUserTokens(
+	_ context.Context,
+	userID, exceptSessionID string,
+	now time.Time,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.revokeMatchingTokens(
+		func(candidateUserID, candidateSessionID, _ string) bool {
+			return candidateUserID == userID &&
+				(exceptSessionID == "" || candidateSessionID != exceptSessionID)
+		},
+		now,
+	)
+	for index := range r.devices {
+		if r.devices[index].UserID == userID && r.devices[index].Status == DeviceApproved {
+			r.devices[index].Status = DeviceDenied
+		}
+	}
+	return nil
+}
+
+func (r *MemoryRepository) RevokeClientTokens(
+	_ context.Context,
+	clientID string,
+	now time.Time,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.revokeMatchingTokens(
+		func(_, _, candidateClientID string) bool {
+			return candidateClientID == clientID
+		},
+		now,
+	)
+	for index := range r.devices {
+		if r.devices[index].ClientID == clientID &&
+			(r.devices[index].Status == DevicePending || r.devices[index].Status == DeviceApproved) {
+			r.devices[index].Status = DeviceDenied
+		}
+	}
+	return nil
+}
+
 func (r *MemoryRepository) FindConsent(_ context.Context, userID, clientID string) (Consent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -457,11 +544,19 @@ func (r *MemoryRepository) GrantConsent(
 ) (Consent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.grantConsentLocked(userID, clientID, scopes, now), nil
+}
+
+func (r *MemoryRepository) grantConsentLocked(
+	userID, clientID string,
+	scopes []string,
+	now time.Time,
+) Consent {
 	for index := range r.consents {
 		if r.consents[index].UserID == userID && r.consents[index].ClientID == clientID {
 			r.consents[index].Scopes = mergeScopes(r.consents[index].Scopes, scopes)
 			r.consents[index].UpdatedAt = now
-			return cloneConsent(r.consents[index]), nil
+			return cloneConsent(r.consents[index])
 		}
 	}
 	value := Consent{
@@ -472,7 +567,7 @@ func (r *MemoryRepository) GrantConsent(
 		UpdatedAt: now,
 	}
 	r.consents = append(r.consents, value)
-	return cloneConsent(value), nil
+	return cloneConsent(value)
 }
 
 func (r *MemoryRepository) ListConsentsByUser(_ context.Context, userID string) ([]Consent, error) {
@@ -490,16 +585,60 @@ func (r *MemoryRepository) ListConsentsByUser(_ context.Context, userID string) 
 	return result, nil
 }
 
-func (r *MemoryRepository) DeleteConsent(_ context.Context, userID, clientID string) error {
+func (r *MemoryRepository) DeleteConsent(
+	_ context.Context,
+	userID, clientID string,
+	now time.Time,
+) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for index, value := range r.consents {
 		if value.UserID == userID && value.ClientID == clientID {
 			r.consents = append(r.consents[:index], r.consents[index+1:]...)
+			r.revokeMatchingTokens(
+				func(candidateUserID, _ string, candidateClientID string) bool {
+					return candidateUserID == userID && candidateClientID == clientID
+				},
+				now,
+			)
+			for deviceIndex := range r.devices {
+				if r.devices[deviceIndex].UserID == userID &&
+					r.devices[deviceIndex].ClientID == clientID &&
+					r.devices[deviceIndex].Status == DeviceApproved {
+					r.devices[deviceIndex].Status = DeviceDenied
+				}
+			}
 			return nil
 		}
 	}
 	return ErrConsentNotFound
+}
+
+func (r *MemoryRepository) revokeMatchingTokens(
+	matches func(userID, sessionID, clientID string) bool,
+	now time.Time,
+) {
+	for index := range r.codes {
+		record := &r.codes[index]
+		if matches(record.UserID, record.SessionID, record.ClientID) && record.revokedAt == nil {
+			value := now
+			record.revokedAt = &value
+		}
+	}
+	for index := range r.accessTokens {
+		record := &r.accessTokens[index]
+		if matches(record.UserID, record.SessionID, record.ClientID) && record.revokedAt == nil {
+			value := now
+			record.revokedAt = &value
+		}
+	}
+	for index := range r.refresh {
+		record := &r.refresh[index]
+		if matches(record.UserID, record.SessionID, record.ClientID) && record.revokedAt == nil {
+			value := now
+			record.revokedAt = &value
+		}
+	}
 }
 
 func cloneBytes(value []byte) []byte {

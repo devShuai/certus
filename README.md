@@ -23,6 +23,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
 - OAuth/OIDC 用户授权同意、Scope 扩权确认、持久授权复用与用户自助撤销
 - RFC 7662 Token Introspection 与 RFC 7009 访问/刷新令牌撤销
+- OAuth 令牌与登录会话、用户状态和授权记录联动撤销
 - OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS、UserInfo、重新认证、RP-Initiated Logout 与 Back-Channel Logout
 - OAuth 设备授权码、浏览器确认和标准轮询错误
 - CAS 1.0/2.0/3.0 Service Ticket 校验、PGT/PT 代理认证、Gateway、Renew 和后端单点登出
@@ -78,7 +79,7 @@ go run ./cmd/certus
 - OAuth 授权码和支持轮换检测的刷新令牌族
 - 审计事件
 
-增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT、OIDC 持久化签名密钥，以及 OAuth 用户授权记录。
+增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT、OIDC 持久化签名密钥、OAuth 用户授权记录，以及用户令牌的登录会话关联。升级到会话关联迁移时会撤销无法安全回填会话标识的历史用户令牌，客户端凭据令牌不受影响。
 
 迁移文件已嵌入可执行文件，并在 `certus_schema_migrations` 中记录版本与 SHA-256 校验和；已执行的 migration 被修改时，服务会拒绝启动。
 
@@ -155,7 +156,7 @@ PUT    /api/v1/account/password
 POST   /api/v1/account/password/reset
 ```
 
-`/account` 提供登录用户自助安全中心，可查看身份资料、活跃会话、已授权应用、修改密码及配置 MFA；未登录访问会先完成认证再返回。撤销应用授权后，该客户端下次发起交互式授权时必须重新取得用户同意；已签发令牌仍按各自生命周期或令牌撤销接口处理。用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话；一次性重置成功后撤销全部会话。本地退出表单也必须携带页面签发的 CSRF Token。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
+`/account` 提供登录用户自助安全中心，可查看身份资料、活跃会话、已授权应用、修改密码及配置 MFA；未登录访问会先完成认证再返回。撤销应用授权会在同一事务中撤销该用户与客户端之间的授权码、访问令牌、刷新令牌和未兑换设备授权；该客户端下次交互式授权必须重新取得同意。用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话及其令牌；一次性重置成功后撤销全部会话和用户令牌。本地退出表单也必须携带页面签发的 CSRF Token。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
 
 ### TOTP 多因素认证
 
@@ -334,7 +335,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
 
 `public` 客户端不生成密钥；`confidential` 客户端的明文密钥只在创建响应中出现一次，Certus 只保存 SHA-256 哈希。非本机回环地址的回调必须使用 HTTPS，回调地址在授权时执行精确匹配。
 
-`PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可暂停新登录和令牌签发。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端，历史令牌、授权和审计记录不会因物理删除而丢失。
+`PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可停止新登录，并立即撤销该客户端的授权码、访问令牌、刷新令牌和待处理设备授权。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端；历史令牌和授权记录不会物理删除，但令牌会被标记为已撤销，审计引用得以保留。
 
 ## 角色与权限下发
 
@@ -386,7 +387,9 @@ OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开�
 
 OIDC 授权请求支持 `prompt=none`、`prompt=login`、`prompt=consent` 与非负整数 `max_age`。首次授权、请求新增 Scope 或显式使用 `prompt=consent` 时，Certus 会展示客户端与权限范围并记录用户决定；已有授权覆盖全部 Scope 时可直接复用。静默认证无法完成时，Certus 会将 `login_required` 或 `consent_required` 和原始 `state` 返回到已登记的精确回调地址；强制重新认证与授权同意都使用 5 分钟有效、绑定完整授权请求且完成后即失效的签名事务。授权码签发记录认证时间，后续 ID Token 始终携带 `auth_time`。
 
-OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oauth2/logout`。Certus 验证签名、发行者、受众及当前用户后撤销对应统一会话；仅当 `post_logout_redirect_uri` 与客户端独立登记的退出回调完全一致时才携带可选 `state` 跳回业务系统。
+刷新令牌支持可选 `scope` 缩减，不允许恢复已经缩减或原始授权未包含的范围。每次刷新、UserInfo 与 Introspection 都重新检查用户状态、登录会话和当前授权；用户退出、会话撤销、用户禁用、密码重置、管理员 MFA 重置或应用授权撤销后，不再签发或接受关联令牌。
+
+OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oauth2/logout`。Certus 验证签名、发行者、受众及当前用户后撤销对应统一会话和 OAuth 令牌；仅当 `post_logout_redirect_uri` 与客户端独立登记的退出回调完全一致时才携带可选 `state` 跳回业务系统。
 
 配置 `backchannel_logout_uri` 后，Certus 会记录每个统一会话访问过的 OIDC 客户端。用户退出、RP-Initiated Logout、账户或管理员撤销会话、改密/重置密码以及管理员重置 MFA 时，服务端会向相关客户端并行 POST 带签名 `logout+jwt` 的 `logout_token`。令牌包含 `iss`、`sub`、`aud`、`iat`、`exp`、`jti`、`sid` 与标准退出 `events`，不包含 `nonce`；单次注销投递共用 5 秒超时且不跟随重定向。
 
