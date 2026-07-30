@@ -437,6 +437,16 @@ func (s *server) loginClient(r *http.Request, returnTo string) (client.Client, b
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+	if err := r.ParseForm(); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", "退出请求无效")
+		return
+	}
+	if !s.validCSRF(r.Form.Get("csrf_token"), r) {
+		writeProblem(w, http.StatusBadRequest, "invalid_csrf", "页面已失效，请刷新后重试")
+		return
+	}
 	if current, ok := s.currentSession(r); ok {
 		_ = s.cas.DeleteServiceSessions(r.Context(), current.ID)
 		_ = s.sessions.Revoke(r.Context(), current.ID)
@@ -520,7 +530,7 @@ func validatedReturnTo(value string) string {
 		return ""
 	}
 	switch target.Path {
-	case "/portal", "/oauth2/authorize", "/cas/login", "/device":
+	case "/portal", "/account", "/oauth2/authorize", "/cas/login", "/device":
 		return target.String()
 	default:
 		return ""

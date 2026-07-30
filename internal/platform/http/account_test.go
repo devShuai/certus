@@ -60,9 +60,37 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/sessions", nil)
-	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: currentToken})
+	request := httptest.NewRequest(http.MethodGet, "/account", nil)
 	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "/login?continue=%2Faccount" {
+		t.Fatalf("unauthenticated account page: %d %s", response.Code, response.Header().Get("Location"))
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/account", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: currentToken})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "账户安全") ||
+		!strings.Contains(response.Body.String(), "/static/account.js") {
+		t.Fatalf("account page: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/account/profile", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: currentToken})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"username":"alice"`) ||
+		!strings.Contains(response.Body.String(), `"current_session"`) ||
+		!strings.Contains(response.Body.String(), `"csrf_token"`) {
+		t.Fatalf("account profile: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/account/sessions", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: currentToken})
+	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK ||
 		!strings.Contains(response.Body.String(), `"current":true`) ||
@@ -121,5 +149,35 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 	if page, err := audits.List(ctx, audit.Filter{EventType: "password.reset", Limit: 20}); err != nil ||
 		page.Total != 1 || page.Items[0].Outcome != audit.OutcomeSuccess {
 		t.Fatalf("missing reset audit: %#v %v", page, err)
+	}
+
+	_, logoutToken, err := sessionService.Create(ctx, user.ID, "192.0.2.12", "logout-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/logout", strings.NewReader(""))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: logoutToken})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"invalid_csrf"`) {
+		t.Fatalf("logout without CSRF: %d %s", response.Code, response.Body.String())
+	}
+	if active, _ := sessionService.ListByUser(ctx, user.ID); len(active) != 1 {
+		t.Fatalf("invalid logout revoked session: %#v", active)
+	}
+
+	csrf := strings.Repeat("d", 32)
+	request = httptest.NewRequest(http.MethodPost, "/logout", strings.NewReader("csrf_token="+csrf))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: logoutToken})
+	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login" {
+		t.Fatalf("logout: %d %s", response.Code, response.Body.String())
+	}
+	if active, _ := sessionService.ListByUser(ctx, user.ID); len(active) != 0 {
+		t.Fatalf("logout did not revoke current session: %#v", active)
 	}
 }

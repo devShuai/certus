@@ -144,13 +144,15 @@ POST /api/v1/admin/maintenance/cleanup
 管理员密码重置接口返回一个仅显示一次、30 分钟有效的 `reset_token`，交付通道由部署方接入邮件或工单系统。账号自助接口使用当前登录会话：
 
 ```text
+GET    /account
+GET    /api/v1/account/profile
 GET    /api/v1/account/sessions
 DELETE /api/v1/account/sessions/{session_id}
 PUT    /api/v1/account/password
 POST   /api/v1/account/password/reset
 ```
 
-用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话；一次性重置成功后撤销全部会话。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
+`/account` 提供登录用户自助安全中心，可查看身份资料、活跃会话、修改密码及配置 MFA；未登录访问会先完成认证再返回。用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话；一次性重置成功后撤销全部会话。本地退出表单也必须携带页面签发的 CSRF Token。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
 
 ### TOTP 多因素认证
 

@@ -188,6 +188,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("POST /login/mfa", s.mfaLoginVerify)
 	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /portal", s.portal)
+	mux.HandleFunc("GET /account", s.accountPage)
 	mux.HandleFunc("GET /admin", s.adminClientsPage)
 	mux.HandleFunc("GET /admin/clients", s.adminClientsPage)
 	mux.HandleFunc("GET /api/v1/clients", s.listClients)
@@ -222,6 +223,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.listUserRoles)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.replaceUserRoles)))
 	mux.HandleFunc("GET /api/v1/access/users/{userID}", s.getEffectiveAccess)
+	mux.HandleFunc("GET /api/v1/account/profile", s.getAccountProfile)
 	mux.HandleFunc("GET /api/v1/account/sessions", s.listAccountSessions)
 	mux.HandleFunc("DELETE /api/v1/account/sessions/{sessionID}", s.revokeAccountSession)
 	mux.HandleFunc("PUT /api/v1/account/password", s.changeAccountPassword)
@@ -280,10 +282,25 @@ func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "读取系统列表失败", http.StatusInternalServerError)
 		return
 	}
+	var currentUser *identity.User
+	csrfToken := ""
+	if current, ok := s.currentSession(r); ok {
+		if user, findErr := s.users.Find(r.Context(), current.UserID); findErr == nil {
+			currentUser = &user
+			csrfToken = s.ensureCSRF(w, r)
+		}
+	}
 	s.render(w, "portal.html", struct {
-		Title   string
-		Clients []client.Client
-	}{Title: "Certus 统一认证中心", Clients: activeClients(clients)})
+		Title     string
+		Clients   []client.Client
+		User      *identity.User
+		CSRFToken string
+	}{
+		Title:     "Certus 统一认证中心",
+		Clients:   activeClients(clients),
+		User:      currentUser,
+		CSRFToken: csrfToken,
+	})
 }
 
 func (s *server) adminClientsPage(w http.ResponseWriter, _ *http.Request) {

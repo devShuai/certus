@@ -15,6 +15,36 @@ type accountSession struct {
 	Current bool `json:"current"`
 }
 
+func (s *server) accountPage(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.currentSession(r); !ok {
+		http.Redirect(w, r, "/login?continue=%2Faccount", http.StatusFound)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	s.render(w, "account.html", map[string]string{
+		"Title":     "账户安全 · Certus",
+		"CSRFToken": s.ensureCSRF(w, r),
+	})
+}
+
+func (s *server) getAccountProfile(w http.ResponseWriter, r *http.Request) {
+	current, ok := s.requireCurrentSession(w, r)
+	if !ok {
+		return
+	}
+	user, err := s.users.Find(r.Context(), current.UserID)
+	if err != nil {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized", "登录会话无效")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user":            user,
+		"current_session": current,
+		"csrf_token":      s.ensureCSRF(w, r),
+	})
+}
+
 func (s *server) listAccountSessions(w http.ResponseWriter, r *http.Request) {
 	current, ok := s.requireCurrentSession(w, r)
 	if !ok {
@@ -257,6 +287,7 @@ func (s *server) adminSessionUser(w http.ResponseWriter, r *http.Request) (strin
 }
 
 func (s *server) requireCurrentSession(w http.ResponseWriter, r *http.Request) (session.Session, bool) {
+	w.Header().Set("Cache-Control", "no-store")
 	current, ok := s.currentSession(r)
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Session realm="certus-account"`)

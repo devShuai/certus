@@ -1,3 +1,40 @@
 {{define "portal.html"}}<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}}</title><link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg"><link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg"><link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg"><link rel="stylesheet" href="/static/app.css"></head>
-<body><main class="shell"><section class="card wide"><img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64"><p class="eyebrow">可信身份 · 已接入系统</p><h1>中间落地页</h1><p class="muted">认证完成后，这里将展示用户有权访问的系统，并安全地继续原始登录流程。</p>{{range .Clients}}{{if .Enabled}}<div class="system"><span class="system-icon">{{slice .Name 0 1}}</span><span><strong>{{.Name}}</strong><small>{{.Description}}</small></span><a class="button" href="/login?client_id={{.ID}}">登录</a></div>{{end}}{{else}}<p class="notice">暂未配置接入系统。</p>{{end}}</section></main></body></html>{{end}}
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">
+  <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
+  <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="shell">
+  <section class="card wide">
+    <div class="portal-header">
+      <img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64">
+      {{if .User}}
+      <div class="account-menu">
+        <span><strong>{{.User.DisplayName}}</strong><small>{{.User.Username}}</small></span>
+        <a class="button secondary" href="/account">账户安全</a>
+        <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="secondary" type="submit">退出</button></form>
+      </div>
+      {{else}}
+      <a class="button secondary" href="/login?continue=%2Fportal">登录</a>
+      {{end}}
+    </div>
+    <p class="eyebrow">可信身份 · 已接入系统</p>
+    <h1>中间落地页</h1>
+    <p class="muted">在这里选择已接入 Certus 的系统，并按其配置继续安全登录。</p>
+    {{range .Clients}}{{if .Enabled}}
+    <div class="system">
+      <span class="system-icon">{{slice .Name 0 1}}</span>
+      <span><strong>{{.Name}}</strong><small>{{.Description}}</small></span>
+      <a class="button" href="/login?client_id={{.ID}}">登录</a>
+    </div>
+    {{end}}{{else}}<p class="notice">暂未配置接入系统。</p>{{end}}
+  </section>
+</main>
+</body>
+</html>{{end}}
