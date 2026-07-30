@@ -1,0 +1,47 @@
+{{define "register.html"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">
+  <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
+  <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="shell">
+  <section class="card">
+    <img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64">
+    <p class="eyebrow">{{if .Client.Name}}注册并登录 {{.Client.Name}}{{else}}创建可信身份{{end}}</p>
+    <h1>创建 Certus 账号</h1>
+    <p class="muted">一个账号，安全访问接入 Certus 的系统。</p>
+    {{if .Error}}<p class="warning" role="alert">{{.Error}}</p>{{end}}
+    <form class="stack" method="post" action="/register">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <input type="hidden" name="continue" value="{{.ReturnTo}}">
+      <input type="hidden" name="client_id" value="{{.Client.ID}}">
+      <label>用户名
+        <input name="username" value="{{.Username}}" minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9._-]{2,63}" autocomplete="username" aria-describedby="username-help" required autofocus>
+        <small id="username-help">3–64 位小写字母、数字、点、下划线或连字符</small>
+      </label>
+      <label>显示名称
+        <input name="display_name" value="{{.DisplayName}}" maxlength="128" autocomplete="name" required>
+      </label>
+      <label>邮箱
+        <input name="email" type="email" value="{{.Email}}" maxlength="320" autocomplete="email" {{if .RequireEmail}}required{{end}}>
+      </label>
+      <label>密码
+        <input name="password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" aria-describedby="password-help" required>
+        <small id="password-help">至少 12 个字符</small>
+      </label>
+      <label>确认密码
+        <input name="password_confirmation" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required>
+      </label>
+      <button type="submit">创建账号并继续</button>
+    </form>
+    <p class="register-link">已有账号？<a href="/login?continue={{urlquery .ReturnTo}}{{if .Client.ID}}&amp;client_id={{urlquery .Client.ID}}{{end}}">返回登录</a></p>
+  </section>
+</main>
+</body>
+</html>{{end}}

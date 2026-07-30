@@ -246,6 +246,77 @@ func (r *MemoryUserRepository) Create(_ context.Context, user User) (User, error
 	return cloneUser(user), nil
 }
 
+func (r *MemoryUserRepository) CreateWithPassword(
+	_ context.Context,
+	user User,
+	hash string,
+	_ time.Time,
+) (User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, existing := range r.users {
+		if strings.EqualFold(existing.Username, user.Username) ||
+			(existing.Email != nil && user.Email != nil && strings.EqualFold(*existing.Email, *user.Email)) {
+			return User{}, ErrConflict
+		}
+	}
+	if _, exists := r.users[user.ID]; exists {
+		return User{}, ErrConflict
+	}
+	r.users[user.ID] = cloneUser(user)
+	r.credentials[user.ID] = PasswordCredential{UserID: user.ID, Hash: hash}
+	return cloneUser(user), nil
+}
+
+func (r *MemoryUserRepository) CreateWithMigratedPasswords(
+	_ context.Context,
+	records []PasswordMigrationRecord,
+	_ time.Time,
+) ([]User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	usernames := make(map[string]struct{}, len(r.users)+len(records))
+	emails := make(map[string]struct{}, len(r.users)+len(records))
+	ids := make(map[string]struct{}, len(r.users)+len(records))
+	for _, existing := range r.users {
+		usernames[strings.ToLower(existing.Username)] = struct{}{}
+		ids[existing.ID] = struct{}{}
+		if existing.Email != nil {
+			emails[strings.ToLower(*existing.Email)] = struct{}{}
+		}
+	}
+	for _, record := range records {
+		username := strings.ToLower(record.User.Username)
+		if _, conflict := usernames[username]; conflict {
+			return nil, ErrConflict
+		}
+		usernames[username] = struct{}{}
+		if _, conflict := ids[record.User.ID]; conflict {
+			return nil, ErrConflict
+		}
+		ids[record.User.ID] = struct{}{}
+		if record.User.Email != nil {
+			email := strings.ToLower(*record.User.Email)
+			if _, conflict := emails[email]; conflict {
+				return nil, ErrConflict
+			}
+			emails[email] = struct{}{}
+		}
+	}
+
+	created := make([]User, 0, len(records))
+	for _, record := range records {
+		r.users[record.User.ID] = cloneUser(record.User)
+		r.credentials[record.User.ID] = PasswordCredential{
+			UserID: record.User.ID,
+			Hash:   record.PasswordHash,
+		}
+		created = append(created, cloneUser(record.User))
+	}
+	return created, nil
+}
+
 func (r *MemoryUserRepository) Replace(_ context.Context, user User) (User, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

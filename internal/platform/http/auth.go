@@ -29,16 +29,17 @@ const (
 )
 
 type loginPageData struct {
-	Title           string
-	Client          client.Client
-	Methods         []loginMethodView
-	LDAPSources     []loginSourceView
-	OIDCSources     []loginSourceView
-	ReturnTo        string
-	CSRFToken       string
-	Error           string
-	PasswordEnabled bool
-	Unavailable     bool
+	Title               string
+	Client              client.Client
+	Methods             []loginMethodView
+	LDAPSources         []loginSourceView
+	OIDCSources         []loginSourceView
+	ReturnTo            string
+	CSRFToken           string
+	Error               string
+	PasswordEnabled     bool
+	RegistrationEnabled bool
+	Unavailable         bool
 }
 
 type loginMethodView struct {
@@ -65,11 +66,12 @@ func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) newLoginPageData(r *http.Request, returnTo, csrfToken, message string) (loginPageData, error) {
 	page := loginPageData{
-		Title:           "登录 Certus",
-		ReturnTo:        returnTo,
-		CSRFToken:       csrfToken,
-		Error:           message,
-		PasswordEnabled: true,
+		Title:               "登录 Certus",
+		ReturnTo:            returnTo,
+		CSRFToken:           csrfToken,
+		Error:               message,
+		PasswordEnabled:     true,
+		RegistrationEnabled: s.cfg.Registration.Enabled,
 	}
 	clientID := r.URL.Query().Get("client_id")
 	if clientID == "" {

@@ -209,6 +209,9 @@ func normalizeEmail(value *string) (*string, error) {
 		return nil, nil
 	}
 	normalized := strings.ToLower(strings.TrimSpace(*value))
+	if len(normalized) > 320 {
+		return nil, fmt.Errorf("%w: invalid email", ErrInvalid)
+	}
 	address, err := mail.ParseAddress(normalized)
 	if err != nil || address.Address != normalized {
 		return nil, fmt.Errorf("%w: invalid email", ErrInvalid)

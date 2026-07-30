@@ -67,6 +67,16 @@ func (s *server) allowMFAAttempt(
 	)
 }
 
+func (s *server) allowRegistrationAttempt(w http.ResponseWriter, r *http.Request) bool {
+	return s.allowRateLimitedRequest(
+		w, r,
+		"registration.source",
+		s.requestIPAddress(r),
+		s.cfg.RateLimits.Registration,
+		false,
+	)
+}
+
 func (s *server) allowOAuthAttempt(w http.ResponseWriter, r *http.Request) bool {
 	return s.allowRateLimitedRequest(
 		w, r,

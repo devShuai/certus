@@ -72,6 +72,8 @@ func TestLoadRateLimitsAndTrustedProxies(t *testing.T) {
 	t.Setenv("CERTUS_LOGIN_SOURCE_RATE_LIMIT", "12")
 	t.Setenv("CERTUS_LOGIN_SOURCE_RATE_WINDOW", "2m")
 	t.Setenv("CERTUS_OAUTH_RATE_LIMIT", "0")
+	t.Setenv("CERTUS_REGISTRATION_RATE_LIMIT", "7")
+	t.Setenv("CERTUS_REGISTRATION_RATE_WINDOW", "2h")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -79,8 +81,71 @@ func TestLoadRateLimitsAndTrustedProxies(t *testing.T) {
 	if len(cfg.TrustedProxies) != 2 ||
 		cfg.RateLimits.LoginSource.Limit != 12 ||
 		cfg.RateLimits.LoginSource.Window != 2*time.Minute ||
+		cfg.RateLimits.Registration.Limit != 7 ||
+		cfg.RateLimits.Registration.Window != 2*time.Hour ||
 		cfg.RateLimits.OAuth.Enabled() {
 		t.Fatalf("unexpected proxy or rate-limit configuration: %#v", cfg)
+	}
+}
+
+func TestLoadRegistrationConfiguration(t *testing.T) {
+	t.Setenv("CERTUS_REGISTRATION_ENABLED", "true")
+	t.Setenv("CERTUS_REGISTRATION_REQUIRE_EMAIL", "false")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Registration.Enabled || cfg.Registration.RequireEmail {
+		t.Fatalf("unexpected registration configuration: %#v", cfg.Registration)
+	}
+}
+
+func TestLoadSMTPConfigurationAndSenderName(t *testing.T) {
+	t.Setenv("CERTUS_SMTP_HOST", "smtp.exmail.qq.com")
+	t.Setenv("CERTUS_SMTP_PORT", "465")
+	t.Setenv("CERTUS_SMTP_USERNAME", "support@example.com")
+	t.Setenv("CERTUS_SMTP_PASSWORD", "smtp-secret")
+	t.Setenv("CERTUS_SMTP_TLS_MODE", "implicit")
+	t.Setenv("CERTUS_EMAIL_FROM_ADDRESS", "support@example.com")
+	t.Setenv("CERTUS_EMAIL_FROM_NAME", "Certus Support")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SMTP.Enabled() ||
+		cfg.SMTP.Port != 465 ||
+		cfg.SMTP.FromName != "Certus Support" ||
+		cfg.SMTP.FromAddress != "support@example.com" {
+		t.Fatalf("unexpected SMTP configuration: %#v", cfg.SMTP)
+	}
+}
+
+func TestLoadRejectsIncompleteSMTPConfiguration(t *testing.T) {
+	t.Setenv("CERTUS_SMTP_HOST", "smtp.example.com")
+	t.Setenv("CERTUS_SMTP_USERNAME", "support@example.com")
+	t.Setenv("CERTUS_EMAIL_FROM_ADDRESS", "support@example.com")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("expected incomplete SMTP error, got %v", err)
+	}
+}
+
+func TestLoadRejectsUnsafeEmailSenderName(t *testing.T) {
+	t.Setenv("CERTUS_SMTP_HOST", "smtp.example.com")
+	t.Setenv("CERTUS_SMTP_USERNAME", "support@example.com")
+	t.Setenv("CERTUS_SMTP_PASSWORD", "smtp-secret")
+	t.Setenv("CERTUS_EMAIL_FROM_ADDRESS", "support@example.com")
+	t.Setenv("CERTUS_EMAIL_FROM_NAME", "Certus\r\nBcc: attacker@example.com")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "safe characters") {
+		t.Fatalf("expected unsafe sender name error, got %v", err)
+	}
+}
+
+func TestLoadRequiresHTTPSForProductionRegistration(t *testing.T) {
+	t.Setenv("CERTUS_ENV", "production")
+	t.Setenv("CERTUS_REGISTRATION_ENABLED", "true")
+	t.Setenv("CERTUS_ISSUER", "http://auth.example.com")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("expected production registration HTTPS error, got %v", err)
 	}
 }
 

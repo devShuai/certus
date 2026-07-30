@@ -3,8 +3,10 @@ package identity
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -141,7 +143,7 @@ func (s *PasswordService) Authenticate(ctx context.Context, username, password s
 	if credential.LockedUntil != nil && credential.LockedUntil.After(now) {
 		return User{}, ErrCredentialLocked
 	}
-	ok, err := verifyPassword(credential.Hash, password)
+	ok, upgrade, err := verifyStoredPassword(credential.Hash, password, now)
 	if err != nil {
 		return User{}, fmt.Errorf("verify password: %w", err)
 	}
@@ -157,10 +159,52 @@ func (s *PasswordService) Authenticate(ctx context.Context, username, password s
 		}
 		return User{}, ErrInvalidCredentials
 	}
+	if upgrade {
+		hash, err := hashPassword(password)
+		if err != nil {
+			return User{}, fmt.Errorf("upgrade migrated password: %w", err)
+		}
+		if err := s.repository.SetPassword(ctx, credential.UserID, hash, now); err != nil {
+			return User{}, fmt.Errorf("persist migrated password upgrade: %w", err)
+		}
+		return user, nil
+	}
 	if err := s.repository.RecordPasswordSuccess(ctx, credential.UserID, now); err != nil {
 		return User{}, fmt.Errorf("record password success: %w", err)
 	}
 	return user, nil
+}
+
+func verifyStoredPassword(encoded, password string, now time.Time) (bool, bool, error) {
+	if strings.HasPrefix(encoded, "$legacy$") {
+		ok, err := verifyMigratedPassword(encoded, password, now)
+		return ok, ok, err
+	}
+	ok, err := verifyPassword(encoded, password)
+	return ok, false, err
+}
+
+func verifyMigratedPassword(encoded, password string, now time.Time) (bool, error) {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 5 ||
+		parts[0] != "" ||
+		parts[1] != "legacy" ||
+		parts[2] != string(PasswordMigrationSpecusSHA256) {
+		return false, errors.New("invalid migrated password hash")
+	}
+	expiresAt, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil || expiresAt <= 0 {
+		return false, errors.New("invalid migrated password expiry")
+	}
+	if !now.UTC().Before(time.Unix(expiresAt, 0).UTC()) {
+		return false, nil
+	}
+	expected, err := hex.DecodeString(parts[4])
+	if err != nil || len(expected) != sha256.Size || len(parts[4]) != sha256.Size*2 {
+		return false, errors.New("invalid migrated password digest")
+	}
+	actual := sha256.Sum256([]byte(password))
+	return subtle.ConstantTimeCompare(actual[:], expected) == 1, nil
 }
 
 func hashPassword(password string) (string, error) {

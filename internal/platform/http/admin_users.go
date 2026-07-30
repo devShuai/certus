@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"certus/internal/audit"
 	"certus/internal/identity"
 )
 
@@ -86,6 +87,38 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/api/v1/admin/users/"+user.ID)
 	writeJSON(w, http.StatusCreated, user)
+}
+
+func (s *server) importUsers(w http.ResponseWriter, r *http.Request) {
+	var input identity.ImportPasswordUsers
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	result, err := s.passwordMigration.Import(r.Context(), input)
+	if errors.Is(err, identity.ErrInvalid) {
+		writeProblem(w, http.StatusBadRequest, "invalid_password_migration", err.Error())
+		return
+	}
+	if errors.Is(err, identity.ErrConflict) {
+		writeProblem(w, http.StatusConflict, "user_conflict", "迁移用户中的用户名或邮箱已存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("import users with migrated passwords", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "迁移用户失败")
+		return
+	}
+	s.recordAudit(r, audit.Event{
+		EventType: "users.password_migration",
+		Outcome:   audit.OutcomeSuccess,
+		Details: map[string]any{
+			"password_algorithm": input.Algorithm,
+			"count":              result.Count,
+			"expires_at":         result.ExpiresAt,
+		},
+	})
+	writeJSON(w, http.StatusCreated, result)
 }
 
 func (s *server) replaceUser(w http.ResponseWriter, r *http.Request) {

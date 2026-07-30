@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"certus/internal/config"
 	"certus/internal/federation"
 	"certus/internal/identity"
+	"certus/internal/mailer"
 	"certus/internal/maintenance"
 	"certus/internal/metrics"
 	"certus/internal/mfa"
@@ -29,30 +31,33 @@ import (
 )
 
 type server struct {
-	cfg             config.Config
-	logger          *slog.Logger
-	templates       *template.Template
-	clients         client.Repository
-	users           identity.UserRepository
-	externalUsers   identity.ExternalIdentityRepository
-	identitySources *federation.SourceService
-	passwords       *identity.PasswordService
-	sessions        *session.Service
-	oauth           oauth.Repository
-	cas             cas.Repository
-	accessControl   access.Repository
-	administrators  administration.Repository
-	audit           audit.Repository
-	mfa             *mfa.Service
-	maintenance     *maintenance.Service
-	signer          *oidc.Signer
-	rateLimits      *ratelimit.Service
-	metrics         *metrics.Registry
-	readiness       func(context.Context) error
-	outbound        *http.Client
-	ldap            *federation.LDAPAuthenticator
-	externalOIDC    *federation.OIDCAuthenticator
-	now             func() time.Time
+	cfg               config.Config
+	logger            *slog.Logger
+	templates         *template.Template
+	clients           client.Repository
+	users             identity.UserRepository
+	externalUsers     identity.ExternalIdentityRepository
+	identitySources   *federation.SourceService
+	passwords         *identity.PasswordService
+	registrations     *identity.RegistrationService
+	passwordMigration *identity.PasswordMigrationService
+	mailer            mailer.Sender
+	sessions          *session.Service
+	oauth             oauth.Repository
+	cas               cas.Repository
+	accessControl     access.Repository
+	administrators    administration.Repository
+	audit             audit.Repository
+	mfa               *mfa.Service
+	maintenance       *maintenance.Service
+	signer            *oidc.Signer
+	rateLimits        *ratelimit.Service
+	metrics           *metrics.Registry
+	readiness         func(context.Context) error
+	outbound          *http.Client
+	ldap              *federation.LDAPAuthenticator
+	externalOIDC      *federation.OIDCAuthenticator
+	now               func() time.Time
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -101,6 +106,8 @@ type Dependencies struct {
 	Users              identity.UserRepository
 	ExternalIdentities identity.ExternalIdentityRepository
 	Passwords          identity.PasswordRepository
+	PasswordMigrations identity.PasswordMigrationRepository
+	Mailer             mailer.Sender
 	Sessions           session.Repository
 	OAuth              oauth.Repository
 	CAS                cas.Repository
@@ -149,8 +156,31 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	if dependencies.IdentitySources == nil {
 		dependencies.IdentitySources = federation.NewMemorySourceRepository()
 	}
+	var registrations *identity.RegistrationService
+	if cfg.Registration.Enabled {
+		repository, ok := dependencies.Users.(identity.RegistrationRepository)
+		if !ok {
+			return nil, errors.New("user repository does not implement registration repository")
+		}
+		registrations = identity.NewRegistrationService(repository)
+	}
+	passwordMigrationRepository := dependencies.PasswordMigrations
+	if passwordMigrationRepository == nil {
+		var ok bool
+		passwordMigrationRepository, ok = dependencies.Users.(identity.PasswordMigrationRepository)
+		if !ok {
+			return nil, errors.New("user repository does not implement password migration repository")
+		}
+	}
 	if dependencies.Metrics == nil {
 		dependencies.Metrics = metrics.NewRegistry()
+	}
+	emailSender := dependencies.Mailer
+	if emailSender == nil && cfg.SMTP.Enabled() {
+		emailSender, err = mailer.NewSMTP(cfg.SMTP)
+		if err != nil {
+			return nil, fmt.Errorf("initialize SMTP sender: %w", err)
+		}
 	}
 	if dependencies.Readiness == nil {
 		dependencies.Readiness = func(context.Context) error { return nil }
@@ -186,21 +216,24 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 			dependencies.IdentitySources,
 			cfg.SecretEncryptionKeys,
 		),
-		passwords:      identity.NewPasswordService(dependencies.Passwords),
-		sessions:       session.NewService(dependencies.Sessions, 12*time.Hour),
-		oauth:          dependencies.OAuth,
-		cas:            dependencies.CAS,
-		accessControl:  dependencies.Access,
-		administrators: dependencies.Administration,
-		audit:          dependencies.Audit,
-		mfa:            mfa.NewServiceWithKeyRing(dependencies.MFA, cfg.SecretEncryptionKeys, cfg.MFAEncryptionKey, "Certus"),
-		maintenance:    dependencies.Maintenance,
-		signer:         signer,
-		rateLimits:     ratelimit.NewService(dependencies.RateLimits),
-		metrics:        dependencies.Metrics,
-		readiness:      dependencies.Readiness,
-		outbound:       outbound,
-		ldap:           federation.NewLDAPAuthenticator(cfg.LDAP),
+		passwords:         identity.NewPasswordService(dependencies.Passwords),
+		registrations:     registrations,
+		passwordMigration: identity.NewPasswordMigrationService(passwordMigrationRepository),
+		mailer:            emailSender,
+		sessions:          session.NewService(dependencies.Sessions, 12*time.Hour),
+		oauth:             dependencies.OAuth,
+		cas:               dependencies.CAS,
+		accessControl:     dependencies.Access,
+		administrators:    dependencies.Administration,
+		audit:             dependencies.Audit,
+		mfa:               mfa.NewServiceWithKeyRing(dependencies.MFA, cfg.SecretEncryptionKeys, cfg.MFAEncryptionKey, "Certus"),
+		maintenance:       dependencies.Maintenance,
+		signer:            signer,
+		rateLimits:        ratelimit.NewService(dependencies.RateLimits),
+		metrics:           dependencies.Metrics,
+		readiness:         dependencies.Readiness,
+		outbound:          outbound,
+		ldap:              federation.NewLDAPAuthenticator(cfg.LDAP),
 		externalOIDC: federation.NewOIDCAuthenticator(
 			cfg.ExternalOIDC,
 			cfg.Issuer+"/login/oidc/callback",
@@ -218,6 +251,8 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("GET /{$}", s.home)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPassword)
+	mux.HandleFunc("GET /register", s.registrationPage)
+	mux.HandleFunc("POST /register", s.register)
 	mux.HandleFunc("POST /login/ldap", s.loginLDAP)
 	mux.HandleFunc("GET /login/oidc", s.loginOIDC)
 	mux.HandleFunc("GET /login/oidc/callback", s.loginOIDCCallback)
@@ -234,6 +269,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/roles", s.requireAdmin(administration.PermissionAdminRolesRead, http.HandlerFunc(s.listAdministratorRoleDefinitions)))
 	mux.Handle("GET /api/v1/admin/users", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.listUsers)))
 	mux.Handle("POST /api/v1/admin/users", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.createUser)))
+	mux.Handle("POST /api/v1/admin/users/import", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.importUsers)))
 	mux.Handle("GET /api/v1/admin/users/{userID}", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.getUser)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.replaceUser)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}/password", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.setUserPassword)))
@@ -250,6 +286,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/signing-keys", s.requireAdmin(administration.PermissionSecurityRead, http.HandlerFunc(s.listSigningKeys)))
 	mux.Handle("POST /api/v1/admin/signing-keys/rotate", s.requireAdmin(administration.PermissionSecurityWrite, http.HandlerFunc(s.rotateSigningKey)))
 	mux.Handle("POST /api/v1/admin/maintenance/cleanup", s.requireAdmin(administration.PermissionMaintenanceExecute, http.HandlerFunc(s.runMaintenance)))
+	mux.Handle("POST /api/v1/admin/email/test", s.requireAdmin(administration.PermissionSecurityWrite, http.HandlerFunc(s.testEmail)))
 	mux.Handle("GET /api/v1/admin/identity-sources", s.requireAdmin(administration.PermissionSourcesRead, http.HandlerFunc(s.listIdentitySources)))
 	mux.Handle("POST /api/v1/admin/identity-sources", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.createIdentitySource)))
 	mux.Handle("GET /api/v1/admin/identity-sources/{sourceID}", s.requireAdmin(administration.PermissionSourcesRead, http.HandlerFunc(s.getIdentitySource)))

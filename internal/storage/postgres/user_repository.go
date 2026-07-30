@@ -355,6 +355,94 @@ func (r *UserRepository) Create(ctx context.Context, user identity.User) (identi
 	return created, nil
 }
 
+func (r *UserRepository) CreateWithPassword(
+	ctx context.Context,
+	user identity.User,
+	hash string,
+	changedAt time.Time,
+) (identity.User, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return identity.User{}, fmt.Errorf("begin user registration: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	created, err := scanUser(tx.QueryRow(ctx, `
+		INSERT INTO users (id, username, display_name, email, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
+		user.ID, user.Username, user.DisplayName, user.Email, user.Status, user.CreatedAt,
+	))
+	if isUniqueViolation(err) {
+		return identity.User{}, identity.ErrConflict
+	}
+	if err != nil {
+		return identity.User{}, fmt.Errorf("create registered user: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO user_password_credentials (
+			user_id, password_hash, changed_at, failed_attempts, locked_until
+		)
+		VALUES ($1, $2, $3, 0, NULL)`,
+		created.ID, hash, changedAt.UTC(),
+	); err != nil {
+		return identity.User{}, fmt.Errorf("create registered password: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return identity.User{}, fmt.Errorf("commit user registration: %w", err)
+	}
+	return created, nil
+}
+
+func (r *UserRepository) CreateWithMigratedPasswords(
+	ctx context.Context,
+	records []identity.PasswordMigrationRecord,
+	changedAt time.Time,
+) ([]identity.User, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin password migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	created := make([]identity.User, 0, len(records))
+	for _, record := range records {
+		user, err := scanUser(tx.QueryRow(ctx, `
+			INSERT INTO users (id, username, display_name, email, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $6)
+			RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
+			record.User.ID,
+			record.User.Username,
+			record.User.DisplayName,
+			record.User.Email,
+			record.User.Status,
+			record.User.CreatedAt,
+		))
+		if isUniqueViolation(err) {
+			return nil, identity.ErrConflict
+		}
+		if err != nil {
+			return nil, fmt.Errorf("create migrated user: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO user_password_credentials (
+				user_id, password_hash, changed_at, failed_attempts, locked_until
+			)
+			VALUES ($1, $2, $3, 0, NULL)`,
+			user.ID,
+			record.PasswordHash,
+			changedAt.UTC(),
+		); err != nil {
+			return nil, fmt.Errorf("create migrated password: %w", err)
+		}
+		created = append(created, user)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit password migration: %w", err)
+	}
+	return created, nil
+}
+
 func (r *UserRepository) Replace(ctx context.Context, user identity.User) (identity.User, error) {
 	updated, err := scanUser(r.pool.QueryRow(ctx, `
 		UPDATE users

@@ -1,3 +1,55 @@
 {{define "login.html"}}<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}}</title><link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg"><link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg"><link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg"><link rel="stylesheet" href="/static/app.css"></head>
-<body><main class="shell"><section class="card"><img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64"><p class="eyebrow">{{if .Client.Name}}登录到 {{.Client.Name}}{{else}}可信身份{{end}}</p><h1>可信身份，从这里开始</h1><p class="muted">使用由 Certus 统一管理或关联的账号登录。</p>{{if .Error}}<p class="warning" role="alert">{{.Error}}</p>{{end}}{{if .PasswordEnabled}}<form class="stack" method="post" action="/login"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="continue" value="{{.ReturnTo}}"><label>用户名<input name="username" autocomplete="username" required autofocus></label><label>密码<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">账号密码登录</button></form>{{end}}{{range .LDAPSources}}<form class="stack external-login" method="post" action="/login/ldap"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="continue" value="{{$.ReturnTo}}"><input type="hidden" name="source_id" value="{{.ID}}"><label>{{.Label}} 用户名<input name="username" autocomplete="username" required></label><label>{{.Label}} 密码<input type="password" name="password" autocomplete="current-password" required></label><button class="secondary" type="submit">使用 {{.Label}} 登录</button></form>{{end}}{{range .OIDCSources}}<p class="external-login"><a class="button secondary block" href="/login/oidc?source_id={{urlquery .ID}}&amp;continue={{urlquery $.ReturnTo}}">使用 {{.Label}} 登录</a></p>{{end}}{{if and (not .PasswordEnabled) (not .LDAPSources) (not .OIDCSources)}}<p class="notice">此系统当前没有可用的登录方式，请联系管理员检查身份源配置。</p>{{end}}{{if .Unavailable}}<p class="warning">此系统选择了不可用或尚未完成配置的身份源。</p>{{end}}{{if .Methods}}<p class="muted login-methods">本系统配置：{{range $index,$method := .Methods}}{{if $index}} · {{end}}{{$method.Label}}{{end}}</p>{{end}}</section></main></body></html>{{end}}
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">
+  <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
+  <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="shell">
+  <section class="card">
+    <img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64">
+    <p class="eyebrow">{{if .Client.Name}}登录到 {{.Client.Name}}{{else}}可信身份{{end}}</p>
+    <h1>可信身份，从这里开始</h1>
+    <p class="muted">使用由 Certus 统一管理或关联的账号登录。</p>
+    {{if .Error}}<p class="warning" role="alert">{{.Error}}</p>{{end}}
+    {{if .PasswordEnabled}}
+    <form class="stack" method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <input type="hidden" name="continue" value="{{.ReturnTo}}">
+      <label>用户名<input name="username" autocomplete="username" required autofocus></label>
+      <label>密码<input type="password" name="password" autocomplete="current-password" required></label>
+      <button type="submit">账号密码登录</button>
+    </form>
+    {{if .RegistrationEnabled}}
+    <p class="register-link">还没有账号？<a href="/register?continue={{urlquery .ReturnTo}}{{if .Client.ID}}&amp;client_id={{urlquery .Client.ID}}{{end}}">创建 Certus 账号</a></p>
+    {{end}}
+    {{end}}
+    {{range .LDAPSources}}
+    <form class="stack external-login" method="post" action="/login/ldap">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+      <input type="hidden" name="continue" value="{{$.ReturnTo}}">
+      <input type="hidden" name="source_id" value="{{.ID}}">
+      <label>{{.Label}} 用户名<input name="username" autocomplete="username" required></label>
+      <label>{{.Label}} 密码<input type="password" name="password" autocomplete="current-password" required></label>
+      <button class="secondary" type="submit">使用 {{.Label}} 登录</button>
+    </form>
+    {{end}}
+    {{range .OIDCSources}}
+    <p class="external-login"><a class="button secondary block" href="/login/oidc?source_id={{urlquery .ID}}&amp;continue={{urlquery $.ReturnTo}}">使用 {{.Label}} 登录</a></p>
+    {{end}}
+    {{if and (not .PasswordEnabled) (not .LDAPSources) (not .OIDCSources)}}
+    <p class="notice">此系统当前没有可用的登录方式，请联系管理员检查身份源配置。</p>
+    {{end}}
+    {{if .Unavailable}}<p class="warning">此系统选择了不可用或尚未完成配置的身份源。</p>{{end}}
+    {{if .Methods}}
+    <p class="muted login-methods">本系统配置：{{range $index,$method := .Methods}}{{if $index}} · {{end}}{{$method.Label}}{{end}}</p>
+    {{end}}
+  </section>
+</main>
+</body>
+</html>{{end}}

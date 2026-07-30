@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -171,6 +172,65 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	}
 	if authenticated, err := passwords.Authenticate(ctx, user.Username, "integration-password-123"); err != nil || authenticated.ID != user.ID {
 		t.Fatalf("password repository round trip failed: %#v %v", authenticated, err)
+	}
+	registeredUser, err := identity.NewRegistrationService(users).Register(ctx, identity.RegisterUser{
+		Username:    "registered-user",
+		DisplayName: "Registered User",
+		Password:    "registered-password-123",
+	})
+	if err != nil {
+		t.Fatalf("register user transaction: %v", err)
+	}
+	if authenticated, err := passwords.Authenticate(ctx, registeredUser.Username, "registered-password-123"); err != nil ||
+		authenticated.ID != registeredUser.ID {
+		t.Fatalf("registered password round trip failed: %#v %v", authenticated, err)
+	}
+	migratedPassword := "existing-specus-password"
+	migrationResult, err := identity.NewPasswordMigrationService(users).Import(
+		ctx,
+		identity.ImportPasswordUsers{
+			Algorithm: identity.PasswordMigrationSpecusSHA256,
+			Users: []identity.PasswordMigrationUser{{
+				Username:     "migrated-user",
+				DisplayName:  "Migrated User",
+				PasswordHash: fmt.Sprintf("%x", sha256.Sum256([]byte(migratedPassword))),
+			}},
+		},
+	)
+	if err != nil || migrationResult.Count != 1 {
+		t.Fatalf("migrate password transaction: %#v %v", migrationResult, err)
+	}
+	if authenticated, err := passwords.Authenticate(ctx, "migrated-user", migratedPassword); err != nil ||
+		authenticated.ID != migrationResult.Items[0].ID {
+		t.Fatalf("migrated password round trip failed: %#v %v", authenticated, err)
+	}
+	if _, credential, err := users.FindPasswordByUsername(ctx, "migrated-user"); err != nil ||
+		!strings.HasPrefix(credential.Hash, "$argon2id$") {
+		t.Fatalf("PostgreSQL migrated password was not upgraded: %#v %v", credential, err)
+	}
+	_, err = identity.NewPasswordMigrationService(users).Import(
+		ctx,
+		identity.ImportPasswordUsers{
+			Algorithm: identity.PasswordMigrationSpecusSHA256,
+			Users: []identity.PasswordMigrationUser{
+				{
+					Username:     "should-roll-back",
+					DisplayName:  "Should Roll Back",
+					PasswordHash: fmt.Sprintf("%x", sha256.Sum256([]byte("rollback-password"))),
+				},
+				{
+					Username:     user.Username,
+					DisplayName:  "Existing User",
+					PasswordHash: fmt.Sprintf("%x", sha256.Sum256([]byte("conflicting-password"))),
+				},
+			},
+		},
+	)
+	if !errors.Is(err, identity.ErrConflict) {
+		t.Fatalf("expected PostgreSQL migration conflict, got %v", err)
+	}
+	if _, err := users.FindByUsername(ctx, "should-roll-back"); !errors.Is(err, identity.ErrNotFound) {
+		t.Fatalf("PostgreSQL migration conflict left a partial user: %v", err)
 	}
 	externalUser, err := users.ResolveExternalIdentity(ctx, identity.ExternalProfile{
 		ProviderID:  "identity-source:workforce",

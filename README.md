@@ -136,6 +136,7 @@ GET  /api/v1/admin/me
 GET  /api/v1/admin/roles
 GET  /api/v1/admin/users?q=&status=&limit=20&offset=0
 POST /api/v1/admin/users
+POST /api/v1/admin/users/import
 GET  /api/v1/admin/users/{user_id}
 PUT  /api/v1/admin/users/{user_id}
 PUT  /api/v1/admin/users/{user_id}/password
@@ -152,6 +153,7 @@ GET  /api/v1/admin/audit-events
 GET  /api/v1/admin/signing-keys
 POST /api/v1/admin/signing-keys/rotate
 POST /api/v1/admin/maintenance/cleanup
+POST /api/v1/admin/email/test
 ```
 
 外部身份列表只返回管理所需的来源、Subject、安全化资料和最近登录时间，不返回上游令牌或原始 Claims。解除绑定会撤销该用户的全部登录会话和 OAuth 令牌；若用户既没有密码也没有其他外部身份，接口返回 `409 last_authentication_method`，防止账号失去所有登录方式。
@@ -177,7 +179,33 @@ POST /api/v1/admin/maintenance/cleanup
 }
 ```
 
-服务端只保存 Argon2id 哈希；连续失败 5 次会锁定凭据 15 分钟。
+服务端对新设置和新注册的密码只保存 Argon2id 哈希；连续失败 5 次会锁定凭据 15 分钟。唯一例外是下面带明确来源与到期时间的旧系统渐进迁移凭据。
+
+### 已有系统密码迁移
+
+Certus 支持把 Specus 现有用户及其旧密码摘要整批导入，然后在用户第一次成功登录时透明升级。Specus 的原格式是无盐的 `hex(SHA-256(UTF-8(password)))`；Certus 只在管理员明确声明 `specus_sha256` 时接受该格式，存储时会同时封装来源和到期时间，不会把普通 64 位字符串自动识别为旧密码。
+
+`POST /api/v1/admin/users/import` 需要 `admin.users.write` 权限，一次接受 1–1000 个用户：
+
+```json
+{
+  "password_algorithm": "specus_sha256",
+  "expires_at": "2026-10-29T00:00:00Z",
+  "users": [
+    {
+      "username": "alice",
+      "display_name": "Alice",
+      "email": "alice@example.com",
+      "status": "active",
+      "password_hash": "Specus 数据库中的 64 位小写 SHA-256 摘要"
+    }
+  ]
+}
+```
+
+`expires_at` 可省略，默认自导入起 90 天，最长不能超过 365 天。整批写入使用同一个事务；任意用户名、邮箱或输入冲突都会回滚全部用户，并且绝不覆盖 Certus 已有账号或密码。响应只返回创建的用户、数量和到期时间，不回显摘要。
+
+迁移期间用户仍输入原 Specus 密码。Certus 使用固定时间比较验证旧摘要，首次成功后在同一次登录中写入新的 Argon2id 摘要并清除旧摘要；如果升级写入失败则拒绝登录，不会带着弱摘要降级放行。到期前未完成首次登录的账号需要走密码重置。完成迁移后应关闭 Specus 本地密码登录，并安全删除导出文件。
 
 管理员密码重置接口返回一个仅显示一次、30 分钟有效的 `reset_token`，交付通道由部署方接入邮件或工单系统。账号自助接口使用当前登录会话：
 
@@ -460,15 +488,63 @@ OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oau
 
 配置 `backchannel_logout_uri` 后，Certus 会记录每个统一会话访问过的 OIDC 客户端。用户退出、RP-Initiated Logout、账户或管理员撤销会话、改密/重置密码以及管理员重置 MFA 时，服务端会向相关客户端并行 POST 带签名 `logout+jwt` 的 `logout_token`。令牌包含 `iss`、`sub`、`aud`、`iat`、`exp`、`jti`、`sid` 与标准退出 `events`，不包含 `nonce`；单次注销投递共用 5 秒超时且不跟随重定向。
 
+## 用户自助注册
+
+自助注册默认关闭。启用后，账号密码登录页会显示“创建 Certus 账号”，也可直接访问 `GET /register`。从 OAuth、CAS 或设备登录流程进入时，注册页会校验目标客户端是否允许账号密码登录；成功创建账号和 Argon2id 密码凭据后立即建立统一会话，并返回注册前的协议流程。用户与密码在 PostgreSQL 中通过同一事务写入，不会留下只有用户、没有密码的半成品账号。
+
+```powershell
+$env:CERTUS_REGISTRATION_ENABLED='true'
+$env:CERTUS_REGISTRATION_REQUIRE_EMAIL='true'
+```
+
+邮箱默认必填并执行格式及唯一性校验；设为 `false` 可允许不填写邮箱。当前阶段创建的账号会立即激活，尚未验证邮箱所有权，也没有自动授予任何接入系统角色。公网开放前应结合后续邮箱验证码和人机校验能力；需要访问 Specus 的新用户仍需由管理员授予对应的客户端角色。
+
+生产环境启用注册时，`CERTUS_ISSUER` 必须使用 HTTPS。注册表单使用同源 CSRF 防护，只接受内部允许列表中的继续地址，并默认按来源地址限制每小时 5 次：
+
+```powershell
+$env:CERTUS_REGISTRATION_RATE_LIMIT='5'
+$env:CERTUS_REGISTRATION_RATE_WINDOW='1h'
+```
+
+## SMTP 邮件发送
+
+Certus 支持 465 隐式 TLS 和 587 STARTTLS，最低 TLS 版本为 1.2。SMTP 密码只从运行环境读取，不会出现在 API 响应、审计详情或普通日志中。发件地址和显示名称分别配置，包含中文的显示名称会自动按邮件标准编码：
+
+```powershell
+$env:CERTUS_SMTP_HOST='smtp.exmail.qq.com'
+$env:CERTUS_SMTP_PORT='465'
+$env:CERTUS_SMTP_USERNAME='support@devshuai.com'
+$env:CERTUS_SMTP_PASSWORD='<轮换后的 SMTP 授权码或密码>'
+$env:CERTUS_SMTP_TLS_MODE='implicit'
+$env:CERTUS_EMAIL_FROM_ADDRESS='support@devshuai.com'
+$env:CERTUS_EMAIL_FROM_NAME='Certus'
+```
+
+`CERTUS_SMTP_TLS_MODE` 只接受 `implicit` 或 `starttls`，不允许明文 SMTP。配置用户名时必须同时配置密码；SMTP 主机存在时必须配置合法发件地址和 1–128 字符的发件名称。
+
+具备 `admin.security.write` 权限并完成管理员 MFA 后，可发送固定内容的测试邮件；应急管理员令牌也可用于部署检查：
+
+```http
+POST /api/v1/admin/email/test
+Authorization: Bearer <CERTUS_ADMIN_TOKEN>
+Content-Type: application/json
+
+{"to":"operator@example.com"}
+```
+
+接口不允许调用方自定义主题或正文，避免被滥用为任意邮件转发器。当前 SMTP 层用于连接、认证、标准 MIME 消息构造和测试发送；注册邮箱验证码将在后续注册验证状态机中接入。
+
 ## 请求来源与认证限流
 
-Certus 对密码/LDAP 登录、MFA、OAuth 令牌及元数据端点和设备码查询执行固定窗口限流。登录同时按来源地址和规范化账号计数，MFA 同时按来源地址和用户计数；PostgreSQL 模式使用原子更新在多个实例间共享状态，数据库仅保存主体的 SHA-256，不保存用户名或 IP 明文。限流仓储不可用时认证请求会拒绝继续，避免无保护降级。
+Certus 对注册、密码/LDAP 登录、MFA、OAuth 令牌及元数据端点和设备码查询执行固定窗口限流。登录同时按来源地址和规范化账号计数，MFA 同时按来源地址和用户计数；PostgreSQL 模式使用原子更新在多个实例间共享状态，数据库仅保存主体的 SHA-256，不保存用户名或 IP 明文。限流仓储不可用时认证请求会拒绝继续，避免无保护降级。
 
 ```powershell
 $env:CERTUS_LOGIN_SOURCE_RATE_LIMIT='30'
 $env:CERTUS_LOGIN_SOURCE_RATE_WINDOW='1m'
 $env:CERTUS_LOGIN_IDENTITY_RATE_LIMIT='10'
 $env:CERTUS_LOGIN_IDENTITY_RATE_WINDOW='5m'
+$env:CERTUS_REGISTRATION_RATE_LIMIT='5'
+$env:CERTUS_REGISTRATION_RATE_WINDOW='1h'
 $env:CERTUS_MFA_RATE_LIMIT='10'
 $env:CERTUS_MFA_RATE_WINDOW='5m'
 $env:CERTUS_OAUTH_RATE_LIMIT='600'

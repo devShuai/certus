@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"certus/internal/federation"
+	"certus/internal/mailer"
 	"certus/internal/mfa"
 	"certus/internal/ratelimit"
 	"certus/internal/secrets"
@@ -25,6 +26,8 @@ type Config struct {
 	MFAEncryptionKey     []byte
 	SecretEncryptionKeys secrets.KeyRing
 	TrustedProxies       []netip.Prefix
+	Registration         RegistrationConfig
+	SMTP                 mailer.Config
 	RateLimits           RateLimitConfig
 	LDAP                 LDAPConfig
 	ExternalOIDC         ExternalOIDCConfig
@@ -40,9 +43,15 @@ type Config struct {
 type RateLimitConfig struct {
 	LoginSource   ratelimit.Policy
 	LoginIdentity ratelimit.Policy
+	Registration  ratelimit.Policy
 	MFA           ratelimit.Policy
 	OAuth         ratelimit.Policy
 	Device        ratelimit.Policy
+}
+
+type RegistrationConfig struct {
+	Enabled      bool
+	RequireEmail bool
 }
 
 type LDAPConfig = federation.LDAPConfig
@@ -79,6 +88,36 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	cfg.Registration.Enabled, err = boolean("CERTUS_REGISTRATION_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Registration.RequireEmail, err = boolean("CERTUS_REGISTRATION_REQUIRE_EMAIL", true)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SMTP = mailer.Config{
+		Host:        strings.TrimSpace(os.Getenv("CERTUS_SMTP_HOST")),
+		Username:    strings.TrimSpace(os.Getenv("CERTUS_SMTP_USERNAME")),
+		Password:    os.Getenv("CERTUS_SMTP_PASSWORD"),
+		TLSMode:     mailer.TLSMode(strings.ToLower(env("CERTUS_SMTP_TLS_MODE", string(mailer.TLSImplicit)))),
+		FromAddress: strings.TrimSpace(os.Getenv("CERTUS_EMAIL_FROM_ADDRESS")),
+		FromName:    env("CERTUS_EMAIL_FROM_NAME", "Certus"),
+	}
+	defaultSMTPPort := 465
+	if cfg.SMTP.TLSMode == mailer.TLSStartTLS {
+		defaultSMTPPort = 587
+	}
+	cfg.SMTP.Port, err = integer("CERTUS_SMTP_PORT", defaultSMTPPort)
+	if err != nil {
+		return Config{}, fmt.Errorf("CERTUS_SMTP_PORT must be an integer")
+	}
+	if !cfg.SMTP.Enabled() && strings.TrimSpace(os.Getenv("CERTUS_SMTP_PORT")) == "" {
+		cfg.SMTP.Port = 0
+	}
+	if err := cfg.SMTP.Validate(); err != nil {
+		return Config{}, fmt.Errorf("SMTP configuration: %w", err)
+	}
 	cfg.LDAP.StartTLS, err = boolean("CERTUS_LDAP_START_TLS", false)
 	if err != nil {
 		return Config{}, err
@@ -136,6 +175,13 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	cfg.RateLimits.Registration, err = rateLimitPolicy(
+		"CERTUS_REGISTRATION_RATE_LIMIT", "CERTUS_REGISTRATION_RATE_WINDOW",
+		5, time.Hour,
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg.RateLimits.MFA, err = rateLimitPolicy(
 		"CERTUS_MFA_RATE_LIMIT", "CERTUS_MFA_RATE_WINDOW",
 		10, 5*time.Minute,
@@ -171,6 +217,11 @@ func Load() (Config, error) {
 	}
 	if err := validateExternalOIDC(cfg.ExternalOIDC); err != nil {
 		return Config{}, err
+	}
+	if cfg.Registration.Enabled &&
+		strings.EqualFold(cfg.Environment, "production") &&
+		issuer.Scheme != "https" {
+		return Config{}, fmt.Errorf("CERTUS_ISSUER must use HTTPS when registration is enabled in production")
 	}
 	return cfg, nil
 }
