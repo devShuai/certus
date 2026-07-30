@@ -74,18 +74,23 @@ func TestCreateClientReturnsIntegrationParameters(t *testing.T) {
 
 func TestAdminClientsPage(t *testing.T) {
 	handler := New(config.Config{Issuer: "https://auth.example.com"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	request := httptest.NewRequest(http.MethodGet, "/admin/clients", nil)
-	response := httptest.NewRecorder()
+	for _, path := range []string{"/admin", "/admin/clients"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
 
-	handler.ServeHTTP(response, request)
+		handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), "保存并生成接入参数") ||
-		!strings.Contains(response.Body.String(), "/static/admin-clients.js") {
-		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'self'") {
-		t.Fatal("admin page scripts are not restricted by CSP")
+		if response.Code != http.StatusOK ||
+			!strings.Contains(response.Body.String(), "统一认证管理") ||
+			!strings.Contains(response.Body.String(), "用户管理") ||
+			!strings.Contains(response.Body.String(), "角色与权限") ||
+			!strings.Contains(response.Body.String(), "保存并生成接入参数") ||
+			!strings.Contains(response.Body.String(), "/static/admin-clients.js") {
+			t.Fatalf("unexpected response for %s: %d %s", path, response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'self'") {
+			t.Fatal("admin page scripts are not restricted by CSP")
+		}
 	}
 }
 

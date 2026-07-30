@@ -188,6 +188,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("POST /login/mfa", s.mfaLoginVerify)
 	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /portal", s.portal)
+	mux.HandleFunc("GET /admin", s.adminClientsPage)
 	mux.HandleFunc("GET /admin/clients", s.adminClientsPage)
 	mux.HandleFunc("GET /api/v1/clients", s.listClients)
 	mux.HandleFunc("GET /api/v1/clients/{clientID}", s.getClient)
@@ -286,7 +287,7 @@ func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) adminClientsPage(w http.ResponseWriter, _ *http.Request) {
-	s.render(w, "admin-clients.html", map[string]string{"Title": "配置接入系统 · Certus"})
+	s.render(w, "admin-clients.html", map[string]string{"Title": "管理控制台 · Certus"})
 }
 
 func (s *server) listClients(w http.ResponseWriter, r *http.Request) {

@@ -203,6 +203,7 @@ $env:CERTUS_EXTERNAL_OIDC_LABEL='企业统一身份'
 管理员可以登记需要跳转到 Certus 登录的业务系统：
 
 ```text
+GET  /admin
 GET  /admin/clients
 GET  /api/v1/admin/clients
 POST /api/v1/admin/clients
@@ -213,7 +214,7 @@ POST /api/v1/admin/clients/{client_id}/secret
 GET  /api/v1/admin/clients/{client_id}/integration
 ```
 
-`/admin/clients` 提供可直接使用的配置页面。管理员令牌只保存于当前浏览器的 `sessionStorage`，关闭会话后自动清除。
+`/admin` 是统一管理控制台，覆盖用户生命周期、密码与会话处置、MFA 重置、接入系统、角色权限、审计日志、OIDC 签名密钥和过期数据清理。`/admin/clients` 保留为兼容入口并展示同一控制台。管理员令牌只保存于当前浏览器的 `sessionStorage`，关闭会话后自动清除。
 
 创建配置：
 

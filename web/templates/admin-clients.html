@@ -1,20 +1,144 @@
 {{define "admin-clients.html"}}<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}}</title><link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg"><link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg"><link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg"><link rel="stylesheet" href="/static/app.css"><script src="/static/admin-clients.js" defer></script></head>
-<body><main class="shell admin-shell"><section class="card admin-card"><img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64"><p class="eyebrow">管理控制台 · 接入系统</p><h1>配置跳转登录</h1><p class="muted">登记业务系统后，Certus 将生成标准 OpenID Connect 接入参数。</p>
-<form id="client-form" class="form-grid">
-<label class="full">管理员令牌<input id="admin-token" name="admin_token" type="password" autocomplete="off" required minlength="32" placeholder="CERTUS_ADMIN_TOKEN"></label>
-<label>Client ID<input name="id" required pattern="[a-z0-9][a-z0-9_-]{1,62}" placeholder="finance"></label>
-<label>系统名称<input name="name" required maxlength="128" placeholder="Finance"></label>
-<label class="full">系统说明<input name="description" maxlength="256" placeholder="财务系统"></label>
-<label>客户端类型<select name="application_type"><option value="confidential">服务端应用（confidential）</option><option value="public">浏览器/移动应用（public）</option></select></label>
-<label>允许 Scope<input name="allowed_scopes" value="openid profile email" required></label>
-<fieldset class="full"><legend>支持协议</legend><label class="check"><input type="checkbox" name="protocols" value="oauth2.0">OAuth 2.0</label><label class="check"><input type="checkbox" name="protocols" value="oauth2.1" checked>OAuth 2.1</label><label class="check"><input type="checkbox" name="protocols" value="cas">CAS</label></fieldset>
-<fieldset class="full"><legend>OAuth/OIDC 流程</legend><label class="check"><input type="checkbox" name="grant_types" value="authorization_code" checked>授权码 + PKCE</label><label class="check"><input type="checkbox" name="grant_types" value="refresh_token" checked>刷新令牌</label><label class="check"><input type="checkbox" name="grant_types" value="client_credentials">客户端凭据</label><label class="check"><input type="checkbox" name="grant_types" value="urn:ietf:params:oauth:grant-type:device_code">设备码</label></fieldset>
-<label class="full">OAuth/OIDC 回调地址，每行一个<textarea name="redirect_uris" rows="3" placeholder="https://finance.example.com/oidc/callback"></textarea></label>
-<fieldset class="full"><legend>允许的登录方式</legend><label class="check"><input type="checkbox" name="login_methods" value="password" checked>账号密码</label><label class="check"><input type="checkbox" name="login_methods" value="ldap">企业 LDAP</label><label class="check"><input type="checkbox" name="login_methods" value="oidc">外部身份提供商</label></fieldset>
-<label>CAS 版本<select name="cas_version"><option value="3.0">CAS 3.0</option><option value="2.0">CAS 2.0</option><option value="1.0">CAS 1.0</option></select></label>
-<label class="full">CAS Service URL，每行一个<textarea name="cas_service_urls" rows="3" placeholder="https://legacy.example.com/login/cas"></textarea></label>
-<fieldset class="full"><legend>CAS 行为</legend><label class="check"><input type="checkbox" name="cas_proxy">代理认证</label><label class="check"><input type="checkbox" name="cas_gateway">Gateway</label><label class="check"><input type="checkbox" name="cas_renew">Renew</label><label class="check"><input type="checkbox" name="cas_single_logout" checked>单点登出</label></fieldset>
-<div class="full actions"><button type="submit">保存并生成接入参数</button><span id="form-status" role="status" aria-live="polite"></span></div>
-</form></section>
-<section id="integration-card" class="card admin-card hidden" aria-live="polite"><p class="eyebrow">配置完成</p><h2>接入参数</h2><p id="secret-warning" class="warning hidden">Client Secret 仅显示一次，请立即保存到业务系统的密钥存储中。</p><pre id="integration-output"></pre><div class="actions"><button id="copy-integration" type="button">复制参数</button><a href="/portal">查看中间落地页 →</a></div></section></main></body></html>{{end}}
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">
+  <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
+  <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/admin-clients.js" defer></script>
+</head>
+<body class="console-body">
+<div class="console-layout">
+  <aside class="console-sidebar">
+    <a class="console-brand" href="/portal"><img src="/static/logo-light.svg" alt="Certus" width="190" height="44"></a>
+    <p class="console-label">管理控制台</p>
+    <nav id="console-nav" aria-label="管理功能">
+      <a href="#overview" data-section="overview">总览</a>
+      <a href="#users" data-section="users">用户管理</a>
+      <a href="#clients" data-section="clients">接入系统</a>
+      <a href="#access" data-section="access">角色与权限</a>
+      <a href="#audit" data-section="audit">审计日志</a>
+      <a href="#operations" data-section="operations">安全运维</a>
+    </nav>
+    <a class="console-back" href="/portal">返回中间落地页 →</a>
+  </aside>
+
+  <main class="console-main">
+    <header class="console-header">
+      <div><p class="eyebrow">Certus · 可信身份</p><h1>统一认证管理</h1></div>
+      <form id="admin-session-form" class="token-form">
+        <label for="admin-token">管理员令牌</label>
+        <input id="admin-token" type="password" autocomplete="off" required minlength="32" placeholder="CERTUS_ADMIN_TOKEN">
+        <button type="submit">连接</button>
+        <button id="disconnect-admin" class="secondary" type="button">断开</button>
+      </form>
+    </header>
+    <div id="global-status" class="console-status" role="status" aria-live="polite">输入管理员令牌以加载数据。</div>
+
+    <section id="overview" class="console-section">
+      <div class="section-heading"><div><p class="eyebrow">运行概况</p><h2>总览</h2></div><button class="secondary" type="button" data-action="refresh-all">刷新</button></div>
+      <div class="metric-grid">
+        <article class="metric"><span>用户</span><strong id="metric-users">—</strong><small>统一身份目录</small></article>
+        <article class="metric"><span>接入系统</span><strong id="metric-clients">—</strong><small>未归档客户端</small></article>
+        <article class="metric"><span>启用系统</span><strong id="metric-active-clients">—</strong><small>当前可登录</small></article>
+        <article class="metric"><span>签名密钥</span><strong id="metric-keys">—</strong><small>含保留的历史公钥</small></article>
+      </div>
+      <div class="console-grid two">
+        <article class="panel"><h3>快速开始</h3><p class="muted">创建用户与接入系统后，在“角色与权限”中完成业务授权。客户端密钥只在创建或轮换时显示一次。</p><div class="actions"><a class="button" href="#users">创建用户</a><a class="button secondary" href="#clients">配置系统</a></div></article>
+        <article class="panel"><h3>安全状态</h3><div id="overview-keys" class="compact-list"><p class="empty">连接后显示当前 OIDC 签名密钥。</p></div></article>
+      </div>
+    </section>
+
+    <section id="users" class="console-section hidden">
+      <div class="section-heading"><div><p class="eyebrow">身份目录</p><h2>用户管理</h2></div><button id="new-user" type="button">新建用户</button></div>
+      <form id="user-filter" class="filter-bar">
+        <input name="q" aria-label="搜索用户" placeholder="搜索用户名、姓名或邮箱">
+        <select name="status" aria-label="用户状态"><option value="">全部状态</option><option value="active">正常</option><option value="locked">锁定</option><option value="disabled">停用</option></select>
+        <button class="secondary" type="submit">查询</button>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>用户</th><th>邮箱</th><th>状态</th><th>更新时间</th><th></th></tr></thead><tbody id="user-rows"></tbody></table></div>
+      <div class="pager"><button id="users-prev" class="secondary" type="button">上一页</button><span id="users-page">—</span><button id="users-next" class="secondary" type="button">下一页</button></div>
+
+      <div id="user-editor" class="panel editor hidden">
+        <div class="section-heading"><div><p class="eyebrow">用户资料</p><h3 id="user-editor-title">新建用户</h3></div><button class="icon-button" type="button" data-action="close-user" aria-label="关闭">×</button></div>
+        <form id="user-form" class="form-grid">
+          <input name="user_id" type="hidden">
+          <label>用户名<input name="username" required pattern="[a-z0-9][a-z0-9._-]{2,63}" placeholder="alice"></label>
+          <label>显示名称<input name="display_name" required maxlength="128" placeholder="Alice"></label>
+          <label>邮箱<input name="email" type="email" placeholder="alice@example.com"></label>
+          <label>状态<select name="status"><option value="active">正常</option><option value="locked">锁定</option><option value="disabled">停用</option></select></label>
+          <div class="full actions"><button type="submit">保存用户</button><span id="user-form-status"></span></div>
+        </form>
+        <div id="user-security" class="security-actions hidden">
+          <form id="user-password-form"><label>设置新密码<input name="password" type="password" autocomplete="new-password" required minlength="12"></label><button class="secondary" type="submit">设置并撤销会话</button></form>
+          <div><button id="issue-reset" class="secondary" type="button">签发一次性重置凭据</button><button id="list-user-sessions" class="secondary" type="button">查看会话</button><button id="revoke-user-sessions" class="danger" type="button">撤销全部会话</button><button id="reset-user-mfa" class="danger" type="button">重置 MFA</button></div>
+          <pre id="user-security-output" class="hidden"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="clients" class="console-section hidden">
+      <div class="section-heading"><div><p class="eyebrow">协议接入</p><h2>接入系统</h2></div><button id="new-client" type="button">配置新系统</button></div>
+      <div class="table-wrap"><table><thead><tr><th>系统</th><th>类型</th><th>协议</th><th>状态</th><th></th></tr></thead><tbody id="client-rows"></tbody></table></div>
+
+      <div id="client-editor" class="panel editor hidden">
+        <div class="section-heading"><div><p class="eyebrow">系统配置</p><h3 id="client-editor-title">配置跳转登录</h3></div><button class="icon-button" type="button" data-action="close-client" aria-label="关闭">×</button></div>
+        <form id="client-form" class="form-grid">
+          <label>Client ID<input name="id" required pattern="[a-z0-9][a-z0-9_-]{1,62}" placeholder="finance"></label>
+          <label>系统名称<input name="name" required maxlength="128" placeholder="Finance"></label>
+          <label class="full">系统说明<input name="description" maxlength="512" placeholder="财务系统"></label>
+          <label>客户端类型<select name="application_type"><option value="confidential">服务端应用（confidential）</option><option value="public">浏览器/移动应用（public）</option></select></label>
+          <label>允许 Scope<input name="allowed_scopes" value="openid profile email" required></label>
+          <fieldset class="full"><legend>支持协议</legend><label class="check"><input type="checkbox" name="protocols" value="oauth2.0">OAuth 2.0</label><label class="check"><input type="checkbox" name="protocols" value="oauth2.1" checked>OAuth 2.1</label><label class="check"><input type="checkbox" name="protocols" value="cas">CAS</label></fieldset>
+          <fieldset class="full"><legend>OAuth/OIDC 流程</legend><label class="check"><input type="checkbox" name="grant_types" value="authorization_code" checked>授权码 + PKCE</label><label class="check"><input type="checkbox" name="grant_types" value="refresh_token" checked>刷新令牌</label><label class="check"><input type="checkbox" name="grant_types" value="client_credentials">客户端凭据</label><label class="check"><input type="checkbox" name="grant_types" value="urn:ietf:params:oauth:grant-type:device_code">设备码</label></fieldset>
+          <label class="full">OAuth/OIDC 回调地址，每行一个<textarea name="redirect_uris" rows="3" placeholder="https://finance.example.com/oidc/callback"></textarea></label>
+          <fieldset class="full"><legend>允许的登录方式</legend><label class="check"><input type="checkbox" name="login_methods" value="password" checked>账号密码</label><label class="check"><input type="checkbox" name="login_methods" value="ldap">企业 LDAP</label><label class="check"><input type="checkbox" name="login_methods" value="oidc">外部身份提供商</label></fieldset>
+          <label>CAS 版本<select name="cas_version"><option value="3.0">CAS 3.0</option><option value="2.0">CAS 2.0</option><option value="1.0">CAS 1.0</option></select></label>
+          <label class="check toggle"><input type="checkbox" name="enabled" checked>允许登录</label>
+          <label class="full">CAS Service URL，每行一个<textarea name="cas_service_urls" rows="3" placeholder="https://legacy.example.com/login/cas"></textarea></label>
+          <fieldset class="full"><legend>CAS 行为</legend><label class="check"><input type="checkbox" name="cas_proxy">代理认证</label><label class="check"><input type="checkbox" name="cas_gateway">Gateway</label><label class="check"><input type="checkbox" name="cas_renew">Renew</label><label class="check"><input type="checkbox" name="cas_single_logout" checked>单点登出</label></fieldset>
+          <div class="full actions"><button type="submit">保存并生成接入参数</button><button id="rotate-client-secret" class="secondary hidden" type="button">轮换密钥</button><button id="archive-client" class="danger hidden" type="button">归档系统</button><span id="client-form-status" role="status" aria-live="polite"></span></div>
+        </form>
+      </div>
+      <div id="integration-card" class="panel hidden" aria-live="polite"><div class="section-heading"><div><p class="eyebrow">接入参数</p><h3>业务系统配置</h3></div><button id="copy-integration" class="secondary" type="button">复制参数</button></div><p id="secret-warning" class="warning hidden">Client Secret 仅显示一次，请立即保存到业务系统的密钥存储中。</p><pre id="integration-output"></pre></div>
+    </section>
+
+    <section id="access" class="console-section hidden">
+      <div class="section-heading"><div><p class="eyebrow">访问控制</p><h2>角色与权限</h2></div><label class="inline-select">接入系统<select id="access-client"></select></label></div>
+      <div class="console-grid two">
+        <article class="panel"><h3>角色</h3><form id="role-form" class="mini-form"><input name="code" required placeholder="approver"><input name="name" required placeholder="审批人"><input name="description" placeholder="说明"><button type="submit">创建</button></form><div id="role-list" class="compact-list"></div></article>
+        <article class="panel"><h3>权限点</h3><form id="permission-form" class="mini-form"><input name="code" required placeholder="invoice.approve"><input name="name" required placeholder="审批发票"><input name="description" placeholder="说明"><button type="submit">创建</button></form><div id="permission-list" class="compact-list"></div></article>
+      </div>
+      <div class="console-grid two">
+        <article class="panel"><h3>角色包含的权限</h3><label>角色<select id="permission-role"></select></label><form id="role-permission-form"><div id="role-permission-options" class="check-list"></div><button type="submit">保存权限映射</button></form></article>
+        <article class="panel"><h3>用户角色</h3><label>用户<select id="access-user"></select></label><form id="user-role-form"><div id="user-role-options" class="check-list"></div><button type="submit">保存角色分配</button></form></article>
+      </div>
+    </section>
+
+    <section id="audit" class="console-section hidden">
+      <div class="section-heading"><div><p class="eyebrow">可追溯性</p><h2>审计日志</h2></div></div>
+      <form id="audit-filter" class="filter-bar audit-filter">
+        <input name="event_type" placeholder="事件类型">
+        <input name="client_id" placeholder="Client ID">
+        <input name="actor_user_id" placeholder="用户 UUID">
+        <select name="outcome"><option value="">全部结果</option><option value="success">成功</option><option value="failure">失败</option></select>
+        <button class="secondary" type="submit">查询</button>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>时间</th><th>事件</th><th>结果</th><th>主体</th><th>详情</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
+      <div class="pager"><button id="audit-prev" class="secondary" type="button">上一页</button><span id="audit-page">—</span><button id="audit-next" class="secondary" type="button">下一页</button></div>
+    </section>
+
+    <section id="operations" class="console-section hidden">
+      <div class="section-heading"><div><p class="eyebrow">安全基础设施</p><h2>安全运维</h2></div></div>
+      <div class="console-grid two">
+        <article class="panel"><div class="section-heading"><h3>OIDC 签名密钥</h3><button id="rotate-signing-key" class="danger" type="button">轮换密钥</button></div><p class="muted">新令牌立即使用新密钥签发，旧公钥在保留期内继续发布。</p><div id="signing-key-list" class="compact-list"></div></article>
+        <article class="panel"><div class="section-heading"><h3>数据清理</h3><button id="run-cleanup" class="danger" type="button">立即清理</button></div><p class="muted">清理过期令牌、授权码、会话、CAS 票据、审计日志及已退役密钥。</p><pre id="maintenance-output">尚未手动执行。</pre></article>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>{{end}}
