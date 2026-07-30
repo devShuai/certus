@@ -17,6 +17,8 @@ type MemoryRepository struct {
 	credentials map[string]memoryCredential
 }
 
+var _ SecretRepository = (*MemoryRepository)(nil)
+
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{credentials: make(map[string]memoryCredential)}
 }
@@ -42,6 +44,35 @@ func (r *MemoryRepository) ReplacePending(_ context.Context, credential Credenti
 	}
 	r.credentials[credential.UserID] = value
 	return nil
+}
+
+func (r *MemoryRepository) ListSecretCiphertexts(_ context.Context) ([]SecretRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]SecretRecord, 0, len(r.credentials))
+	for _, value := range r.credentials {
+		result = append(result, SecretRecord{
+			UserID:     value.UserID,
+			Ciphertext: append([]byte(nil), value.Secret...),
+		})
+	}
+	return result, nil
+}
+
+func (r *MemoryRepository) ReplaceSecretCiphertext(
+	_ context.Context,
+	userID string,
+	current, replacement []byte,
+) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value, ok := r.credentials[userID]
+	if !ok || !bytes.Equal(value.Secret, current) {
+		return false, nil
+	}
+	value.Secret = append([]byte(nil), replacement...)
+	r.credentials[userID] = value
+	return true, nil
 }
 
 func (r *MemoryRepository) Enable(_ context.Context, userID string, step int64, now time.Time) error {

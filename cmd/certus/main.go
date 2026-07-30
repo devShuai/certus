@@ -89,7 +89,25 @@ func main() {
 		accessRepository = postgres.NewAccessRepository(pool)
 		administrationRepository = postgres.NewAdministrationRepository(pool)
 		auditRepository = postgres.NewAuditRepository(pool)
-		mfaRepository = postgres.NewMFARepository(pool)
+		postgresMFARepository := postgres.NewMFARepository(pool)
+		rewrappedMFASecrets, err := mfa.RewrapSecrets(
+			ctx,
+			postgresMFARepository,
+			cfg.SecretEncryptionKeys,
+			cfg.MFAEncryptionKey,
+		)
+		if err != nil {
+			logger.Error("encrypt MFA secrets", "error", err)
+			os.Exit(1)
+		}
+		if rewrappedMFASecrets > 0 {
+			logger.Info(
+				"MFA secrets encrypted",
+				"count", rewrappedMFASecrets,
+				"encryption_key_id", cfg.SecretEncryptionKeys.PrimaryID(),
+			)
+		}
+		mfaRepository = postgresMFARepository
 		keyRepository := postgres.NewEncryptedOIDCKeyRepository(pool, cfg.SecretEncryptionKeys)
 		rewrapped, err := keyRepository.RewrapSigningKeys(ctx)
 		if err != nil {

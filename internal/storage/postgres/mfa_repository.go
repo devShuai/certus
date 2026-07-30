@@ -17,6 +17,8 @@ type MFARepository struct {
 	pool *pgxpool.Pool
 }
 
+var _ mfa.SecretRepository = (*MFARepository)(nil)
+
 func NewMFARepository(pool *pgxpool.Pool) *MFARepository {
 	return &MFARepository{pool: pool}
 }
@@ -96,6 +98,46 @@ func (r *MFARepository) ReplacePending(ctx context.Context, credential mfa.Crede
 		return fmt.Errorf("commit MFA setup: %w", err)
 	}
 	return nil
+}
+
+func (r *MFARepository) ListSecretCiphertexts(ctx context.Context) ([]mfa.SecretRecord, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT user_id::text, secret_ciphertext
+		FROM mfa_totp_credentials
+		ORDER BY user_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list MFA secret ciphertexts: %w", err)
+	}
+	defer rows.Close()
+	result := make([]mfa.SecretRecord, 0)
+	for rows.Next() {
+		var value mfa.SecretRecord
+		if err := rows.Scan(&value.UserID, &value.Ciphertext); err != nil {
+			return nil, fmt.Errorf("scan MFA secret ciphertext: %w", err)
+		}
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate MFA secret ciphertexts: %w", err)
+	}
+	return result, nil
+}
+
+func (r *MFARepository) ReplaceSecretCiphertext(
+	ctx context.Context,
+	userID string,
+	current, replacement []byte,
+) (bool, error) {
+	command, err := r.pool.Exec(ctx, `
+		UPDATE mfa_totp_credentials
+		SET secret_ciphertext = $3
+		WHERE user_id = $1 AND secret_ciphertext = $2`,
+		userID, current, replacement,
+	)
+	if err != nil {
+		return false, fmt.Errorf("replace MFA secret ciphertext: %w", err)
+	}
+	return command.RowsAffected() == 1, nil
 }
 
 func (r *MFARepository) Enable(ctx context.Context, userID string, step int64, now time.Time) error {

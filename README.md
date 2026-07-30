@@ -186,11 +186,13 @@ POST   /api/v1/account/password/reset
 
 ### TOTP 多因素认证
 
-生产环境先配置独立的 32 字节主密钥（Base64 编码），用于 AES-GCM 加密每个用户独立生成的 TOTP 密钥：
+生产环境使用版本化密钥环对每个用户独立生成的 TOTP 密钥执行 AES-256-GCM 封装。密钥环首项是新写入使用的主密钥，其余项只用于解密和无停机轮换：
 
 ```powershell
-$env:CERTUS_MFA_ENCRYPTION_KEY='<Base64 编码的 32 字节随机值>'
+$env:CERTUS_SECRET_ENCRYPTION_KEYS='2026-08=<当前Base64-32字节>,2026-07=<旧Base64-32字节>'
 ```
+
+早期版本的 `CERTUS_MFA_ENCRYPTION_KEY` 仅作为旧 TOTP 密文的迁移密钥保留。升级时应同时配置它和新的密钥环；Certus 启动后会把旧密文原子重封装到密钥环首项。确认所有实例均完成启动后即可移除旧变量。全新部署不需要配置该旧变量。
 
 账号安全 API：
 
@@ -203,7 +205,7 @@ DELETE /api/v1/account/mfa/totp
 
 `GET` 响应中的 `csrf_token` 必须通过 `X-CSRF-Token` 请求头传给所有账号安全写接口，并同时携带登录会话 Cookie。注册 TOTP 前还会重新验证当前密码；`setup` 返回 `otpauth_uri`、Base32 密钥和 10 枚仅显示一次的高熵恢复码。
 
-TOTP 使用 RFC 6238 的 30 秒时间步与 HMAC-SHA-1 兼容模式，允许前后各一个时间步的时钟偏差。服务端原子记录最后成功时间步，拒绝同一动态口令重放；恢复码仅存 SHA-256 哈希且成功后立即作废。启用 MFA 的账号在密码、LDAP 或外部 OIDC 主认证后都必须完成第二步验证；若主密钥缺失或密文无法解密，Certus 会拒绝降级登录。OIDC ID Token 同时下发 `amr` 与 `acr`（`urn:certus:aal:1` / `urn:certus:aal:2`）。
+TOTP 使用 RFC 6238 的 30 秒时间步与 HMAC-SHA-1 兼容模式，允许前后各一个时间步的时钟偏差。服务端原子记录最后成功时间步，拒绝同一动态口令重放；恢复码仅存 SHA-256 哈希且成功后立即作废。启用 MFA 的账号在密码、LDAP 或外部 OIDC 主认证后都必须完成第二步验证；若所需密钥版本缺失或密文无法解密，Certus 会拒绝降级登录。OIDC ID Token 同时下发 `amr` 与 `acr`（`urn:certus:aal:1` / `urn:certus:aal:2`）。
 
 ### LDAP 与外部 OIDC
 
@@ -486,7 +488,7 @@ $env:CERTUS_SIGNING_KEY_ROTATION_INTERVAL='24h' # 设为 0 关闭，不得少于
 $env:CERTUS_SECRET_ENCRYPTION_KEYS='2026-07=<Base64-32字节>,2026-06=<旧密钥>'
 ```
 
-OIDC 私钥使用 AES-256-GCM 封装后写入 PostgreSQL，密文的附加认证数据绑定用途、签名密钥 `kid` 和主密钥版本，避免密文被替换到其他记录。服务启动时会把历史明文私钥及旧主密钥密文自动重封装到密钥环首项；升级已有数据库时应先同时配置新旧主密钥，确认所有实例完成启动迁移后再移除旧项。
+OIDC 私钥和 TOTP 密钥都使用 AES-256-GCM 封装后写入 PostgreSQL。密文的附加认证数据绑定用途、记录标识和主密钥版本，避免跨用途或跨记录替换。服务启动时会把历史明文 OIDC 私钥、旧版 TOTP 密文及旧主密钥密文自动重封装到密钥环首项；升级已有数据库时应先同时配置新旧主密钥及所需的旧版 MFA 密钥，确认所有实例完成启动迁移后再移除旧项。
 
 服务默认每 24 小时检查并轮换活动 RS256 密钥，多实例通过 PostgreSQL 事务锁保证只产生一个新活动密钥。`POST /api/v1/admin/signing-keys/rotate` 仍可立即手动轮换；`GET /api/v1/admin/signing-keys` 只返回元数据，不返回私钥。退役公钥在保留期内继续发布到 JWKS，用于验证尚未过期的 ID Token 和登录事务。多实例每 30 秒自动收敛到数据库中的活动密钥；保留期应长于系统允许的最长签名令牌寿命与 JWKS 缓存时间之和。
 

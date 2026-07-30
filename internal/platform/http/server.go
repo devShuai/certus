@@ -183,7 +183,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		accessControl:  dependencies.Access,
 		administrators: dependencies.Administration,
 		audit:          dependencies.Audit,
-		mfa:            mfa.NewService(dependencies.MFA, cfg.MFAEncryptionKey, "Certus"),
+		mfa:            mfa.NewServiceWithKeyRing(dependencies.MFA, cfg.SecretEncryptionKeys, cfg.MFAEncryptionKey, "Certus"),
 		maintenance:    dependencies.Maintenance,
 		signer:         signer,
 		rateLimits:     ratelimit.NewService(dependencies.RateLimits),

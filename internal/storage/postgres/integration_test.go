@@ -315,13 +315,31 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	}
 
 	mfaRepository := NewMFARepository(pool)
-	if err := mfaRepository.ReplacePending(ctx, mfa.Credential{
-		UserID: user.ID, Secret: []byte("encrypted-secret"), CreatedAt: time.Now(),
-	}, [][]byte{[]byte("recovery-hash")}); err != nil {
+	legacyMFAKey := []byte("legacy-mfa-key-material-32-bytes")
+	legacyMFAService := mfa.NewService(mfaRepository, legacyMFAKey, "Certus")
+	if _, err := legacyMFAService.Setup(ctx, user.ID, user.Username); err != nil {
 		t.Fatal(err)
 	}
-	if credential, err := mfaRepository.Find(ctx, user.ID); err != nil || credential.RecoveryCodes != 1 {
+	if credential, err := mfaRepository.Find(ctx, user.ID); err != nil || credential.RecoveryCodes != 10 {
 		t.Fatalf("MFA repository round trip failed: %#v %v", credential, err)
+	}
+	mfaPrimaryKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	mfaKeyRing, err := secrets.ParseKeyRing("primary=" + mfaPrimaryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := mfa.RewrapSecrets(ctx, mfaRepository, mfaKeyRing, legacyMFAKey); err != nil || count != 1 {
+		t.Fatalf("PostgreSQL MFA secret rewrap failed: %d %v", count, err)
+	}
+	rewrappedMFA, err := mfaRepository.Find(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyID, ok := secrets.EnvelopeKeyID(rewrappedMFA.Secret); !ok || keyID != "primary" {
+		t.Fatalf("unexpected PostgreSQL MFA envelope key: %q %v", keyID, ok)
+	}
+	if count, err := mfa.RewrapSecrets(ctx, mfaRepository, mfaKeyRing, nil); err != nil || count != 0 {
+		t.Fatalf("PostgreSQL MFA rewrap was not idempotent: %d %v", count, err)
 	}
 	limiter := ratelimit.NewService(NewRateLimitRepository(pool))
 	rateNow := time.Now().UTC().Add(-2 * time.Minute)

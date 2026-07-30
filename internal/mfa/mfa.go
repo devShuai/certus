@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"certus/internal/secrets"
 )
 
 var (
@@ -33,6 +35,7 @@ const (
 	totpPeriod        = int64(30)
 	totpDigits        = 6
 	recoveryCodeCount = 10
+	totpSecretPurpose = "mfa-totp-secret"
 )
 
 var totpCodePattern = regexp.MustCompile(`^[0-9]{6}$`)
@@ -73,17 +76,38 @@ type Repository interface {
 	Delete(context.Context, string) error
 }
 
+type SecretRecord struct {
+	UserID     string
+	Ciphertext []byte
+}
+
+type SecretRepository interface {
+	ListSecretCiphertexts(context.Context) ([]SecretRecord, error)
+	ReplaceSecretCiphertext(context.Context, string, []byte, []byte) (bool, error)
+}
+
 type Service struct {
 	repository Repository
-	key        []byte
+	keyRing    secrets.KeyRing
+	legacyKey  []byte
 	issuer     string
 	now        func() time.Time
 }
 
 func NewService(repository Repository, encryptionKey []byte, issuer string) *Service {
+	return NewServiceWithKeyRing(repository, secrets.KeyRing{}, encryptionKey, issuer)
+}
+
+func NewServiceWithKeyRing(
+	repository Repository,
+	keyRing secrets.KeyRing,
+	legacyEncryptionKey []byte,
+	issuer string,
+) *Service {
 	return &Service{
 		repository: repository,
-		key:        append([]byte(nil), encryptionKey...),
+		keyRing:    keyRing,
+		legacyKey:  append([]byte(nil), legacyEncryptionKey...),
 		issuer:     strings.TrimSpace(issuer),
 		now:        time.Now,
 	}
@@ -265,11 +289,33 @@ func (s *Service) matchTOTP(credential Credential, code string) (int64, error) {
 }
 
 func (s *Service) available() bool {
-	return len(s.key) == 32
+	return s.keyRing.Available() || len(s.legacyKey) == 32
 }
 
 func (s *Service) encrypt(userID string, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(s.key)
+	if s.keyRing.Available() {
+		value, _, err := s.keyRing.Encrypt(totpSecretPurpose, userID, plaintext)
+		if err != nil {
+			return nil, fmt.Errorf("%w: encrypt TOTP secret", ErrUnavailable)
+		}
+		return value, nil
+	}
+	return encryptLegacySecret(s.legacyKey, userID, plaintext)
+}
+
+func (s *Service) decrypt(userID string, ciphertext []byte) ([]byte, error) {
+	if keyID, ok := secrets.EnvelopeKeyID(ciphertext); ok {
+		plaintext, err := s.keyRing.Decrypt(totpSecretPurpose, userID, ciphertext, keyID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: decrypt TOTP secret", ErrUnavailable)
+		}
+		return plaintext, nil
+	}
+	return decryptLegacySecret(s.legacyKey, userID, ciphertext)
+}
+
+func encryptLegacySecret(key []byte, userID string, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -284,8 +330,8 @@ func (s *Service) encrypt(userID string, plaintext []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, plaintext, []byte(userID)), nil
 }
 
-func (s *Service) decrypt(userID string, ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(s.key)
+func decryptLegacySecret(key []byte, userID string, ciphertext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -302,6 +348,49 @@ func (s *Service) decrypt(userID string, ciphertext []byte) ([]byte, error) {
 		return nil, ErrUnavailable
 	}
 	return plaintext, nil
+}
+
+func RewrapSecrets(
+	ctx context.Context,
+	repository SecretRepository,
+	keyRing secrets.KeyRing,
+	legacyEncryptionKey []byte,
+) (int64, error) {
+	if !keyRing.Available() {
+		return 0, nil
+	}
+	records, err := repository.ListSecretCiphertexts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	protector := NewServiceWithKeyRing(nil, keyRing, legacyEncryptionKey, "")
+	var count int64
+	for _, record := range records {
+		if keyID, ok := secrets.EnvelopeKeyID(record.Ciphertext); ok && keyID == keyRing.PrimaryID() {
+			continue
+		}
+		plaintext, err := protector.decrypt(record.UserID, record.Ciphertext)
+		if err != nil {
+			return count, fmt.Errorf("decrypt MFA secret for user %s: %w", record.UserID, err)
+		}
+		ciphertext, _, err := keyRing.Encrypt(totpSecretPurpose, record.UserID, plaintext)
+		if err != nil {
+			return count, fmt.Errorf("encrypt MFA secret for user %s: %w", record.UserID, err)
+		}
+		replaced, err := repository.ReplaceSecretCiphertext(
+			ctx,
+			record.UserID,
+			record.Ciphertext,
+			ciphertext,
+		)
+		if err != nil {
+			return count, fmt.Errorf("replace MFA secret for user %s: %w", record.UserID, err)
+		}
+		if replaced {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func generateTOTP(secret []byte, step int64) string {
