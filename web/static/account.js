@@ -2,6 +2,7 @@ const accountState = {
   csrfToken: "",
   profile: null,
   sessions: [],
+  consents: [],
   mfa: null,
   recoveryCodes: [],
 };
@@ -69,7 +70,7 @@ async function loadAccount() {
     accountState.profile = profile;
     accountState.csrfToken = profile.csrf_token;
     renderProfile(profile);
-    await Promise.all([loadSessions(), loadMFA()]);
+    await Promise.all([loadSessions(), loadMFA(), loadConsents()]);
     setAccountStatus("账户安全状态已更新。", "success");
   } catch (error) {
     setAccountStatus(error.message, "error");
@@ -154,6 +155,63 @@ document.querySelector("#refresh-sessions").addEventListener("click", async () =
   try {
     await loadSessions();
     setAccountStatus("登录会话已刷新。", "success");
+  } catch (error) {
+    setAccountStatus(error.message, "error");
+  }
+});
+
+async function loadConsents() {
+  const value = await accountAPI("/api/v1/account/consents");
+  accountState.csrfToken = value.csrf_token || accountState.csrfToken;
+  accountState.consents = value.items || [];
+  renderConsents();
+}
+
+function renderConsents() {
+  const list = document.querySelector("#consent-list");
+  list.replaceChildren();
+  if (!accountState.consents.length) {
+    list.append(accountElement("p", { className: "empty", text: "当前没有已授权应用。" }));
+    return;
+  }
+  for (const consent of accountState.consents) {
+    const scopes = (consent.scopes || []).join(" · ") || "无额外范围";
+    const revoke = accountElement("button", {
+      type: "button",
+      className: "danger",
+      text: "撤销授权",
+      dataset: { action: "revoke-consent", clientId: consent.client_id },
+    });
+    list.append(accountElement("article", { className: "consent-item" }, [
+      accountElement("div", { className: "session-details" }, [
+        accountElement("strong", { text: consent.client_name || consent.client_id }),
+        accountElement("small", { text: consent.description || `Client ID ${consent.client_id}` }),
+        accountElement("small", { text: `授权范围：${scopes}` }),
+        accountElement("small", { text: `最近确认：${accountDate(consent.updated_at)}` }),
+      ]),
+      revoke,
+    ]));
+  }
+}
+
+document.querySelector("#consent-list").addEventListener("click", async (event) => {
+  const target = event.target.closest("[data-action='revoke-consent']");
+  if (!target || !window.confirm("撤销后，该应用下次访问时需要重新授权。确定继续吗？")) return;
+  target.disabled = true;
+  try {
+    await accountAPI(`/api/v1/account/consents/${encodeURIComponent(target.dataset.clientId)}`, { method: "DELETE" });
+    await loadConsents();
+    setAccountStatus("应用授权已撤销。", "success");
+  } catch (error) {
+    target.disabled = false;
+    setAccountStatus(error.message, "error");
+  }
+});
+
+document.querySelector("#refresh-consents").addEventListener("click", async () => {
+  try {
+    await loadConsents();
+    setAccountStatus("应用授权已刷新。", "success");
   } catch (error) {
     setAccountStatus(error.message, "error");
   }

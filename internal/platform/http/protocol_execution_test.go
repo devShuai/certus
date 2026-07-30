@@ -372,6 +372,106 @@ func TestOIDCAuthenticationRequestPrompts(t *testing.T) {
 	}
 }
 
+func TestOAuthConsentLifecycle(t *testing.T) {
+	handler := newProtocolTestHandlerWithoutConsent(t, "https://service.example.com")
+	browser := newTestBrowser(handler)
+	browser.login(t, "/portal")
+
+	silentQuery := oidcAuthorizationQuery("consent-silent")
+	silentQuery.Set("prompt", "none")
+	silent := browser.request(t, http.MethodGet, "/oauth2/authorize?"+silentQuery.Encode(), "", "")
+	silentCallback, err := url.Parse(silent.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if silent.Code != http.StatusFound ||
+		silentCallback.Query().Get("error") != "consent_required" ||
+		silentCallback.Query().Get("state") != "consent-silent" {
+		t.Fatalf("unexpected silent consent response: %d %s", silent.Code, silent.Header().Get("Location"))
+	}
+
+	deniedQuery := oidcAuthorizationQuery("consent-denied")
+	consentPage := browser.request(t, http.MethodGet, "/oauth2/authorize?"+deniedQuery.Encode(), "", "")
+	if consentPage.Code != http.StatusOK ||
+		!strings.Contains(consentPage.Body.String(), "允许 Integration 访问") ||
+		!strings.Contains(consentPage.Body.String(), "基本资料") ||
+		browser.cookies[oauthConsentCookieName] == nil ||
+		consentPage.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("unexpected consent page: %d %s", consentPage.Code, consentPage.Body.String())
+	}
+	denyForm := url.Values{
+		"csrf_token": {browser.cookies[csrfCookieName].Value},
+		"decision":   {"deny"},
+	}
+	denied := browser.request(
+		t, http.MethodPost, "/oauth2/authorize/consent",
+		denyForm.Encode(), "application/x-www-form-urlencoded",
+	)
+	deniedCallback, err := url.Parse(denied.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if denied.Code != http.StatusFound ||
+		deniedCallback.Query().Get("error") != "access_denied" ||
+		deniedCallback.Query().Get("state") != "consent-denied" {
+		t.Fatalf("unexpected consent denial: %d %s", denied.Code, denied.Header().Get("Location"))
+	}
+	replayed := browser.request(
+		t, http.MethodPost, "/oauth2/authorize/consent",
+		denyForm.Encode(), "application/x-www-form-urlencoded",
+	)
+	if replayed.Code != http.StatusBadRequest || !strings.Contains(replayed.Body.String(), "invalid_consent_transaction") {
+		t.Fatalf("consent transaction was reusable: %d %s", replayed.Code, replayed.Body.String())
+	}
+
+	allowedQuery := oidcAuthorizationQuery("consent-allowed")
+	allowedPage := browser.request(t, http.MethodGet, "/oauth2/authorize?"+allowedQuery.Encode(), "", "")
+	if allowedPage.Code != http.StatusOK {
+		t.Fatalf("consent allow page: %d %s", allowedPage.Code, allowedPage.Body.String())
+	}
+	allowForm := url.Values{
+		"csrf_token": {browser.cookies[csrfCookieName].Value},
+		"decision":   {"allow"},
+	}
+	allowed := browser.request(
+		t, http.MethodPost, "/oauth2/authorize/consent",
+		allowForm.Encode(), "application/x-www-form-urlencoded",
+	)
+	allowedCallback, err := url.Parse(allowed.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed.Code != http.StatusFound ||
+		allowedCallback.Query().Get("code") == "" ||
+		allowedCallback.Query().Get("state") != "consent-allowed" {
+		t.Fatalf("unexpected consent grant: %d %s", allowed.Code, allowed.Header().Get("Location"))
+	}
+
+	reusedQuery := oidcAuthorizationQuery("consent-reused")
+	reused := browser.request(t, http.MethodGet, "/oauth2/authorize?"+reusedQuery.Encode(), "", "")
+	reusedCallback, err := url.Parse(reused.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.Code != http.StatusFound || reusedCallback.Query().Get("code") == "" {
+		t.Fatalf("stored consent was not reused: %d %s", reused.Code, reused.Header().Get("Location"))
+	}
+
+	forcedQuery := oidcAuthorizationQuery("consent-forced")
+	forcedQuery.Set("prompt", "consent")
+	forced := browser.request(t, http.MethodGet, "/oauth2/authorize?"+forcedQuery.Encode(), "", "")
+	if forced.Code != http.StatusOK || !strings.Contains(forced.Body.String(), "授权确认") {
+		t.Fatalf("prompt=consent did not force consent: %d %s", forced.Code, forced.Body.String())
+	}
+
+	escalatedQuery := oidcAuthorizationQuery("consent-escalated")
+	escalatedQuery.Set("scope", "openid profile email")
+	escalated := browser.request(t, http.MethodGet, "/oauth2/authorize?"+escalatedQuery.Encode(), "", "")
+	if escalated.Code != http.StatusOK || !strings.Contains(escalated.Body.String(), "邮箱地址") {
+		t.Fatalf("scope escalation did not request consent: %d %s", escalated.Code, escalated.Body.String())
+	}
+}
+
 func TestOIDCRPInitiatedLogout(t *testing.T) {
 	handler := newProtocolTestHandler(t, "https://service.example.com")
 	browser := newTestBrowser(handler)
@@ -577,6 +677,20 @@ func newProtocolTestHandlerWithBackchannel(
 	backchannelLogoutURI string,
 	outboundClients ...*http.Client,
 ) http.Handler {
+	return newProtocolTestHandlerConfigured(t, serviceURL, backchannelLogoutURI, true, outboundClients...)
+}
+
+func newProtocolTestHandlerWithoutConsent(t *testing.T, serviceURL string) http.Handler {
+	return newProtocolTestHandlerConfigured(t, serviceURL, "", false)
+}
+
+func newProtocolTestHandlerConfigured(
+	t *testing.T,
+	serviceURL string,
+	backchannelLogoutURI string,
+	preauthorize bool,
+	outboundClients ...*http.Client,
+) http.Handler {
 	t.Helper()
 	user, err := identity.NewUser(identity.CreateUser{
 		Username:    "alice",
@@ -630,12 +744,24 @@ func newProtocolTestHandlerWithBackchannel(
 	if err := accessRepository.ReplaceUserRoles(context.Background(), user.ID, []access.RoleGrant{{RoleID: role.ID}}, "test", time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	oauthRepository := oauth.NewMemoryRepository()
+	if preauthorize {
+		if _, err := oauthRepository.GrantConsent(
+			context.Background(),
+			user.ID,
+			"integration",
+			[]string{"openid", "profile", "email", "roles"},
+			time.Now().UTC(),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 	dependencies := Dependencies{
 		Clients:   clients,
 		Users:     users,
 		Passwords: users,
 		Sessions:  session.NewMemoryRepository(),
-		OAuth:     oauth.NewMemoryRepository(),
+		OAuth:     oauthRepository,
 		CAS:       cas.NewMemoryRepository(),
 		Keys:      &oidc.MemoryKeyRepository{},
 		Access:    accessRepository,

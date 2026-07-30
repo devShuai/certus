@@ -137,6 +137,25 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if err := oauthRepository.DeleteOIDCClientSessions(ctx, current.ID); err != nil {
 		t.Fatal(err)
 	}
+	granted, err := oauthRepository.GrantConsent(
+		ctx, user.ID, registered.ID, []string{"openid"}, time.Now().UTC(),
+	)
+	if err != nil || !granted.Covers([]string{"openid"}) {
+		t.Fatalf("grant OAuth consent failed: %#v %v", granted, err)
+	}
+	granted, err = oauthRepository.GrantConsent(
+		ctx, user.ID, registered.ID, []string{"roles"}, time.Now().UTC(),
+	)
+	if err != nil || !granted.Covers([]string{"openid", "roles"}) {
+		t.Fatalf("expand OAuth consent failed: %#v %v", granted, err)
+	}
+	consents, err := oauthRepository.ListConsentsByUser(ctx, user.ID)
+	if err != nil || len(consents) != 1 {
+		t.Fatalf("list OAuth consents failed: %#v %v", consents, err)
+	}
+	if err := oauthRepository.DeleteConsent(ctx, user.ID, registered.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	accessRepository := NewAccessRepository(pool)
 	role, err := access.NewRole(registered.ID, access.CreateRole{Code: "approver", Name: "Approver"}, time.Now())

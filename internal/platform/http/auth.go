@@ -24,6 +24,7 @@ const (
 	externalOIDCCookieName = "certus_oidc_transaction"
 	mfaCookieName          = "certus_mfa_transaction"
 	oauthReauthCookieName  = "certus_oauth_reauth"
+	oauthConsentCookieName = "certus_oauth_consent"
 )
 
 type loginPageData struct {

@@ -6,13 +6,24 @@ import (
 	"time"
 
 	"certus/internal/audit"
+	"certus/internal/client"
 	"certus/internal/identity"
+	"certus/internal/oauth"
 	"certus/internal/session"
 )
 
 type accountSession struct {
 	session.Session
 	Current bool `json:"current"`
+}
+
+type accountConsent struct {
+	ClientID    string    `json:"client_id"`
+	ClientName  string    `json:"client_name"`
+	Description string    `json:"description,omitempty"`
+	Scopes      []string  `json:"scopes"`
+	GrantedAt   time.Time `json:"granted_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func (s *server) accountPage(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +100,65 @@ func (s *server) revokeAccountSession(w http.ResponseWriter, r *http.Request) {
 		EventType:   "session.revoked",
 		Outcome:     audit.OutcomeSuccess,
 		Details:     map[string]any{"session_id": sessionID, "self": sessionID == current.ID},
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) listAccountConsents(w http.ResponseWriter, r *http.Request) {
+	current, ok := s.requireCurrentSession(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.oauth.ListConsentsByUser(r.Context(), current.UserID)
+	if err != nil {
+		s.logger.Error("list account OAuth consents", "user_id", current.UserID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取已授权应用失败")
+		return
+	}
+	response := make([]accountConsent, 0, len(items))
+	for _, value := range items {
+		item := accountConsent{
+			ClientID:   value.ClientID,
+			ClientName: value.ClientID,
+			Scopes:     value.Scopes,
+			GrantedAt:  value.GrantedAt,
+			UpdatedAt:  value.UpdatedAt,
+		}
+		if registered, findErr := s.clients.Find(r.Context(), value.ClientID); findErr == nil {
+			item.ClientName = registered.Name
+			item.Description = registered.Description
+		} else if !errors.Is(findErr, client.ErrNotFound) {
+			s.logger.Warn("find consent client", "client_id", value.ClientID, "error", findErr)
+		}
+		response = append(response, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":      response,
+		"csrf_token": s.ensureCSRF(w, r),
+	})
+}
+
+func (s *server) revokeAccountConsent(w http.ResponseWriter, r *http.Request) {
+	current, ok := s.requireCurrentSession(w, r)
+	if !ok || !s.requireAccountCSRF(w, r) {
+		return
+	}
+	clientID := r.PathValue("clientID")
+	err := s.oauth.DeleteConsent(r.Context(), current.UserID, clientID)
+	if errors.Is(err, oauth.ErrConsentNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "应用授权不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("revoke account OAuth consent", "user_id", current.UserID, "client_id", clientID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "撤销应用授权失败")
+		return
+	}
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(current.UserID),
+		EventType:   "oauth.consent.revoked",
+		ClientID:    auditClient(clientID),
+		Outcome:     audit.OutcomeSuccess,
 	})
 	w.WriteHeader(http.StatusNoContent)
 }

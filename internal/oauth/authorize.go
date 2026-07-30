@@ -105,7 +105,7 @@ func parsePrompt(values url.Values) ([]string, error) {
 	}
 	seen := make(map[string]struct{}, len(prompt))
 	for _, value := range prompt {
-		if value != "none" && value != "login" {
+		if value != "none" && value != "login" && value != "consent" {
 			return nil, errors.New("unsupported prompt value")
 		}
 		if _, ok := seen[value]; ok {

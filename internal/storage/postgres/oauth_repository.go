@@ -518,3 +518,84 @@ func (r *OAuthRepository) DeleteOIDCClientSessions(ctx context.Context, sessionI
 	}
 	return nil
 }
+
+func (r *OAuthRepository) FindConsent(ctx context.Context, userID, clientID string) (oauth.Consent, error) {
+	var value oauth.Consent
+	err := r.pool.QueryRow(ctx, `
+		SELECT user_id::text, client_id, scopes, granted_at, updated_at
+		FROM oauth_consents
+		WHERE user_id = $1 AND client_id = $2`,
+		userID, clientID,
+	).Scan(&value.UserID, &value.ClientID, &value.Scopes, &value.GrantedAt, &value.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return oauth.Consent{}, oauth.ErrConsentNotFound
+	}
+	if err != nil {
+		return oauth.Consent{}, fmt.Errorf("find OAuth consent: %w", err)
+	}
+	return value, nil
+}
+
+func (r *OAuthRepository) GrantConsent(
+	ctx context.Context,
+	userID, clientID string,
+	scopes []string,
+	now time.Time,
+) (oauth.Consent, error) {
+	var value oauth.Consent
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO oauth_consents (user_id, client_id, scopes, granted_at, updated_at)
+		VALUES ($1, $2, $3, $4, $4)
+		ON CONFLICT (user_id, client_id)
+		DO UPDATE SET
+		    scopes = ARRAY(
+		        SELECT DISTINCT scope
+		        FROM unnest(oauth_consents.scopes || excluded.scopes) AS scope
+		        ORDER BY scope
+		    ),
+		    updated_at = excluded.updated_at
+		RETURNING user_id::text, client_id, scopes, granted_at, updated_at`,
+		userID, clientID, scopes, now,
+	).Scan(&value.UserID, &value.ClientID, &value.Scopes, &value.GrantedAt, &value.UpdatedAt)
+	if err != nil {
+		return oauth.Consent{}, fmt.Errorf("grant OAuth consent: %w", err)
+	}
+	return value, nil
+}
+
+func (r *OAuthRepository) ListConsentsByUser(ctx context.Context, userID string) ([]oauth.Consent, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT user_id::text, client_id, scopes, granted_at, updated_at
+		FROM oauth_consents
+		WHERE user_id = $1
+		ORDER BY updated_at DESC, client_id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list OAuth consents: %w", err)
+	}
+	defer rows.Close()
+	result := make([]oauth.Consent, 0)
+	for rows.Next() {
+		var value oauth.Consent
+		if err := rows.Scan(&value.UserID, &value.ClientID, &value.Scopes, &value.GrantedAt, &value.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan OAuth consent: %w", err)
+		}
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate OAuth consents: %w", err)
+	}
+	return result, nil
+}
+
+func (r *OAuthRepository) DeleteConsent(ctx context.Context, userID, clientID string) error {
+	command, err := r.pool.Exec(ctx, `
+		DELETE FROM oauth_consents
+		WHERE user_id = $1 AND client_id = $2`, userID, clientID)
+	if err != nil {
+		return fmt.Errorf("delete OAuth consent: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return oauth.ErrConsentNotFound
+	}
+	return nil
+}

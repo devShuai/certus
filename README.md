@@ -21,6 +21,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - LDAP TLS/StartTLS 登录与外部身份自动映射
 - 外部 OIDC Discovery、授权码 + PKCE、state/nonce 校验与账号自动建档
 - OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
+- OAuth/OIDC 用户授权同意、Scope 扩权确认、持久授权复用与用户自助撤销
 - RFC 7662 Token Introspection 与 RFC 7009 访问/刷新令牌撤销
 - OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS、UserInfo、重新认证、RP-Initiated Logout 与 Back-Channel Logout
 - OAuth 设备授权码、浏览器确认和标准轮询错误
@@ -77,7 +78,7 @@ go run ./cmd/certus
 - OAuth 授权码和支持轮换检测的刷新令牌族
 - 审计事件
 
-增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT，以及 OIDC 持久化签名密钥。
+增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT、OIDC 持久化签名密钥，以及 OAuth 用户授权记录。
 
 迁移文件已嵌入可执行文件，并在 `certus_schema_migrations` 中记录版本与 SHA-256 校验和；已执行的 migration 被修改时，服务会拒绝启动。
 
@@ -148,11 +149,13 @@ GET    /account
 GET    /api/v1/account/profile
 GET    /api/v1/account/sessions
 DELETE /api/v1/account/sessions/{session_id}
+GET    /api/v1/account/consents
+DELETE /api/v1/account/consents/{client_id}
 PUT    /api/v1/account/password
 POST   /api/v1/account/password/reset
 ```
 
-`/account` 提供登录用户自助安全中心，可查看身份资料、活跃会话、修改密码及配置 MFA；未登录访问会先完成认证再返回。用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话；一次性重置成功后撤销全部会话。本地退出表单也必须携带页面签发的 CSRF Token。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
+`/account` 提供登录用户自助安全中心，可查看身份资料、活跃会话、已授权应用、修改密码及配置 MFA；未登录访问会先完成认证再返回。撤销应用授权后，该客户端下次发起交互式授权时必须重新取得用户同意；已签发令牌仍按各自生命周期或令牌撤销接口处理。用户改密必须提交 `current_password` 与 `new_password`，成功后保留当前会话并撤销其他会话；一次性重置成功后撤销全部会话。本地退出表单也必须携带页面签发的 CSRF Token。审计接口支持 `actor_user_id`、`event_type`、`client_id`、`outcome`、`from`、`to` 与分页筛选。
 
 ### TOTP 多因素认证
 
@@ -381,7 +384,7 @@ GET /api/v1/access/users/{user_id}
 
 OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开放 OAuth implicit 和 resource owner password grant；OAuth Security BCP 已明确不应使用这些遗留流程。
 
-OIDC 授权请求支持 `prompt=none`、`prompt=login` 与非负整数 `max_age`。静默认证无法完成时，Certus 会将 `login_required` 和原始 `state` 返回到已登记的精确回调地址；强制重新认证使用 5 分钟有效、绑定完整授权请求且完成后即失效的签名事务。授权码签发记录认证时间，后续 ID Token 始终携带 `auth_time`。
+OIDC 授权请求支持 `prompt=none`、`prompt=login`、`prompt=consent` 与非负整数 `max_age`。首次授权、请求新增 Scope 或显式使用 `prompt=consent` 时，Certus 会展示客户端与权限范围并记录用户决定；已有授权覆盖全部 Scope 时可直接复用。静默认证无法完成时，Certus 会将 `login_required` 或 `consent_required` 和原始 `state` 返回到已登记的精确回调地址；强制重新认证与授权同意都使用 5 分钟有效、绑定完整授权请求且完成后即失效的签名事务。授权码签发记录认证时间，后续 ID Token 始终携带 `auth_time`。
 
 OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oauth2/logout`。Certus 验证签名、发行者、受众及当前用户后撤销对应统一会话；仅当 `post_logout_redirect_uri` 与客户端独立登记的退出回调完全一致时才携带可选 `state` 跳回业务系统。
 

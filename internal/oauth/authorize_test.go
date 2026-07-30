@@ -24,7 +24,7 @@ func TestParseAuthorizationRequest(t *testing.T) {
 		"state":                 {"opaque-state"},
 		"code_challenge":        {"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"},
 		"code_challenge_method": {"S256"},
-		"prompt":                {"login"},
+		"prompt":                {"login consent"},
 		"max_age":               {"300"},
 	}
 
@@ -33,7 +33,8 @@ func TestParseAuthorizationRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if request.ClientID != "specus" || request.CodeChallengeMethod != "S256" ||
-		!request.HasPrompt("login") || request.MaxAge == nil || *request.MaxAge != 300 {
+		!request.HasPrompt("login") || !request.HasPrompt("consent") ||
+		request.MaxAge == nil || *request.MaxAge != 300 {
 		t.Fatalf("unexpected request: %#v", request)
 	}
 }
@@ -86,7 +87,7 @@ func TestParseAuthorizationRequestRejectsInvalidAuthenticationParameters(t *test
 		value string
 	}{
 		{name: "conflicting prompt", key: "prompt", value: "none login"},
-		{name: "unsupported prompt", key: "prompt", value: "consent"},
+		{name: "unsupported prompt", key: "prompt", value: "select_account"},
 		{name: "empty prompt", key: "prompt", value: ""},
 		{name: "negative max age", key: "max_age", value: "-1"},
 		{name: "signed max age", key: "max_age", value: "+1"},

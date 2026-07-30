@@ -61,6 +61,32 @@ func TestOIDCClientSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestConsentLifecycleAndScopeExpansion(t *testing.T) {
+	repository := NewMemoryRepository()
+	ctx := context.Background()
+	grantedAt := time.Now().UTC().Add(-time.Minute)
+	consent, err := repository.GrantConsent(ctx, "user", "client", []string{"openid"}, grantedAt)
+	if err != nil || !consent.Covers([]string{"openid"}) || consent.Covers([]string{"openid", "email"}) {
+		t.Fatalf("unexpected initial consent: %#v %v", consent, err)
+	}
+	updatedAt := time.Now().UTC()
+	consent, err = repository.GrantConsent(ctx, "user", "client", []string{"email", "openid"}, updatedAt)
+	if err != nil || !consent.Covers([]string{"openid", "email"}) ||
+		!consent.GrantedAt.Equal(grantedAt) || !consent.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("scope expansion did not preserve consent history: %#v %v", consent, err)
+	}
+	items, err := repository.ListConsentsByUser(ctx, "user")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("unexpected consent list: %#v %v", items, err)
+	}
+	if err := repository.DeleteConsent(ctx, "user", "client"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.FindConsent(ctx, "user", "client"); !errors.Is(err, ErrConsentNotFound) {
+		t.Fatalf("deleted consent remained available: %v", err)
+	}
+}
+
 func TestRefreshReuseRevokesReplacementFamily(t *testing.T) {
 	repository := NewMemoryRepository()
 	now := time.Now().UTC()

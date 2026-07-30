@@ -171,3 +171,13 @@ func TestOIDCBackchannelLogoutMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthConsentMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/015_oauth_consents.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "CREATE TABLE oauth_consents") {
+		t.Fatal("OAuth consent migration does not create the consent registry")
+	}
+}

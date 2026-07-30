@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -44,14 +45,26 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	audits := audit.NewMemoryRepository()
+	clients := client.NewMemoryRepository(client.Client{
+		ID:          "integration",
+		Name:        "Integration",
+		Description: "Integration test application",
+		Enabled:     true,
+	})
+	oauthRepository := oauth.NewMemoryRepository()
+	if _, err := oauthRepository.GrantConsent(
+		ctx, user.ID, "integration", []string{"openid", "profile"}, time.Now().UTC(),
+	); err != nil {
+		t.Fatal(err)
+	}
 	handler, err := NewWithDependencies(ctx, config.Config{
 		Issuer: "https://auth.example.com", AdminToken: strings.Repeat("a", 32),
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)), Dependencies{
-		Clients:   client.NewMemoryRepository(),
+		Clients:   clients,
 		Users:     users,
 		Passwords: users,
 		Sessions:  sessionRepository,
-		OAuth:     oauth.NewMemoryRepository(),
+		OAuth:     oauthRepository,
 		CAS:       cas.NewMemoryRepository(),
 		Audit:     audits,
 		Keys:      &oidc.MemoryKeyRepository{},
@@ -73,6 +86,7 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK ||
 		!strings.Contains(response.Body.String(), "账户安全") ||
+		!strings.Contains(response.Body.String(), "已授权应用") ||
 		!strings.Contains(response.Body.String(), "/static/account.js") {
 		t.Fatalf("account page: %d %s", response.Code, response.Body.String())
 	}
@@ -96,6 +110,30 @@ func TestAccountSessionPasswordChangeAndReset(t *testing.T) {
 		!strings.Contains(response.Body.String(), `"current":true`) ||
 		!strings.Contains(response.Body.String(), `"other-agent"`) {
 		t.Fatalf("list sessions: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/account/consents", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: currentToken})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"client_name":"Integration"`) ||
+		!strings.Contains(response.Body.String(), `"openid"`) {
+		t.Fatalf("list account consents: %d %s", response.Code, response.Body.String())
+	}
+
+	consentCSRF := strings.Repeat("e", 32)
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/account/consents/integration", nil)
+	request.Header.Set("X-CSRF-Token", consentCSRF)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: currentToken})
+	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: consentCSRF})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("revoke account consent: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := oauthRepository.FindConsent(ctx, user.ID, "integration"); !errors.Is(err, oauth.ErrConsentNotFound) {
+		t.Fatalf("account consent was not revoked: %v", err)
 	}
 
 	request = httptest.NewRequest(http.MethodPut, "/api/v1/account/password", strings.NewReader(

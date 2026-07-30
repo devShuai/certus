@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 )
@@ -16,6 +17,7 @@ var (
 	ErrAuthorizationPending = errors.New("authorization pending")
 	ErrSlowDown             = errors.New("slow down")
 	ErrAccessDenied         = errors.New("access denied")
+	ErrConsentNotFound      = errors.New("consent not found")
 )
 
 type AuthorizationCode struct {
@@ -86,6 +88,23 @@ type OIDCClientSession struct {
 	CreatedAt time.Time
 }
 
+type Consent struct {
+	UserID    string    `json:"user_id"`
+	ClientID  string    `json:"client_id"`
+	Scopes    []string  `json:"scopes"`
+	GrantedAt time.Time `json:"granted_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (c Consent) Covers(scopes []string) bool {
+	for _, scope := range scopes {
+		if !slices.Contains(c.Scopes, scope) {
+			return false
+		}
+	}
+	return true
+}
+
 type Repository interface {
 	SaveAuthorizationCode(context.Context, AuthorizationCode) error
 	ConsumeAuthorizationCode(context.Context, []byte, string, string, string, time.Time) (AuthorizationCode, error)
@@ -103,6 +122,10 @@ type Repository interface {
 	SaveOIDCClientSession(context.Context, OIDCClientSession) error
 	ListOIDCClientSessions(context.Context, string) ([]OIDCClientSession, error)
 	DeleteOIDCClientSessions(context.Context, string) error
+	FindConsent(context.Context, string, string) (Consent, error)
+	GrantConsent(context.Context, string, string, []string, time.Time) (Consent, error)
+	ListConsentsByUser(context.Context, string) ([]Consent, error)
+	DeleteConsent(context.Context, string, string) error
 }
 
 type memoryAuthorizationCode struct {
@@ -128,6 +151,7 @@ type MemoryRepository struct {
 	refresh      []memoryRefreshToken
 	devices      []DeviceAuthorization
 	oidcSessions []OIDCClientSession
+	consents     []Consent
 }
 
 func NewMemoryRepository() *MemoryRepository {
@@ -414,8 +438,88 @@ func (r *MemoryRepository) DeleteOIDCClientSessions(_ context.Context, sessionID
 	return nil
 }
 
+func (r *MemoryRepository) FindConsent(_ context.Context, userID, clientID string) (Consent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, value := range r.consents {
+		if value.UserID == userID && value.ClientID == clientID {
+			return cloneConsent(value), nil
+		}
+	}
+	return Consent{}, ErrConsentNotFound
+}
+
+func (r *MemoryRepository) GrantConsent(
+	_ context.Context,
+	userID, clientID string,
+	scopes []string,
+	now time.Time,
+) (Consent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.consents {
+		if r.consents[index].UserID == userID && r.consents[index].ClientID == clientID {
+			r.consents[index].Scopes = mergeScopes(r.consents[index].Scopes, scopes)
+			r.consents[index].UpdatedAt = now
+			return cloneConsent(r.consents[index]), nil
+		}
+	}
+	value := Consent{
+		UserID:    userID,
+		ClientID:  clientID,
+		Scopes:    mergeScopes(nil, scopes),
+		GrantedAt: now,
+		UpdatedAt: now,
+	}
+	r.consents = append(r.consents, value)
+	return cloneConsent(value), nil
+}
+
+func (r *MemoryRepository) ListConsentsByUser(_ context.Context, userID string) ([]Consent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]Consent, 0)
+	for _, value := range r.consents {
+		if value.UserID == userID {
+			result = append(result, cloneConsent(value))
+		}
+	}
+	slices.SortFunc(result, func(a, b Consent) int {
+		return b.UpdatedAt.Compare(a.UpdatedAt)
+	})
+	return result, nil
+}
+
+func (r *MemoryRepository) DeleteConsent(_ context.Context, userID, clientID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index, value := range r.consents {
+		if value.UserID == userID && value.ClientID == clientID {
+			r.consents = append(r.consents[:index], r.consents[index+1:]...)
+			return nil
+		}
+	}
+	return ErrConsentNotFound
+}
+
 func cloneBytes(value []byte) []byte {
 	return append([]byte(nil), value...)
+}
+
+func cloneConsent(value Consent) Consent {
+	value.Scopes = append([]string(nil), value.Scopes...)
+	return value
+}
+
+func mergeScopes(current, requested []string) []string {
+	result := append([]string(nil), current...)
+	for _, scope := range requested {
+		if !slices.Contains(result, scope) {
+			result = append(result, scope)
+		}
+	}
+	slices.Sort(result)
+	return result
 }
 
 func cloneAuthorizationCode(value AuthorizationCode) AuthorizationCode {

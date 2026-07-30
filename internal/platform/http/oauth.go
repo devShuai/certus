@@ -19,6 +19,7 @@ import (
 	"certus/internal/identity"
 	"certus/internal/oauth"
 	"certus/internal/security"
+	"certus/internal/session"
 )
 
 const (
@@ -80,11 +81,38 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 		s.redirectOAuthCredentials(w, r, registered.ID)
 		return
 	}
+	requiresConsent, err := s.requiresOAuthConsent(r, request, current)
+	if err != nil {
+		s.logger.Error("read OAuth consent", "client_id", request.ClientID, "user_id", current.UserID, "error", err)
+		redirectOAuthAuthorizationError(w, r, request.RedirectURI, request.State, "server_error", "Unable to read authorization")
+		return
+	}
+	if requiresConsent {
+		if request.HasPrompt("none") {
+			redirectOAuthAuthorizationError(
+				w, r, request.RedirectURI, request.State,
+				"consent_required", "End-user consent is required",
+			)
+			return
+		}
+		s.renderOAuthConsent(w, r, registered, request, current)
+		return
+	}
+	s.issueAuthorizationCode(w, r, request, current)
+}
+
+func (s *server) issueAuthorizationCode(
+	w http.ResponseWriter,
+	r *http.Request,
+	request oauth.AuthorizationRequest,
+	current session.Session,
+) {
 	code, err := security.RandomToken(32)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "生成授权码失败")
 		return
 	}
+	now := s.now().UTC()
 	if err := s.oauth.SaveAuthorizationCode(r.Context(), oauth.AuthorizationCode{
 		Hash:            security.HashToken(code),
 		ClientID:        request.ClientID,
@@ -845,6 +873,7 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"claims_supported":                              []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "sid", "nonce", "acr", "amr", "name", "preferred_username", "email", "roles", "permissions"},
 		"backchannel_logout_supported":                  true,
 		"backchannel_logout_session_supported":          true,
+		"prompt_values_supported":                       []string{"none", "login", "consent"},
 	})
 }
 
