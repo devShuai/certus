@@ -182,6 +182,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		now:            time.Now,
 		deviceAttempts: make(map[string]deviceAttemptWindow),
 	}
+	if cfg.SigningKeyRotation > 0 {
+		go s.runSigningKeyRotation(ctx, cfg.SigningKeyRotation)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)

@@ -25,6 +25,7 @@ type KeyRepository interface {
 	LoadActiveSigningKey(context.Context) ([]byte, error)
 	SaveActiveSigningKey(context.Context, string, []byte, time.Time) error
 	RotateSigningKey(context.Context, string, []byte, time.Time) error
+	RotateSigningKeyIfOlderThan(context.Context, string, []byte, time.Time, time.Time) (bool, error)
 	ListSigningKeys(context.Context) ([]SigningKey, error)
 	DeleteRetiredSigningKeys(context.Context, time.Time) (int64, error)
 }
@@ -70,6 +71,29 @@ func (r *MemoryKeyRepository) SaveActiveSigningKey(_ context.Context, kid string
 func (r *MemoryKeyRepository) RotateSigningKey(_ context.Context, kid string, value []byte, now time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.rotateLocked(kid, value, now)
+	return nil
+}
+
+func (r *MemoryKeyRepository) RotateSigningKeyIfOlderThan(
+	_ context.Context,
+	kid string,
+	value []byte,
+	now time.Time,
+	createdBefore time.Time,
+) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, current := range r.keys {
+		if current.Active && !current.CreatedAt.Before(createdBefore) {
+			return false, nil
+		}
+	}
+	r.rotateLocked(kid, value, now)
+	return true, nil
+}
+
+func (r *MemoryKeyRepository) rotateLocked(kid string, value []byte, now time.Time) {
 	for index := range r.keys {
 		if r.keys[index].Active {
 			r.keys[index].Active = false
@@ -80,7 +104,6 @@ func (r *MemoryKeyRepository) RotateSigningKey(_ context.Context, kid string, va
 	r.keys = append(r.keys, SigningKey{
 		KID: kid, PEM: append([]byte(nil), value...), Active: true, CreatedAt: now,
 	})
-	return nil
 }
 
 func (r *MemoryKeyRepository) ListSigningKeys(context.Context) ([]SigningKey, error) {
@@ -306,16 +329,10 @@ func (s *Signer) Refresh(ctx context.Context) error {
 }
 
 func (s *Signer) Rotate(ctx context.Context) (string, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	kid, encoded, err := generateSigningKey()
 	if err != nil {
-		return "", fmt.Errorf("generate OIDC signing key: %w", err)
+		return "", err
 	}
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return "", fmt.Errorf("marshal OIDC signing key: %w", err)
-	}
-	encoded := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	kid := keyID(&key.PublicKey)
 	if err := s.repository.RotateSigningKey(ctx, kid, encoded, time.Now().UTC()); err != nil {
 		return "", fmt.Errorf("rotate OIDC signing key: %w", err)
 	}
@@ -328,6 +345,43 @@ func (s *Signer) Rotate(ctx context.Context) (string, error) {
 	return activeKID, nil
 }
 
+func (s *Signer) RotateIfOlderThan(
+	ctx context.Context,
+	maxAge time.Duration,
+	now time.Time,
+) (string, bool, error) {
+	if maxAge <= 0 {
+		return "", false, nil
+	}
+	keys, err := s.repository.ListSigningKeys(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("list OIDC signing keys for rotation: %w", err)
+	}
+	cutoff := now.UTC().Add(-maxAge)
+	for _, key := range keys {
+		if key.Active && !key.CreatedAt.Before(cutoff) {
+			return key.KID, false, nil
+		}
+	}
+	kid, encoded, err := generateSigningKey()
+	if err != nil {
+		return "", false, err
+	}
+	rotated, err := s.repository.RotateSigningKeyIfOlderThan(
+		ctx, kid, encoded, now.UTC(), cutoff,
+	)
+	if err != nil {
+		return "", false, fmt.Errorf("automatically rotate OIDC signing key: %w", err)
+	}
+	if err := s.Refresh(ctx); err != nil {
+		return "", false, err
+	}
+	s.mu.RLock()
+	activeKID := s.kid
+	s.mu.RUnlock()
+	return activeKID, rotated, nil
+}
+
 func (s *Signer) ListKeys(ctx context.Context) ([]SigningKey, error) {
 	keys, err := s.repository.ListSigningKeys(ctx)
 	if err != nil {
@@ -337,6 +391,18 @@ func (s *Signer) ListKeys(ctx context.Context) ([]SigningKey, error) {
 		keys[index].PEM = nil
 	}
 	return keys, nil
+}
+
+func generateSigningKey() (string, []byte, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", nil, fmt.Errorf("generate OIDC signing key: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal OIDC signing key: %w", err)
+	}
+	return keyID(&key.PublicKey), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
 func (s *Signer) reloadVerificationKeys(ctx context.Context) error {

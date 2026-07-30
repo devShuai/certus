@@ -84,6 +84,17 @@ func (s *server) recordAudit(r *http.Request, event audit.Event) {
 	}
 }
 
+func (s *server) recordSystemAudit(ctx context.Context, event audit.Event) {
+	normalized, err := audit.Normalize(event, s.now().UTC())
+	if err != nil {
+		s.logger.Error("normalize system audit event", "event_type", event.EventType, "error", err)
+		return
+	}
+	if _, err := s.audit.Append(ctx, normalized); err != nil {
+		s.logger.Error("append system audit event", "event_type", event.EventType, "error", err)
+	}
+}
+
 func (s *server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 	limit, err := queryInt(r, "limit", 50, 1, 200)
 	if err != nil {

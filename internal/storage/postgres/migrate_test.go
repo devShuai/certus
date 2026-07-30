@@ -215,3 +215,18 @@ func TestAdministratorRolesMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestOIDCKeyEncryptionMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/019_oidc_key_encryption.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN encryption_key_id",
+		"oidc_signing_key_encryption_id_valid",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("OIDC key encryption migration does not contain %s", expected)
+		}
+	}
+}

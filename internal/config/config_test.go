@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadRejectsShortAdminToken(t *testing.T) {
@@ -42,6 +43,27 @@ func TestLoadMaintenanceRetention(t *testing.T) {
 	t.Setenv("CERTUS_SIGNING_KEY_RETENTION", "30m")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "at least 1h") {
 		t.Fatalf("expected signing key retention error, got %v", err)
+	}
+}
+
+func TestLoadSecretEncryptionKeyRingAndSigningRotation(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	t.Setenv("CERTUS_SECRET_ENCRYPTION_KEYS", "primary="+key)
+	t.Setenv("CERTUS_SIGNING_KEY_ROTATION_INTERVAL", "12h")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SecretEncryptionKeys.Available() ||
+		cfg.SecretEncryptionKeys.PrimaryID() != "primary" ||
+		cfg.SigningKeyRotation != 12*time.Hour {
+		t.Fatalf("unexpected secret key configuration: %#v", cfg)
+	}
+	t.Setenv("CERTUS_ENV", "production")
+	t.Setenv("CERTUS_DATABASE_URL", "postgres://certus@example/certus")
+	t.Setenv("CERTUS_SECRET_ENCRYPTION_KEYS", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("expected production secret encryption key error, got %v", err)
 	}
 }
 

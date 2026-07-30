@@ -8,23 +8,26 @@ import (
 	"time"
 
 	"certus/internal/mfa"
+	"certus/internal/secrets"
 )
 
 type Config struct {
-	Address             string
-	Issuer              string
-	Environment         string
-	DatabaseURL         string
-	AdminToken          string
-	MFAEncryptionKey    []byte
-	LDAP                LDAPConfig
-	ExternalOIDC        ExternalOIDCConfig
-	ReadHeaderTimeout   time.Duration
-	IdleTimeout         time.Duration
-	ShutdownTimeout     time.Duration
-	CleanupInterval     time.Duration
-	AuditRetention      time.Duration
-	SigningKeyRetention time.Duration
+	Address              string
+	Issuer               string
+	Environment          string
+	DatabaseURL          string
+	AdminToken           string
+	MFAEncryptionKey     []byte
+	SecretEncryptionKeys secrets.KeyRing
+	LDAP                 LDAPConfig
+	ExternalOIDC         ExternalOIDCConfig
+	ReadHeaderTimeout    time.Duration
+	IdleTimeout          time.Duration
+	ShutdownTimeout      time.Duration
+	CleanupInterval      time.Duration
+	AuditRetention       time.Duration
+	SigningKeyRetention  time.Duration
+	SigningKeyRotation   time.Duration
 }
 
 type LDAPConfig struct {
@@ -102,12 +105,26 @@ func Load() (Config, error) {
 	if err != nil || cfg.SigningKeyRetention < time.Hour {
 		return Config{}, fmt.Errorf("CERTUS_SIGNING_KEY_RETENTION must be at least 1h")
 	}
+	cfg.SigningKeyRotation, err = duration("CERTUS_SIGNING_KEY_ROTATION_INTERVAL", 24*time.Hour)
+	if err != nil || cfg.SigningKeyRotation < 0 ||
+		cfg.SigningKeyRotation > 0 && cfg.SigningKeyRotation < time.Hour {
+		return Config{}, fmt.Errorf("CERTUS_SIGNING_KEY_ROTATION_INTERVAL must be zero or at least 1h")
+	}
 	if cfg.AdminToken != "" && len(cfg.AdminToken) < 32 {
 		return Config{}, fmt.Errorf("CERTUS_ADMIN_TOKEN must contain at least 32 characters")
 	}
 	cfg.MFAEncryptionKey, err = mfa.DecodeEncryptionKey(os.Getenv("CERTUS_MFA_ENCRYPTION_KEY"))
 	if err != nil {
 		return Config{}, fmt.Errorf("CERTUS_MFA_ENCRYPTION_KEY: %w", err)
+	}
+	cfg.SecretEncryptionKeys, err = secrets.ParseKeyRing(os.Getenv("CERTUS_SECRET_ENCRYPTION_KEYS"))
+	if err != nil {
+		return Config{}, fmt.Errorf("CERTUS_SECRET_ENCRYPTION_KEYS: %w", err)
+	}
+	if strings.EqualFold(cfg.Environment, "production") &&
+		cfg.DatabaseURL != "" &&
+		!cfg.SecretEncryptionKeys.Available() {
+		return Config{}, fmt.Errorf("CERTUS_SECRET_ENCRYPTION_KEYS is required with PostgreSQL in production")
 	}
 	issuer, err := url.Parse(cfg.Issuer)
 	if err != nil || issuer.Scheme == "" || issuer.Host == "" {

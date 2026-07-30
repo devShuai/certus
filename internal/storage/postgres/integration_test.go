@@ -1,7 +1,9 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
+	"certus/internal/secrets"
 	"certus/internal/session"
 
 	"github.com/jackc/pgx/v5"
@@ -265,20 +268,87 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		t.Fatalf("MFA repository round trip failed: %#v %v", credential, err)
 	}
 
-	keys := NewOIDCKeyRepository(pool)
+	legacyKeys := NewOIDCKeyRepository(pool)
+	legacySigner, err := oidc.NewSigner(ctx, legacyKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToken, err := legacySigner.Sign(map[string]any{"sub": user.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	keyRing, err := secrets.ParseKeyRing("primary=" + primaryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := NewEncryptedOIDCKeyRepository(pool, keyRing)
+	if rewrapped, err := keys.RewrapSigningKeys(ctx); err != nil || rewrapped != 1 {
+		t.Fatalf("legacy signing key was not encrypted: %d %v", rewrapped, err)
+	}
 	signer, err := oidc.NewSigner(ctx, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldToken, err := signer.Sign(map[string]any{"sub": user.ID})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := signer.Verify(oldToken); err != nil {
+		t.Fatalf("encrypted PostgreSQL key did not verify existing token: %v", err)
 	}
 	if _, err := signer.Rotate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := signer.Verify(oldToken); err != nil {
 		t.Fatalf("retired PostgreSQL key did not verify old token: %v", err)
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT private_key_pem, encryption_key_id
+		FROM oidc_signing_keys
+		ORDER BY kid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encryptedCount int
+	for rows.Next() {
+		var material []byte
+		var keyID string
+		if err := rows.Scan(&material, &keyID); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if bytes.Contains(material, []byte("PRIVATE KEY")) || keyID != "primary" {
+			rows.Close()
+			t.Fatalf("OIDC signing key was stored in plaintext or with wrong key: %q %s", material, keyID)
+		}
+		encryptedCount++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	if encryptedCount != 2 {
+		t.Fatalf("unexpected encrypted signing key count: %d", encryptedCount)
+	}
+	nextKey := base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))
+	rotatedRing, err := secrets.ParseKeyRing("next=" + nextKey + ",primary=" + primaryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedKeys := NewEncryptedOIDCKeyRepository(pool, rotatedRing)
+	if rewrapped, err := rotatedKeys.RewrapSigningKeys(ctx); err != nil || rewrapped != 2 {
+		t.Fatalf("signing keys were not rewrapped with the new primary: %d %v", rewrapped, err)
+	}
+	var oldEncryptionKeys int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM oidc_signing_keys
+		WHERE encryption_key_id <> 'next'`,
+	).Scan(&oldEncryptionKeys); err != nil || oldEncryptionKeys != 0 {
+		t.Fatalf("old signing-key encryption identifiers remain: %d %v", oldEncryptionKeys, err)
+	}
+	if rotatedSigner, err := oidc.NewSigner(ctx, rotatedKeys); err != nil {
+		t.Fatal(err)
+	} else if _, err := rotatedSigner.Verify(oldToken); err != nil {
+		t.Fatalf("rewrapped PostgreSQL key did not verify old token: %v", err)
 	}
 
 	audits := NewAuditRepository(pool)

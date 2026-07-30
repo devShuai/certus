@@ -66,10 +66,11 @@ GET /oauth2/authorize
 
 ```powershell
 $env:CERTUS_DATABASE_URL='postgres://certus:certus@localhost:5432/certus?sslmode=disable'
+$env:CERTUS_SECRET_ENCRYPTION_KEYS='2026-07=<Base64 编码的 32 字节随机值>'
 go run ./cmd/certus
 ```
 
-不设置 `CERTUS_DATABASE_URL` 时仍使用内存中的 `specus` 示例客户端，方便直接开发。数据库模式不会自动插入示例数据。
+生产环境使用 PostgreSQL 时必须配置 `CERTUS_SECRET_ENCRYPTION_KEYS`。不设置 `CERTUS_DATABASE_URL` 时仍使用内存中的 `specus` 示例客户端，方便直接开发。数据库模式不会自动插入示例数据。
 
 首个 migration 已包含：
 
@@ -425,9 +426,13 @@ PostgreSQL 模式默认启动时执行一次清理，之后每 15 分钟清理�
 $env:CERTUS_CLEANUP_INTERVAL='15m'       # 设为 0 关闭定时清理
 $env:CERTUS_AUDIT_RETENTION='2160h'      # 90 天
 $env:CERTUS_SIGNING_KEY_RETENTION='24h'  # 不得少于 1 小时
+$env:CERTUS_SIGNING_KEY_ROTATION_INTERVAL='24h' # 设为 0 关闭，不得少于 1 小时
+$env:CERTUS_SECRET_ENCRYPTION_KEYS='2026-07=<Base64-32字节>,2026-06=<旧密钥>'
 ```
 
-`POST /api/v1/admin/signing-keys/rotate` 原子退役当前 RS256 密钥并生成新密钥；`GET /api/v1/admin/signing-keys` 只返回元数据，不返回私钥。退役公钥在保留期内继续发布到 JWKS，用于验证尚未过期的 ID Token 和登录事务。多实例每 30 秒自动收敛到数据库中的活动密钥；保留期应长于系统允许的最长签名令牌寿命与 JWKS 缓存时间之和。
+OIDC 私钥使用 AES-256-GCM 封装后写入 PostgreSQL，密文的附加认证数据绑定用途、签名密钥 `kid` 和主密钥版本，避免密文被替换到其他记录。服务启动时会把历史明文私钥及旧主密钥密文自动重封装到密钥环首项；升级已有数据库时应先同时配置新旧主密钥，确认所有实例完成启动迁移后再移除旧项。
+
+服务默认每 24 小时检查并轮换活动 RS256 密钥，多实例通过 PostgreSQL 事务锁保证只产生一个新活动密钥。`POST /api/v1/admin/signing-keys/rotate` 仍可立即手动轮换；`GET /api/v1/admin/signing-keys` 只返回元数据，不返回私钥。退役公钥在保留期内继续发布到 JWKS，用于验证尚未过期的 ID Token 和登录事务。多实例每 30 秒自动收敛到数据库中的活动密钥；保留期应长于系统允许的最长签名令牌寿命与 JWKS 缓存时间之和。
 
 ## 构建与发布
 
@@ -462,6 +467,7 @@ ghcr.io/devshuai/certus
 docker run --rm -p 8080:8080 \
   -e CERTUS_DATABASE_URL='postgres://certus:password@postgres:5432/certus' \
   -e CERTUS_ADMIN_TOKEN='<至少 32 个字符的随机密钥>' \
+  -e CERTUS_SECRET_ENCRYPTION_KEYS='primary=<Base64 编码的 32 字节随机值>' \
   ghcr.io/devshuai/certus:release
 ```
 

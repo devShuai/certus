@@ -1,7 +1,9 @@
 package httpserver
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"certus/internal/audit"
 )
@@ -26,7 +28,46 @@ func (s *server) rotateSigningKey(w http.ResponseWriter, r *http.Request) {
 	s.recordAudit(r, audit.Event{
 		EventType: "oidc.signing_key_rotated",
 		Outcome:   audit.OutcomeSuccess,
-		Details:   map[string]any{"kid": kid},
+		Details:   map[string]any{"kid": kid, "automatic": false},
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{"kid": kid, "algorithm": "RS256", "active": true})
+}
+
+func (s *server) runSigningKeyRotation(ctx context.Context, maxAge time.Duration) {
+	if maxAge <= 0 {
+		return
+	}
+	run := func() {
+		kid, rotated, err := s.signer.RotateIfOlderThan(ctx, maxAge, s.now().UTC())
+		if err != nil {
+			if ctx.Err() == nil {
+				s.logger.Error("automatic OIDC signing key rotation failed", "error", err)
+			}
+			return
+		}
+		if !rotated {
+			return
+		}
+		s.logger.Info("OIDC signing key automatically rotated", "kid", kid)
+		s.recordSystemAudit(ctx, audit.Event{
+			EventType: "oidc.signing_key_rotated",
+			Outcome:   audit.OutcomeSuccess,
+			Details:   map[string]any{"kid": kid, "automatic": true},
+		})
+	}
+	run()
+	checkInterval := min(maxAge/4, time.Hour)
+	if checkInterval < time.Minute {
+		checkInterval = time.Minute
+	}
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }

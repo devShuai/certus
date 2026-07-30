@@ -83,7 +83,20 @@ func main() {
 		administrationRepository = postgres.NewAdministrationRepository(pool)
 		auditRepository = postgres.NewAuditRepository(pool)
 		mfaRepository = postgres.NewMFARepository(pool)
-		keys = postgres.NewOIDCKeyRepository(pool)
+		keyRepository := postgres.NewEncryptedOIDCKeyRepository(pool, cfg.SecretEncryptionKeys)
+		rewrapped, err := keyRepository.RewrapSigningKeys(ctx)
+		if err != nil {
+			logger.Error("encrypt OIDC signing keys", "error", err)
+			os.Exit(1)
+		}
+		if rewrapped > 0 {
+			logger.Info(
+				"OIDC signing keys encrypted",
+				"count", rewrapped,
+				"encryption_key_id", cfg.SecretEncryptionKeys.PrimaryID(),
+			)
+		}
+		keys = keyRepository
 		maintenanceRepository = postgres.NewMaintenanceRepository(pool)
 		logger.Info("postgres storage enabled")
 	} else {

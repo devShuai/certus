@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSignerPersistsKeyAndProducesVerifiableJWT(t *testing.T) {
@@ -101,5 +102,27 @@ func TestSignerRotationKeepsRetiredVerificationKey(t *testing.T) {
 	keys, _ := signer.JWKS()["keys"].([]map[string]string)
 	if len(keys) != 2 || keys[0]["kid"] != newKID {
 		t.Fatalf("JWKS does not publish active and retired keys: %#v", keys)
+	}
+}
+
+func TestSignerAutomaticallyRotatesOnlyStaleKey(t *testing.T) {
+	ctx := context.Background()
+	repository := &MemoryKeyRepository{}
+	signer, err := NewSigner(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	repository.mu.Lock()
+	repository.keys[0].CreatedAt = now.Add(-25 * time.Hour)
+	oldKID := repository.keys[0].KID
+	repository.mu.Unlock()
+	newKID, rotated, err := signer.RotateIfOlderThan(ctx, 24*time.Hour, now)
+	if err != nil || !rotated || newKID == oldKID {
+		t.Fatalf("stale signing key was not rotated: %s %v %v", newKID, rotated, err)
+	}
+	again, rotated, err := signer.RotateIfOlderThan(ctx, 24*time.Hour, now.Add(time.Minute))
+	if err != nil || rotated || again != newKID {
+		t.Fatalf("fresh signing key rotated again: %s %v %v", again, rotated, err)
 	}
 }
