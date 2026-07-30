@@ -156,6 +156,135 @@ func TestIdentitySourceAdminLifecycleAndOIDCProbe(t *testing.T) {
 	}
 }
 
+func TestClientIdentitySourceBindingValidationAndArchiveProtection(t *testing.T) {
+	key := make([]byte, 32)
+	for index := range key {
+		key[index] = 23
+	}
+	ring, err := secrets.ParseKeyRing(
+		"test=" + base64.StdEncoding.EncodeToString(key),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := identity.NewMemoryUserRepository()
+	sources := federation.NewMemorySourceRepository()
+	sourceService := federation.NewSourceService(sources, ring)
+	if _, err := sourceService.Create(context.Background(), federation.CreateSource{
+		ID:   "workforce",
+		Name: "Workforce",
+		Type: federation.SourceOIDC,
+		OIDC: &federation.OIDCSourceInput{
+			Issuer:       "https://id.example.com",
+			ClientID:     "certus",
+			ClientSecret: "secret",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewWithDependencies(
+		context.Background(),
+		config.Config{
+			Issuer:               "https://auth.example.com",
+			AdminToken:           "test-admin-token",
+			SecretEncryptionKeys: ring,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dependencies{
+			Clients:         client.NewMemoryRepository(),
+			Users:           users,
+			Passwords:       users,
+			Sessions:        session.NewMemoryRepository(),
+			OAuth:           oauth.NewMemoryRepository(),
+			CAS:             cas.NewMemoryRepository(),
+			Keys:            &oidc.MemoryKeyRepository{},
+			IdentitySources: sources,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongMethod := adminJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/admin/clients",
+		`{
+			"id":"wrong-method",
+			"name":"Wrong Method",
+			"application_type":"public",
+			"protocols":["oauth2.1"],
+			"grant_types":["authorization_code"],
+			"redirect_uris":["https://app.example.com/callback"],
+			"login_methods":["ldap"],
+			"identity_source_ids":["workforce"]
+		}`,
+	)
+	if wrongMethod.Code != http.StatusBadRequest ||
+		!strings.Contains(wrongMethod.Body.String(), `"invalid_identity_source"`) {
+		t.Fatalf("source type mismatch was accepted: %d %s", wrongMethod.Code, wrongMethod.Body.String())
+	}
+	created := adminJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/admin/clients",
+		`{
+			"id":"finance",
+			"name":"Finance",
+			"application_type":"public",
+			"protocols":["oauth2.1"],
+			"grant_types":["authorization_code"],
+			"redirect_uris":["https://finance.example.com/callback"],
+			"login_methods":["oidc"],
+			"identity_source_ids":["workforce"]
+		}`,
+	)
+	if created.Code != http.StatusCreated ||
+		!strings.Contains(created.Body.String(), `"identity_source_ids":["workforce"]`) {
+		t.Fatalf("create bound client: %d %s", created.Code, created.Body.String())
+	}
+	inUse := adminJSONRequest(
+		t,
+		handler,
+		http.MethodDelete,
+		"/api/v1/admin/identity-sources/workforce",
+		"",
+	)
+	if inUse.Code != http.StatusConflict ||
+		!strings.Contains(inUse.Body.String(), `"source_in_use"`) {
+		t.Fatalf("bound identity source was archived: %d %s", inUse.Code, inUse.Body.String())
+	}
+	unbound := adminJSONRequest(
+		t,
+		handler,
+		http.MethodPut,
+		"/api/v1/admin/clients/finance",
+		`{
+			"name":"Finance",
+			"protocols":["oauth2.1"],
+			"grant_types":["authorization_code"],
+			"redirect_uris":["https://finance.example.com/callback"],
+			"login_methods":["password"],
+			"identity_source_ids":[],
+			"enabled":true
+		}`,
+	)
+	if unbound.Code != http.StatusOK {
+		t.Fatalf("unbind client identity source: %d %s", unbound.Code, unbound.Body.String())
+	}
+	archived := adminJSONRequest(
+		t,
+		handler,
+		http.MethodDelete,
+		"/api/v1/admin/identity-sources/workforce",
+		"",
+	)
+	if archived.Code != http.StatusNoContent {
+		t.Fatalf("archive unbound identity source: %d %s", archived.Code, archived.Body.String())
+	}
+}
+
 func mustJSON(t *testing.T, value string) string {
 	t.Helper()
 	encoded, err := json.Marshal(value)

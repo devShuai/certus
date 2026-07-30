@@ -7,6 +7,7 @@ const state = {
       .filter(Boolean),
   ),
   adminRoleDefinitions: [],
+  identitySources: [],
   clients: [],
   users: [],
   allUsers: [],
@@ -22,6 +23,7 @@ const state = {
 
 const globalStatus = document.querySelector("#global-status");
 const userForm = document.querySelector("#user-form");
+const identitySourceForm = document.querySelector("#identity-source-form");
 const clientForm = document.querySelector("#client-form");
 const integrationCard = document.querySelector("#integration-card");
 const integrationOutput = document.querySelector("#integration-output");
@@ -133,6 +135,7 @@ function can(permission) {
 function applyPermissions() {
   const sectionPermissions = {
     users: "admin.users.read",
+    "identity-sources": "admin.identity_sources.read",
     clients: "admin.clients.read",
     access: "admin.access.read",
     audit: "admin.audit.read",
@@ -149,6 +152,8 @@ function applyPermissions() {
     ["#issue-reset", "admin.users.write"],
     ["#revoke-user-sessions", "admin.users.write"],
     ["#reset-user-mfa", "admin.users.write"],
+    ["#new-identity-source", "admin.identity_sources.write"],
+    ["#identity-source-form button[type='submit']", "admin.identity_sources.write"],
     ["#new-client", "admin.clients.write"],
     ["#role-form", "admin.access.write"],
     ["#permission-form", "admin.access.write"],
@@ -169,12 +174,17 @@ function applyPermissions() {
   for (const field of clientForm.elements) {
     field.disabled = clientFieldsReadOnly;
   }
+  const sourceFieldsReadOnly = !can("admin.identity_sources.write");
+  for (const field of identitySourceForm.elements) {
+    if (field.type !== "hidden") field.disabled = sourceFieldsReadOnly;
+  }
 }
 
 function activateSection(name) {
-  const available = new Set(["overview", "users", "clients", "access", "audit", "operations"]);
+  const available = new Set(["overview", "users", "identity-sources", "clients", "access", "audit", "operations"]);
   const required = {
     users: "admin.users.read",
+    "identity-sources": "admin.identity_sources.read",
     clients: "admin.clients.read",
     access: "admin.access.read",
     audit: "admin.audit.read",
@@ -205,7 +215,13 @@ function refreshSection(name) {
       break;
     case "clients":
       if (!can("admin.clients.read")) return;
-      task = loadClients();
+      task = can("admin.identity_sources.read")
+        ? Promise.all([loadClients(), loadIdentitySources()])
+        : loadClients();
+      break;
+    case "identity-sources":
+      if (!can("admin.identity_sources.read")) return;
+      task = loadIdentitySources();
       break;
     case "access": {
       if (!can("admin.access.read")) return;
@@ -232,6 +248,7 @@ function refreshSection(name) {
 
 function clearConsole() {
   state.clients = [];
+  state.identitySources = [];
   state.users = [];
   state.allUsers = [];
   state.keys = [];
@@ -240,9 +257,11 @@ function clearConsole() {
   document.querySelector("#metric-users").textContent = "—";
   document.querySelector("#metric-clients").textContent = "—";
   document.querySelector("#metric-active-clients").textContent = "—";
+  document.querySelector("#metric-sources").textContent = "—";
   document.querySelector("#metric-keys").textContent = "—";
   document.querySelector("#user-rows").replaceChildren(emptyRow(5, "当前角色无权读取用户"));
   document.querySelector("#client-rows").replaceChildren(emptyRow(5, "当前角色无权读取接入系统"));
+  document.querySelector("#identity-source-rows").replaceChildren(emptyRow(5, "当前角色无权读取身份源"));
   document.querySelector("#audit-rows").replaceChildren(emptyRow(5, "当前角色无权读取审计日志"));
   document.querySelector("#signing-key-list").replaceChildren(element("p", { className: "empty", text: "当前角色无权读取签名密钥" }));
 }
@@ -253,6 +272,7 @@ async function refreshAll() {
     const tasks = [];
     if (can("admin.users.read")) tasks.push(loadUsers(), loadAllUsers());
     if (can("admin.clients.read")) tasks.push(loadClients());
+    if (can("admin.identity_sources.read")) tasks.push(loadIdentitySources());
     if (can("admin.security.read")) tasks.push(loadKeys());
     if (can("admin.audit.read")) tasks.push(loadAudit());
     if (can("admin.roles.read")) tasks.push(loadAdminRoleDefinitions());
@@ -506,6 +526,229 @@ document.querySelector("#user-admin-role-form").addEventListener("submit", async
   }
 });
 
+async function loadIdentitySources() {
+  const value = await api("/api/v1/admin/identity-sources");
+  state.identitySources = value.items || [];
+  renderIdentitySources();
+  renderClientIdentitySourceOptions();
+  document.querySelector("#metric-sources").textContent = String(
+    state.identitySources.filter((item) => !item.archived_at).length,
+  );
+}
+
+function renderIdentitySources() {
+  const rows = document.querySelector("#identity-source-rows");
+  rows.replaceChildren();
+  if (!state.identitySources.length) rows.append(emptyRow(5, "尚未配置身份源"));
+  for (const source of state.identitySources) {
+    const identity = element("div", { className: "table-primary" }, [
+      element("strong", { text: source.name }),
+      element("small", { text: source.id }),
+    ]);
+    const connection = source.type === "ldap"
+      ? `${source.ldap?.url || "—"} · ${source.ldap?.base_dn || "—"}`
+      : `${source.oidc?.issuer || "—"} · ${source.oidc?.client_id || "—"}`;
+    const kind = source.archived_at ? "archived" : source.enabled ? "active" : "disabled";
+    const label = source.archived_at ? "已归档" : source.enabled ? "启用" : "停用";
+    const actions = element("div", { className: "row-actions" }, [
+      button(source.archived_at ? "查看" : "管理", "edit-identity-source", source.id),
+    ]);
+    rows.append(element("tr", {}, [
+      element("td", {}, [identity]),
+      element("td", { text: source.type.toUpperCase() }),
+      element("td", { text: connection }),
+      element("td", {}, [
+        statusBadge(label, kind),
+        source.secret_configured
+          ? statusBadge("凭据已配置", "active")
+          : statusBadge("匿名/无凭据", "archived"),
+      ]),
+      element("td", {}, [actions]),
+    ]));
+  }
+}
+
+function syncIdentitySourceType(forceDisabled = false) {
+  const selectedType = identitySourceForm.elements.type.value;
+  for (const panel of identitySourceForm.querySelectorAll("[data-source-config]")) {
+    const active = panel.dataset.sourceConfig === selectedType;
+    panel.classList.toggle("hidden", !active);
+    for (const field of panel.querySelectorAll("input,select,textarea")) {
+      field.disabled = !active || forceDisabled || !can("admin.identity_sources.write");
+    }
+  }
+}
+
+function resetIdentitySourceForm() {
+  identitySourceForm.reset();
+  identitySourceForm.elements.existing_id.value = "";
+  identitySourceForm.elements.id.readOnly = false;
+  identitySourceForm.elements.type.disabled = !can("admin.identity_sources.write");
+  identitySourceForm.elements.enabled.checked = true;
+  identitySourceForm.elements.oidc_scopes.value = "openid profile email";
+  identitySourceForm.elements.ldap_user_filter.value = "(uid={username})";
+  identitySourceForm.elements.ldap_username_attribute.value = "uid";
+  identitySourceForm.elements.ldap_display_name_attribute.value = "displayName";
+  identitySourceForm.elements.ldap_email_attribute.value = "mail";
+  identitySourceForm.dataset.archived = "false";
+  document.querySelector("#identity-source-editor-title").textContent = "新增身份源";
+  document.querySelector("#identity-source-form-status").textContent = "";
+  document.querySelector("#probe-identity-source").classList.add("hidden");
+  document.querySelector("#archive-identity-source").classList.add("hidden");
+  syncIdentitySourceType();
+}
+
+function openNewIdentitySource() {
+  resetIdentitySourceForm();
+  document.querySelector("#identity-source-editor").classList.remove("hidden");
+  document.querySelector("#identity-source-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openIdentitySource(source) {
+  resetIdentitySourceForm();
+  identitySourceForm.elements.existing_id.value = source.id;
+  identitySourceForm.elements.id.value = source.id;
+  identitySourceForm.elements.id.readOnly = true;
+  identitySourceForm.elements.name.value = source.name;
+  identitySourceForm.elements.type.value = source.type;
+  identitySourceForm.elements.type.disabled = true;
+  identitySourceForm.elements.enabled.checked = Boolean(source.enabled);
+  if (source.type === "oidc") {
+    identitySourceForm.elements.oidc_issuer.value = source.oidc?.issuer || "";
+    identitySourceForm.elements.oidc_client_id.value = source.oidc?.client_id || "";
+    identitySourceForm.elements.oidc_client_secret.value = "";
+    identitySourceForm.elements.oidc_scopes.value = (source.oidc?.scopes || []).join(" ");
+  } else {
+    identitySourceForm.elements.ldap_url.value = source.ldap?.url || "";
+    identitySourceForm.elements.ldap_start_tls.checked = Boolean(source.ldap?.start_tls);
+    identitySourceForm.elements.ldap_base_dn.value = source.ldap?.base_dn || "";
+    identitySourceForm.elements.ldap_bind_dn.value = source.ldap?.bind_dn || "";
+    identitySourceForm.elements.ldap_bind_password.value = "";
+    identitySourceForm.elements.ldap_user_filter.value = source.ldap?.user_filter || "(uid={username})";
+    identitySourceForm.elements.ldap_username_attribute.value = source.ldap?.username_attribute || "uid";
+    identitySourceForm.elements.ldap_display_name_attribute.value = source.ldap?.display_name_attribute || "displayName";
+    identitySourceForm.elements.ldap_email_attribute.value = source.ldap?.email_attribute || "mail";
+  }
+  const archived = Boolean(source.archived_at);
+  identitySourceForm.dataset.archived = String(archived);
+  for (const field of identitySourceForm.elements) {
+    if (field.type !== "hidden") field.disabled = archived || !can("admin.identity_sources.write");
+  }
+  identitySourceForm.elements.id.disabled = false;
+  identitySourceForm.elements.id.readOnly = true;
+  syncIdentitySourceType(archived);
+  document.querySelector("#identity-source-editor-title").textContent = `${source.name} · ${source.id}`;
+  document.querySelector("#probe-identity-source").classList.toggle(
+    "hidden",
+    archived || !can("admin.identity_sources.write"),
+  );
+  document.querySelector("#archive-identity-source").classList.toggle(
+    "hidden",
+    archived || !can("admin.identity_sources.write"),
+  );
+  document.querySelector("#identity-source-editor").classList.remove("hidden");
+  document.querySelector("#identity-source-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.querySelector("#new-identity-source").addEventListener("click", openNewIdentitySource);
+document.querySelector('[data-action="close-identity-source"]').addEventListener("click", () => {
+  document.querySelector("#identity-source-editor").classList.add("hidden");
+});
+identitySourceForm.elements.type.addEventListener("change", () => syncIdentitySourceType());
+
+identitySourceForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = new FormData(identitySourceForm);
+  const sourceID = data.get("existing_id");
+  const type = sourceID
+    ? state.identitySources.find((item) => item.id === sourceID)?.type
+    : data.get("type");
+  const payload = {
+    name: data.get("name"),
+    enabled: data.has("enabled"),
+  };
+  if (!sourceID) {
+    payload.id = data.get("id");
+    payload.type = type;
+  }
+  if (type === "oidc") {
+    payload.oidc = {
+      issuer: data.get("oidc_issuer"),
+      client_id: data.get("oidc_client_id"),
+      client_secret: data.get("oidc_client_secret"),
+      scopes: words(data.get("oidc_scopes")),
+    };
+    if (!sourceID && !payload.oidc.client_secret) {
+      document.querySelector("#identity-source-form-status").textContent = "新建 OIDC 身份源必须填写 Client Secret";
+      return;
+    }
+  } else {
+    payload.clear_secret = data.has("clear_secret");
+    payload.ldap = {
+      url: data.get("ldap_url"),
+      start_tls: data.has("ldap_start_tls"),
+      base_dn: data.get("ldap_base_dn"),
+      bind_dn: data.get("ldap_bind_dn"),
+      bind_password: data.get("ldap_bind_password"),
+      user_filter: data.get("ldap_user_filter"),
+      username_attribute: data.get("ldap_username_attribute"),
+      display_name_attribute: data.get("ldap_display_name_attribute"),
+      email_attribute: data.get("ldap_email_attribute"),
+    };
+  }
+  const status = document.querySelector("#identity-source-form-status");
+  status.textContent = "正在保存…";
+  try {
+    const source = await api(
+      sourceID ? `/api/v1/admin/identity-sources/${sourceID}` : "/api/v1/admin/identity-sources",
+      {
+        method: sourceID ? "PUT" : "POST",
+        body: JSON.stringify(payload),
+      },
+    );
+    status.textContent = "已保存";
+    await loadIdentitySources();
+    openIdentitySource(source);
+    setStatus("身份源已保存。", "success");
+  } catch (error) {
+    status.textContent = error.message;
+  }
+});
+
+document.querySelector("#probe-identity-source").addEventListener("click", async () => {
+  const sourceID = identitySourceForm.elements.existing_id.value;
+  const status = document.querySelector("#identity-source-form-status");
+  status.textContent = "正在检测连接…";
+  try {
+    const result = await api(`/api/v1/admin/identity-sources/${sourceID}/probe`, { method: "POST" });
+    status.textContent = `连接正常 · ${formatDate(result.checked_at)}`;
+    setStatus("身份源连接检测通过。", "success");
+  } catch (error) {
+    status.textContent = error.message;
+    setStatus(error.message, "error");
+  }
+});
+
+document.querySelector("#archive-identity-source").addEventListener("click", async () => {
+  const sourceID = identitySourceForm.elements.existing_id.value;
+  if (!window.confirm(`归档 ${sourceID} 后不能恢复；被接入系统使用时会拒绝归档。确定继续吗？`)) return;
+  try {
+    await api(`/api/v1/admin/identity-sources/${sourceID}`, { method: "DELETE" });
+    document.querySelector("#identity-source-editor").classList.add("hidden");
+    await loadIdentitySources();
+    setStatus("身份源已归档。", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});
+
+document.querySelector("#identity-source-rows").addEventListener("click", (event) => {
+  const target = event.target.closest("[data-action='edit-identity-source']");
+  if (!target) return;
+  const source = state.identitySources.find((item) => item.id === target.dataset.value);
+  if (source) openIdentitySource(source);
+});
+
 async function loadClients() {
   const value = await api("/api/v1/admin/clients");
   state.clients = value.items || [];
@@ -556,6 +799,53 @@ function renderClientSelectors() {
   if (select.value) loadAccessData(select.value).catch((error) => setStatus(error.message, "error"));
 }
 
+function renderClientIdentitySourceOptions(selectedValues) {
+  const target = document.querySelector("#client-identity-source-options");
+  let selected;
+  if (selectedValues !== undefined) {
+    selected = new Set(selectedValues || []);
+  } else {
+    selected = new Set(checkedValues(clientForm, "identity_source_ids"));
+    if (!selected.size && clientForm.elements.id.value) {
+      const current = state.clients.find((item) => item.id === clientForm.elements.id.value);
+      selected = new Set(current?.identity_source_ids || []);
+    }
+  }
+  target.replaceChildren();
+  if (!state.identitySources.length) {
+    target.append(element("p", { className: "empty", text: "尚未配置身份源" }));
+    return;
+  }
+  const readOnly = !can("admin.clients.write");
+  for (const source of state.identitySources) {
+    const input = element("input", {
+      type: "checkbox",
+      name: "identity_source_ids",
+      value: source.id,
+    });
+    input.checked = selected.has(source.id);
+    const unavailable = Boolean(source.archived_at) || !source.enabled;
+    input.disabled = readOnly || (unavailable && !input.checked);
+    const status = source.archived_at ? "已归档" : source.enabled ? "可用" : "已停用";
+    target.append(element("label", { className: "check" }, [
+      input,
+      element("span", {}, [
+        element("strong", { text: `${source.name} · ${source.type.toUpperCase()}` }),
+        element("small", { text: `${source.id} · ${status}` }),
+      ]),
+    ]));
+  }
+}
+
+document.querySelector("#client-identity-source-options").addEventListener("change", (event) => {
+  const input = event.target.closest("input[name='identity_source_ids']");
+  if (!input?.checked) return;
+  const source = state.identitySources.find((item) => item.id === input.value);
+  if (!source) return;
+  const method = clientForm.querySelector(`input[name="login_methods"][value="${source.type}"]`);
+  if (method) method.checked = true;
+});
+
 function syncClientAuthenticationMethod(forceDisabled = false) {
   const applicationType = clientForm.elements.application_type.value;
   const authenticationMethod = clientForm.elements.token_endpoint_auth_method;
@@ -583,6 +873,7 @@ function resetClientForm() {
   setCheckedValues(clientForm, "protocols", ["oauth2.1"]);
   setCheckedValues(clientForm, "grant_types", ["authorization_code", "refresh_token"]);
   setCheckedValues(clientForm, "login_methods", ["password"]);
+  renderClientIdentitySourceOptions([]);
   syncClientAuthenticationMethod();
   document.querySelector("#client-editor-title").textContent = "配置跳转登录";
   document.querySelector("#rotate-client-secret").classList.add("hidden");
@@ -620,6 +911,7 @@ function openClient(client) {
   setCheckedValues(clientForm, "protocols", client.protocols);
   setCheckedValues(clientForm, "grant_types", client.grant_types);
   setCheckedValues(clientForm, "login_methods", client.login_methods);
+  renderClientIdentitySourceOptions(client.identity_source_ids || []);
   const archived = Boolean(client.archived_at);
   for (const field of clientForm.elements) field.disabled = archived || !can("admin.clients.write");
   syncClientAuthenticationMethod(archived);
@@ -655,6 +947,7 @@ clientForm.addEventListener("submit", async (event) => {
     backchannel_logout_uri: data.get("backchannel_logout_uri"),
     backchannel_logout_session_required: data.has("backchannel_logout_session_required"),
     login_methods: data.getAll("login_methods"),
+    identity_source_ids: data.getAll("identity_source_ids"),
     allowed_scopes: words(data.get("allowed_scopes")),
     cas_version: data.get("cas_version"),
     cas_service_urls: lines(data.get("cas_service_urls")),

@@ -20,6 +20,7 @@
     <nav id="console-nav" aria-label="管理功能">
       <a href="#overview" data-section="overview">总览</a>
       <a href="#users" data-section="users">用户管理</a>
+      <a href="#identity-sources" data-section="identity-sources">身份源</a>
       <a href="#clients" data-section="clients">接入系统</a>
       <a href="#access" data-section="access">角色与权限</a>
       <a href="#audit" data-section="audit">审计日志</a>
@@ -48,6 +49,7 @@
         <article class="metric"><span>用户</span><strong id="metric-users">—</strong><small>统一身份目录</small></article>
         <article class="metric"><span>接入系统</span><strong id="metric-clients">—</strong><small>未归档客户端</small></article>
         <article class="metric"><span>启用系统</span><strong id="metric-active-clients">—</strong><small>当前可登录</small></article>
+        <article class="metric"><span>身份源</span><strong id="metric-sources">—</strong><small>LDAP 与外部 OIDC</small></article>
         <article class="metric"><span>签名密钥</span><strong id="metric-keys">—</strong><small>含保留的历史公钥</small></article>
       </div>
       <div class="console-grid two">
@@ -89,6 +91,51 @@
       </div>
     </section>
 
+    <section id="identity-sources" class="console-section hidden">
+      <div class="section-heading"><div><p class="eyebrow">联合身份</p><h2>身份源</h2></div><button id="new-identity-source" type="button">新增身份源</button></div>
+      <p class="muted">统一管理 LDAP 目录与外部 OIDC 身份提供商。凭据使用 Certus 密钥环加密保存，不会通过管理接口返回。</p>
+      <div class="table-wrap"><table><thead><tr><th>身份源</th><th>类型</th><th>连接配置</th><th>状态</th><th></th></tr></thead><tbody id="identity-source-rows"></tbody></table></div>
+
+      <div id="identity-source-editor" class="panel editor hidden">
+        <div class="section-heading"><div><p class="eyebrow">联合身份配置</p><h3 id="identity-source-editor-title">新增身份源</h3></div><button class="icon-button" type="button" data-action="close-identity-source" aria-label="关闭">×</button></div>
+        <form id="identity-source-form" class="form-grid">
+          <input name="existing_id" type="hidden">
+          <label>身份源 ID<input name="id" required pattern="[a-z0-9][a-z0-9_-]{1,62}" placeholder="workforce"></label>
+          <label>显示名称<input name="name" required maxlength="128" placeholder="企业账号"></label>
+          <label>身份源类型<select name="type"><option value="oidc">OIDC</option><option value="ldap">LDAP</option></select></label>
+          <label class="check toggle"><input type="checkbox" name="enabled" checked>允许登录</label>
+
+          <fieldset class="full source-config" data-source-config="oidc">
+            <legend>OIDC 配置</legend>
+            <div class="form-grid nested-grid">
+              <label class="full">Issuer<input name="oidc_issuer" type="url" placeholder="https://id.example.com" required></label>
+              <label>Client ID<input name="oidc_client_id" maxlength="256" required></label>
+              <label>Client Secret<input name="oidc_client_secret" type="password" autocomplete="new-password" placeholder="编辑时留空则保留"></label>
+              <label class="full">Scopes（空格分隔）<input name="oidc_scopes" value="openid profile email" required></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="full source-config hidden" data-source-config="ldap">
+            <legend>LDAP 配置</legend>
+            <div class="form-grid nested-grid">
+              <label class="full">LDAP URL<input name="ldap_url" placeholder="ldaps://directory.example.com" required></label>
+              <label class="check"><input type="checkbox" name="ldap_start_tls">使用 StartTLS（仅 ldap://）</label>
+              <label>Base DN<input name="ldap_base_dn" placeholder="ou=people,dc=example,dc=com" required></label>
+              <label>Bind DN<input name="ldap_bind_dn" placeholder="cn=reader,dc=example,dc=com"></label>
+              <label>Bind Password<input name="ldap_bind_password" type="password" autocomplete="new-password" placeholder="编辑时留空则保留"></label>
+              <label class="full">用户过滤器<input name="ldap_user_filter" value="(uid={username})" required></label>
+              <label>用户名属性<input name="ldap_username_attribute" value="uid" required></label>
+              <label>显示名属性<input name="ldap_display_name_attribute" value="displayName" required></label>
+              <label>邮箱属性<input name="ldap_email_attribute" value="mail" required></label>
+              <label class="check"><input type="checkbox" name="clear_secret">清除已保存的 Bind Password（仅匿名绑定）</label>
+            </div>
+          </fieldset>
+
+          <div class="full actions"><button type="submit">保存身份源</button><button id="probe-identity-source" class="secondary hidden" type="button">检测连接</button><button id="archive-identity-source" class="danger hidden" type="button">归档身份源</button><span id="identity-source-form-status" role="status" aria-live="polite"></span></div>
+        </form>
+      </div>
+    </section>
+
     <section id="clients" class="console-section hidden">
       <div class="section-heading"><div><p class="eyebrow">协议接入</p><h2>接入系统</h2></div><button id="new-client" type="button">配置新系统</button></div>
       <div class="table-wrap"><table><thead><tr><th>系统</th><th>类型</th><th>协议</th><th>状态</th><th></th></tr></thead><tbody id="client-rows"></tbody></table></div>
@@ -109,6 +156,7 @@
           <label class="full">OIDC 后端单点登出地址<input name="backchannel_logout_uri" type="url" placeholder="https://finance.example.com/oidc/backchannel-logout"></label>
           <label class="check full"><input type="checkbox" name="backchannel_logout_session_required">后端单点登出必须携带 sid 会话标识</label>
           <fieldset class="full"><legend>允许的登录方式</legend><label class="check"><input type="checkbox" name="login_methods" value="password" checked>账号密码</label><label class="check"><input type="checkbox" name="login_methods" value="ldap">企业 LDAP</label><label class="check"><input type="checkbox" name="login_methods" value="oidc">外部身份提供商</label></fieldset>
+          <fieldset class="full"><legend>绑定身份源</legend><p class="muted">选中后，该系统只能使用这些具体身份源；未选择时继续使用兼容的全局环境变量身份源。</p><div id="client-identity-source-options" class="check-list"><p class="empty">尚未配置身份源</p></div></fieldset>
           <label>CAS 版本<select name="cas_version"><option value="3.0">CAS 3.0</option><option value="2.0">CAS 2.0</option><option value="1.0">CAS 1.0</option></select></label>
           <label class="check toggle"><input type="checkbox" name="enabled" checked>允许登录</label>
           <label class="full">CAS Service URL，每行一个<textarea name="cas_service_urls" rows="3" placeholder="https://legacy.example.com/login/cas"></textarea></label>
