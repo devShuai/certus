@@ -16,9 +16,9 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - 区分存活与依赖就绪的健康检查、请求 ID 和基础安全响应头
 - 账号密码登录、Argon2id 凭据、失败锁定和安全 Cookie 会话
 - 登录页与认证后的中间落地页
-- 接入系统领域模型、内存仓储与只读查询 API
-- 按接入系统动态展示账号密码、LDAP 和外部 OIDC 登录方式
-- LDAP TLS/StartTLS 登录与外部身份自动映射
+- 接入系统完整生命周期、一次性密钥展示、接入参数生成与软归档
+- 动态管理 LDAP/OIDC 身份源，并按接入系统绑定和展示允许的登录方式
+- LDAP TLS/StartTLS 登录、外部身份自动映射、最近登录信息与安全解绑
 - 外部 OIDC Discovery、授权码 + PKCE、state/nonce 校验与账号自动建档
 - OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
 - OAuth/OIDC 用户授权同意、Scope 扩权确认、持久授权复用与用户自助撤销
@@ -81,9 +81,15 @@ go run ./cmd/certus
 - OAuth 授权码和支持轮换检测的刷新令牌族
 - 审计事件
 
-增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT、OIDC 持久化签名密钥、OAuth 用户授权记录、用户令牌的登录会话关联，以及管理员角色授权。升级到会话关联迁移时会撤销无法安全回填会话标识的历史用户令牌，客户端凭据令牌不受影响。
+增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT、OIDC 持久化签名密钥、OAuth 用户授权记录、用户令牌的登录会话关联、管理员角色授权、动态身份源、客户端身份源绑定及外部身份管理。升级到会话关联迁移时会撤销无法安全回填会话标识的历史用户令牌，客户端凭据令牌不受影响。
 
 迁移文件已嵌入可执行文件，并在 `certus_schema_migrations` 中记录版本与 SHA-256 校验和；已执行的 migration 被修改时，服务会拒绝启动。
+
+### 升级与回滚
+
+生产升级前应备份 PostgreSQL，并确保所有实例都已配置当前及历史密钥环项。迁移在事务中执行，并通过 PostgreSQL advisory lock 保证多实例只应用一次；可以滚动启动新版本，但应先观察首个实例完成迁移和密钥重封装，再继续替换其余实例。
+
+Certus 不自动执行向下迁移。出现应用层问题时可回滚到仍兼容当前数据库结构的旧二进制；若升级包含不可逆的数据语义变化，应从升级前备份恢复到独立数据库后再切换流量。不要修改已经发布并执行过的 migration，应始终新增后续 migration。
 
 ## 统一用户管理
 
@@ -134,6 +140,8 @@ GET  /api/v1/admin/users/{user_id}
 PUT  /api/v1/admin/users/{user_id}
 PUT  /api/v1/admin/users/{user_id}/password
 POST /api/v1/admin/users/{user_id}/password-reset
+GET  /api/v1/admin/users/{user_id}/external-identities
+DELETE /api/v1/admin/users/{user_id}/external-identities/{external_identity_id}
 GET  /api/v1/admin/users/{user_id}/sessions
 DELETE /api/v1/admin/users/{user_id}/sessions
 DELETE /api/v1/admin/users/{user_id}/sessions/{session_id}
@@ -145,6 +153,8 @@ GET  /api/v1/admin/signing-keys
 POST /api/v1/admin/signing-keys/rotate
 POST /api/v1/admin/maintenance/cleanup
 ```
+
+外部身份列表只返回管理所需的来源、Subject、安全化资料和最近登录时间，不返回上游令牌或原始 Claims。解除绑定会撤销该用户的全部登录会话和 OAuth 令牌；若用户既没有密码也没有其他外部身份，接口返回 `409 last_authentication_method`，防止账号失去所有登录方式。
 
 创建用户：
 
@@ -210,7 +220,20 @@ TOTP 使用 RFC 6238 的 30 秒时间步与 HMAC-SHA-1 兼容模式，允许前�
 
 ### LDAP 与外部 OIDC
 
-客户端在 `login_methods` 中选择 `ldap` 或 `oidc` 后，还需要配置对应的全局身份源。LDAP 支持服务账号搜索后以最终用户 DN 绑定：
+推荐在管理控制台的“身份源”中创建 LDAP 或 OIDC 配置，再通过客户端的 `identity_source_ids` 显式绑定允许使用的来源。身份源凭据使用 `CERTUS_SECRET_ENCRYPTION_KEYS` 封装，读取管理接口时只返回 `secret_configured`，不会返回明文。管理 API：
+
+```text
+GET    /api/v1/admin/identity-sources
+POST   /api/v1/admin/identity-sources
+GET    /api/v1/admin/identity-sources/{source_id}
+PUT    /api/v1/admin/identity-sources/{source_id}
+DELETE /api/v1/admin/identity-sources/{source_id}
+POST   /api/v1/admin/identity-sources/{source_id}/probe
+```
+
+探测操作使用 6 秒请求期限，OIDC HTTP 客户端不跟随重定向；OIDC Issuer 必须使用 HTTPS（本机回环开发地址除外），LDAP 可使用 LDAPS 或 StartTLS。已绑定到未归档客户端的身份源不能归档；应先解除所有客户端绑定。
+
+环境变量形式的全局 LDAP/OIDC 配置仍作为兼容入口，仅供没有设置 `identity_source_ids` 的客户端使用。LDAP 支持服务账号搜索后以最终用户 DN 绑定：
 
 ```powershell
 $env:CERTUS_LDAP_URL='ldaps://ldap.example.com:636'
@@ -281,6 +304,9 @@ GET  /api/v1/admin/clients/{client_id}/integration
   "login_methods": [
     "password",
     "ldap"
+  ],
+  "identity_source_ids": [
+    "workforce"
   ],
   "allowed_scopes": [
     "openid",
@@ -364,6 +390,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
 ```
 
 `public` 客户端固定使用 `none` 且不生成密钥；`confidential` 客户端可选择 `client_secret_basic`（默认、推荐）或 `client_secret_post`。所选方式会统一应用于 Token、Device Authorization、Introspection 和 Revocation 端点；同一请求同时提交 Basic 与表单密钥会被拒绝。机密客户端的明文密钥只在创建或轮换响应中出现一次，Certus 只保存 SHA-256 哈希。非本机回环地址的回调必须使用 HTTPS，回调地址在授权时执行精确匹配。
+
+`identity_source_ids` 中的身份源必须存在、启用、未归档，且类型必须与 `login_methods` 中的 `ldap` / `oidc` 对应。配置显式绑定后，登录页和协议回调都只接受这些来源，不能通过构造请求绕过客户端限制。
 
 `PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可停止新登录，并立即撤销该客户端的授权码、访问令牌、刷新令牌和待处理设备授权。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端；历史令牌和授权记录不会物理删除，但令牌会被标记为已撤销，审计引用得以保留。
 
@@ -491,7 +519,7 @@ $env:CERTUS_SIGNING_KEY_ROTATION_INTERVAL='24h' # 设为 0 关闭，不得少于
 $env:CERTUS_SECRET_ENCRYPTION_KEYS='2026-07=<Base64-32字节>,2026-06=<旧密钥>'
 ```
 
-OIDC 私钥和 TOTP 密钥都使用 AES-256-GCM 封装后写入 PostgreSQL。密文的附加认证数据绑定用途、记录标识和主密钥版本，避免跨用途或跨记录替换。服务启动时会把历史明文 OIDC 私钥、旧版 TOTP 密文及旧主密钥密文自动重封装到密钥环首项；升级已有数据库时应先同时配置新旧主密钥及所需的旧版 MFA 密钥，确认所有实例完成启动迁移后再移除旧项。
+OIDC 私钥、TOTP 密钥和动态身份源凭据都使用 AES-256-GCM 封装后写入 PostgreSQL。密文的附加认证数据绑定用途、记录标识和主密钥版本，避免跨用途或跨记录替换。服务启动时会把历史明文 OIDC 私钥、旧版 TOTP 密文、身份源凭据及旧主密钥密文自动重封装到密钥环首项；升级已有数据库时应先同时配置新旧主密钥及所需的旧版 MFA 密钥，确认所有实例完成启动迁移后再移除旧项。
 
 服务默认每 24 小时检查并轮换活动 RS256 密钥，多实例通过 PostgreSQL 事务锁保证只产生一个新活动密钥。`POST /api/v1/admin/signing-keys/rotate` 仍可立即手动轮换；`GET /api/v1/admin/signing-keys` 只返回元数据，不返回私钥。退役公钥在保留期内继续发布到 JWKS，用于验证尚未过期的 ID Token 和登录事务。多实例每 30 秒自动收敛到数据库中的活动密钥；保留期应长于系统允许的最长签名令牌寿命与 JWKS 缓存时间之和。
 
@@ -510,7 +538,7 @@ Windows amd64 / arm64
 macOS   amd64 / arm64
 ```
 
-各平台压缩包、独立 SHA-256 文件和总 `SHA256SUMS` 会保存为 GitHub Actions artifacts。二进制支持查看构建信息：
+各平台压缩包、可直接在下载目录校验的独立 SHA-256 文件和总 `SHA256SUMS` 会保存为 GitHub Actions artifacts。二进制支持查看构建信息：
 
 ```bash
 certus --version
@@ -531,6 +559,8 @@ docker run --rm -p 8080:8080 \
   -e CERTUS_SECRET_ENCRYPTION_KEYS='primary=<Base64 编码的 32 字节随机值>' \
   ghcr.io/devshuai/certus:release
 ```
+
+手动运行若关闭“推送镜像”，工作流仍会生成包含 `linux/amd64` 与 `linux/arm64` manifest 的 `certus-container-image` OCI 归档及校验文件；可使用支持 OCI layout 的容器工具导入或复制。所有发布任务都配置了有限超时，异常构建不会无限占用执行器。
 
 ## 模块边界
 

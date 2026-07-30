@@ -28,6 +28,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17-alpine
@@ -55,7 +56,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Test
-        run: go test ./...
+        run: go test -timeout=5m ./...
 
       - name: Vet
         run: go vet ./...
@@ -64,6 +65,7 @@ jobs:
     name: ${{ matrix.goos }}-${{ matrix.goarch }}
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -150,7 +152,11 @@ jobs:
             tar -C dist -czf "dist/${package}.tar.gz" "${package}"
             artifact="dist/${package}.tar.gz"
           fi
-          sha256sum "${artifact}" > "${artifact}.sha256"
+          artifact_name="$(basename "${artifact}")"
+          (
+            cd dist
+            sha256sum "${artifact_name}" > "${artifact_name}.sha256"
+          )
 
       - name: Upload platform package
         uses: actions/upload-artifact@v7
@@ -167,6 +173,7 @@ jobs:
     name: Bundle binaries
     needs: binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Download platform packages
         uses: actions/download-artifact@v7
@@ -193,6 +200,7 @@ jobs:
     name: Docker linux-amd64-arm64
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -246,12 +254,13 @@ jobs:
             org.opencontainers.image.title=Certus
             org.opencontainers.image.description=Unified authentication center
 
-      - name: Build and optionally push image
+      - name: Build and push image
+        if: github.event_name == 'push' || inputs.publish_image
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' || inputs.publish_image }}
+          push: true
           tags: ${{ steps.image.outputs.tags }}
           labels: ${{ steps.image.outputs.labels }}
           build-args: |
@@ -262,3 +271,40 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
+
+      - name: Build OCI image archive
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish_image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ steps.image.outputs.tags }}
+          labels: ${{ steps.image.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.metadata.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.metadata.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+          outputs: type=oci,dest=/tmp/certus-image.tar
+
+      - name: Checksum OCI image archive
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish_image
+        shell: bash
+        run: |
+          cd /tmp
+          sha256sum certus-image.tar > certus-image.tar.sha256
+
+      - name: Upload OCI image archive
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish_image
+        uses: actions/upload-artifact@v7
+        with:
+          name: certus-container-image
+          path: |
+            /tmp/certus-image.tar
+            /tmp/certus-image.tar.sha256
+          if-no-files-found: error
+          retention-days: 30
