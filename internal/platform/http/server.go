@@ -238,6 +238,8 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.replaceUser)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}/password", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.setUserPassword)))
 	mux.Handle("POST /api/v1/admin/users/{userID}/password-reset", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.issueUserPasswordReset)))
+	mux.Handle("GET /api/v1/admin/users/{userID}/external-identities", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.listUserExternalIdentities)))
+	mux.Handle("DELETE /api/v1/admin/users/{userID}/external-identities/{externalIdentityID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.deleteUserExternalIdentity)))
 	mux.Handle("GET /api/v1/admin/users/{userID}/sessions", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.listAdminUserSessions)))
 	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.revokeAllAdminUserSessions)))
 	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions/{sessionID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.revokeAdminUserSession)))

@@ -81,6 +81,10 @@
         <div id="user-security" class="security-actions hidden">
           <form id="user-password-form"><label>设置新密码<input name="password" type="password" autocomplete="new-password" required minlength="12"></label><button class="secondary" type="submit">设置并撤销会话</button></form>
           <div><button id="issue-reset" class="secondary" type="button">签发一次性重置凭据</button><button id="list-user-sessions" class="secondary" type="button">查看会话</button><button id="revoke-user-sessions" class="danger" type="button">撤销全部会话</button><button id="reset-user-mfa" class="danger" type="button">重置 MFA</button></div>
+          <section id="user-external-identities" class="user-external-identities">
+            <div><strong>外部身份绑定</strong><p class="muted">解除绑定会撤销该用户的全部会话与令牌；系统会保留至少一种可用登录方式。</p></div>
+            <div id="user-external-identity-list" class="compact-list"><p class="empty">正在读取外部身份…</p></div>
+          </section>
           <form id="user-admin-role-form" class="stack hidden">
             <div><strong>Certus 管理员角色</strong><p class="muted">管理员必须启用 MFA，并以 AAL2 会话登录后台。</p></div>
             <div id="user-admin-role-options" class="check-list"></div>

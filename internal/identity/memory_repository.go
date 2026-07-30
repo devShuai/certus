@@ -3,6 +3,7 @@ package identity
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -13,7 +14,7 @@ type MemoryUserRepository struct {
 	mu             sync.RWMutex
 	users          map[string]User
 	credentials    map[string]PasswordCredential
-	external       map[string]string
+	external       map[string]ExternalIdentity
 	passwordResets map[string]PasswordResetToken
 }
 
@@ -21,7 +22,7 @@ func NewMemoryUserRepository(users ...User) *MemoryUserRepository {
 	repository := &MemoryUserRepository{
 		users:          make(map[string]User, len(users)),
 		credentials:    make(map[string]PasswordCredential),
-		external:       make(map[string]string),
+		external:       make(map[string]ExternalIdentity),
 		passwordResets: make(map[string]PasswordResetToken),
 	}
 	for _, user := range users {
@@ -63,17 +64,27 @@ func (r *MemoryUserRepository) ResolveExternalIdentity(_ context.Context, profil
 	defer r.mu.Unlock()
 
 	key := profile.ProviderID + "\x00" + profile.Subject
-	if userID, ok := r.external[key]; ok {
-		user, exists := r.users[userID]
+	if external, ok := r.external[key]; ok {
+		user, exists := r.users[external.UserID]
 		if !exists {
 			return User{}, ErrNotFound
 		}
+		external.Username = strings.TrimSpace(profile.Username)
+		external.DisplayName = strings.TrimSpace(profile.DisplayName)
+		external.Email = cloneEmail(profile.Email)
+		external.EmailTrusted = profile.EmailTrusted
+		external.LastAuthenticatedAt = now.UTC()
+		r.external[key] = external
 		return cloneUser(user), nil
 	}
 	if profile.EmailTrusted && profile.Email != nil {
 		for _, existing := range r.users {
 			if existing.Email != nil && strings.EqualFold(*existing.Email, *profile.Email) {
-				r.external[key] = existing.ID
+				external, err := newExternalIdentity(existing.ID, profile, now)
+				if err != nil {
+					return User{}, err
+				}
+				r.external[key] = external
 				return cloneUser(existing), nil
 			}
 		}
@@ -103,8 +114,72 @@ func (r *MemoryUserRepository) ResolveExternalIdentity(_ context.Context, profil
 		return User{}, ErrConflict
 	}
 	r.users[user.ID] = cloneUser(user)
-	r.external[key] = user.ID
+	external, err := newExternalIdentity(user.ID, profile, now)
+	if err != nil {
+		delete(r.users, user.ID)
+		return User{}, err
+	}
+	r.external[key] = external
 	return cloneUser(user), nil
+}
+
+func (r *MemoryUserRepository) ListExternalIdentities(
+	_ context.Context,
+	userID string,
+) ([]ExternalIdentity, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, exists := r.users[userID]; !exists {
+		return nil, ErrNotFound
+	}
+	result := make([]ExternalIdentity, 0)
+	for _, external := range r.external {
+		if external.UserID == userID {
+			result = append(result, cloneExternalIdentity(external))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	return result, nil
+}
+
+func (r *MemoryUserRepository) DeleteExternalIdentity(
+	_ context.Context,
+	userID, externalIdentityID string,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.users[userID]; !exists {
+		return ErrNotFound
+	}
+	targetKey := ""
+	for key, external := range r.external {
+		if external.ID == externalIdentityID && external.UserID == userID {
+			targetKey = key
+			break
+		}
+	}
+	if targetKey == "" {
+		return ErrExternalIdentityMissing
+	}
+	alternatives := 0
+	if _, exists := r.credentials[userID]; exists {
+		alternatives++
+	}
+	for key, external := range r.external {
+		if key != targetKey && external.UserID == userID {
+			alternatives++
+		}
+	}
+	if alternatives == 0 {
+		return ErrLastAuthentication
+	}
+	delete(r.external, targetKey)
+	return nil
 }
 
 func (r *MemoryUserRepository) FindByUsername(_ context.Context, username string) (User, error) {
@@ -247,4 +322,41 @@ func cloneUser(user User) User {
 		user.Email = &email
 	}
 	return user
+}
+
+func newExternalIdentity(
+	userID string,
+	profile ExternalProfile,
+	now time.Time,
+) (ExternalIdentity, error) {
+	id, err := newUUID()
+	if err != nil {
+		return ExternalIdentity{}, fmt.Errorf("generate external identity ID: %w", err)
+	}
+	now = now.UTC()
+	return ExternalIdentity{
+		ID:                  id,
+		UserID:              userID,
+		ProviderID:          strings.TrimSpace(profile.ProviderID),
+		Subject:             strings.TrimSpace(profile.Subject),
+		Username:            strings.TrimSpace(profile.Username),
+		DisplayName:         strings.TrimSpace(profile.DisplayName),
+		Email:               cloneEmail(profile.Email),
+		EmailTrusted:        profile.EmailTrusted,
+		CreatedAt:           now,
+		LastAuthenticatedAt: now,
+	}, nil
+}
+
+func cloneExternalIdentity(external ExternalIdentity) ExternalIdentity {
+	external.Email = cloneEmail(external.Email)
+	return external
+}
+
+func cloneEmail(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }

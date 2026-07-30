@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,12 +108,13 @@ func (r *UserRepository) ResolveExternalIdentity(ctx context.Context, profile id
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	lockKey := profile.ProviderID + "\x00" + profile.Subject
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+	lockID := advisoryLockID("external-identity", profile.ProviderID, profile.Subject)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID); err != nil {
 		return identity.User{}, fmt.Errorf("lock external identity: %w", err)
 	}
 	if profile.EmailTrusted && profile.Email != nil {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(lower($1)))`, *profile.Email); err != nil {
+		emailLockID := advisoryLockID("external-identity-email", strings.ToLower(*profile.Email))
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, emailLockID); err != nil {
 			return identity.User{}, fmt.Errorf("lock external identity email: %w", err)
 		}
 	}
@@ -126,9 +129,10 @@ func (r *UserRepository) ResolveExternalIdentity(ctx context.Context, profile id
 	if err == nil {
 		if _, err := tx.Exec(ctx, `
 			UPDATE external_identities
-			SET profile = $3
+			SET profile = $3,
+			    updated_at = $4
 			WHERE provider_id = $1 AND provider_subject = $2`,
-			profile.ProviderID, profile.Subject, profileJSON,
+			profile.ProviderID, profile.Subject, profileJSON, now.UTC(),
 		); err != nil {
 			return identity.User{}, fmt.Errorf("update external identity profile: %w", err)
 		}
@@ -202,13 +206,137 @@ func insertExternalUser(ctx context.Context, tx pgx.Tx, user identity.User) (ide
 
 func insertExternalIdentity(ctx context.Context, tx pgx.Tx, userID string, profile identity.ExternalProfile, encoded []byte, now time.Time) error {
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO external_identities (user_id, provider_id, provider_subject, profile, created_at)
-		VALUES ($1, $2, $3, $4, $5)`,
+		INSERT INTO external_identities (
+			user_id, provider_id, provider_subject, profile, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $5)`,
 		userID, profile.ProviderID, profile.Subject, encoded, now.UTC(),
 	); err != nil {
 		return fmt.Errorf("link external identity: %w", err)
 	}
 	return nil
+}
+
+func (r *UserRepository) ListExternalIdentities(
+	ctx context.Context,
+	userID string,
+) ([]identity.ExternalIdentity, error) {
+	if _, err := r.Find(ctx, userID); err != nil {
+		return nil, err
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id::text, user_id::text, provider_id, provider_subject,
+		       profile, created_at, updated_at
+		FROM external_identities
+		WHERE user_id = $1
+		ORDER BY created_at, id`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list external identities: %w", err)
+	}
+	defer rows.Close()
+	result := make([]identity.ExternalIdentity, 0)
+	for rows.Next() {
+		var external identity.ExternalIdentity
+		var encoded []byte
+		if err := rows.Scan(
+			&external.ID,
+			&external.UserID,
+			&external.ProviderID,
+			&external.Subject,
+			&encoded,
+			&external.CreatedAt,
+			&external.LastAuthenticatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan external identity: %w", err)
+		}
+		var profile identity.ExternalProfile
+		if err := json.Unmarshal(encoded, &profile); err != nil {
+			return nil, fmt.Errorf("decode external identity profile: %w", err)
+		}
+		external.Username = profile.Username
+		external.DisplayName = profile.DisplayName
+		external.Email = profile.Email
+		external.EmailTrusted = profile.EmailTrusted
+		result = append(result, external)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate external identities: %w", err)
+	}
+	return result, nil
+}
+
+func (r *UserRepository) DeleteExternalIdentity(
+	ctx context.Context,
+	userID, externalIdentityID string,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin external identity deletion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var providerID, subject string
+	err = tx.QueryRow(ctx, `
+		SELECT provider_id, provider_subject
+		FROM external_identities
+		WHERE id = $1 AND user_id = $2`,
+		externalIdentityID,
+		userID,
+	).Scan(&providerID, &subject)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identity.ErrExternalIdentityMissing
+	}
+	if err != nil {
+		return fmt.Errorf("find external identity for deletion: %w", err)
+	}
+	lockID := advisoryLockID("external-identity", providerID, subject)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID); err != nil {
+		return fmt.Errorf("lock external identity for deletion: %w", err)
+	}
+	var lockedUser int
+	err = tx.QueryRow(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&lockedUser)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identity.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock external identity user: %w", err)
+	}
+	var hasPassword bool
+	var identityCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT
+			EXISTS (SELECT 1 FROM user_password_credentials WHERE user_id = $1),
+			(SELECT count(*) FROM external_identities WHERE user_id = $1)`,
+		userID,
+	).Scan(&hasPassword, &identityCount); err != nil {
+		return fmt.Errorf("check remaining authentication methods: %w", err)
+	}
+	if !hasPassword && identityCount <= 1 {
+		return identity.ErrLastAuthentication
+	}
+	command, err := tx.Exec(ctx, `
+		DELETE FROM external_identities
+		WHERE id = $1 AND user_id = $2`,
+		externalIdentityID,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete external identity: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return identity.ErrExternalIdentityMissing
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit external identity deletion: %w", err)
+	}
+	return nil
+}
+
+func advisoryLockID(namespace string, values ...string) int64 {
+	value := namespace + "\x00" + strings.Join(values, "\x00")
+	sum := sha256.Sum256([]byte(value))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
 }
 
 func (r *UserRepository) Create(ctx context.Context, user identity.User) (identity.User, error) {

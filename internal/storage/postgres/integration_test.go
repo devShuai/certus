@@ -172,6 +172,37 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if authenticated, err := passwords.Authenticate(ctx, user.Username, "integration-password-123"); err != nil || authenticated.ID != user.ID {
 		t.Fatalf("password repository round trip failed: %#v %v", authenticated, err)
 	}
+	externalUser, err := users.ResolveExternalIdentity(ctx, identity.ExternalProfile{
+		ProviderID:  "identity-source:workforce",
+		Subject:     "integration-external-user",
+		Username:    "external-user",
+		DisplayName: "External User",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalIdentities, err := users.ListExternalIdentities(ctx, externalUser.ID)
+	if err != nil || len(externalIdentities) != 1 ||
+		externalIdentities[0].ProviderID != "identity-source:workforce" {
+		t.Fatalf("external identity round trip failed: %#v %v", externalIdentities, err)
+	}
+	if err := users.DeleteExternalIdentity(
+		ctx,
+		externalUser.ID,
+		externalIdentities[0].ID,
+	); !errors.Is(err, identity.ErrLastAuthentication) {
+		t.Fatalf("PostgreSQL removed last authentication method: %v", err)
+	}
+	if err := users.SetPassword(ctx, externalUser.ID, "integration-test-hash", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.DeleteExternalIdentity(ctx, externalUser.ID, externalIdentities[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	externalIdentities, err = users.ListExternalIdentities(ctx, externalUser.ID)
+	if err != nil || len(externalIdentities) != 0 {
+		t.Fatalf("PostgreSQL external identity was not removed: %#v %v", externalIdentities, err)
+	}
 
 	sessions := session.NewService(NewSessionRepository(pool), time.Hour)
 	current, rawSession, err := sessions.CreateWithMethods(

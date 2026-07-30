@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("user not found")
-	ErrConflict = errors.New("user already exists")
-	ErrInvalid  = errors.New("invalid user")
+	ErrNotFound                = errors.New("user not found")
+	ErrConflict                = errors.New("user already exists")
+	ErrInvalid                 = errors.New("invalid user")
+	ErrExternalIdentityMissing = errors.New("external identity not found")
+	ErrLastAuthentication      = errors.New("cannot remove the last authentication method")
 )
 
 type UserStatus string
@@ -83,6 +85,21 @@ type ExternalProfile struct {
 
 type ExternalIdentityRepository interface {
 	ResolveExternalIdentity(context.Context, ExternalProfile, time.Time) (User, error)
+	ListExternalIdentities(context.Context, string) ([]ExternalIdentity, error)
+	DeleteExternalIdentity(context.Context, string, string) error
+}
+
+type ExternalIdentity struct {
+	ID                  string    `json:"id"`
+	UserID              string    `json:"user_id"`
+	ProviderID          string    `json:"provider_id"`
+	Subject             string    `json:"subject"`
+	Username            string    `json:"username"`
+	DisplayName         string    `json:"display_name"`
+	Email               *string   `json:"email,omitempty"`
+	EmailTrusted        bool      `json:"email_trusted"`
+	CreatedAt           time.Time `json:"created_at"`
+	LastAuthenticatedAt time.Time `json:"last_authenticated_at"`
 }
 
 var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,63}$`)

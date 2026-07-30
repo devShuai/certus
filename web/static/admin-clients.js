@@ -15,6 +15,7 @@ const state = {
   roles: [],
   permissions: [],
   userRoleAssignments: [],
+  userExternalIdentities: [],
   userOffset: 0,
   userTotal: 0,
   auditOffset: 0,
@@ -396,6 +397,8 @@ function openNewUser() {
   document.querySelector("#user-editor-title").textContent = "新建用户";
   document.querySelector("#user-security").classList.add("hidden");
   document.querySelector("#user-admin-role-form").classList.add("hidden");
+  state.userExternalIdentities = [];
+  renderUserExternalIdentities();
   document.querySelector("#user-security-output").classList.add("hidden");
   document.querySelector("#user-editor").classList.remove("hidden");
   document.querySelector("#user-editor").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -415,7 +418,10 @@ function openUser(user) {
   document.querySelector("#user-security-output").classList.add("hidden");
   document.querySelector("#user-editor").classList.remove("hidden");
   document.querySelector("#user-editor").scrollIntoView({ behavior: "smooth", block: "start" });
-  loadUserAdminRoles(user.id).catch((error) => setStatus(error.message, "error"));
+  Promise.all([
+    loadUserAdminRoles(user.id),
+    loadUserExternalIdentities(user.id),
+  ]).catch((error) => setStatus(error.message, "error"));
 }
 
 document.querySelector("#new-user").addEventListener("click", openNewUser);
@@ -503,6 +509,71 @@ document.querySelector("#reset-user-mfa").addEventListener("click", async () => 
     await api(`/api/v1/admin/users/${userForm.elements.user_id.value}/mfa`, { method: "DELETE" });
     showUserSecurity("MFA 已重置，用户全部会话已撤销。");
     setStatus("用户 MFA 已重置。", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});
+
+function externalIdentityProviderLabel(providerID) {
+  if (providerID.startsWith("identity-source:")) {
+    const sourceID = providerID.slice("identity-source:".length);
+    const source = state.identitySources.find((item) => item.id === sourceID);
+    return source ? `${source.name}（${source.type.toUpperCase()}）` : sourceID;
+  }
+  if (providerID === "ldap") return "LDAP（旧版全局配置）";
+  if (providerID.startsWith("oidc:")) return "OIDC（旧版全局配置）";
+  return providerID;
+}
+
+function renderUserExternalIdentities() {
+  const list = document.querySelector("#user-external-identity-list");
+  list.replaceChildren();
+  if (!state.userExternalIdentities.length) {
+    list.append(element("p", { className: "empty", text: "该用户尚未绑定外部身份" }));
+    return;
+  }
+  for (const identity of state.userExternalIdentities) {
+    const provider = externalIdentityProviderLabel(identity.provider_id);
+    const primary = identity.display_name || identity.username || identity.subject;
+    const metadata = [
+      identity.username || identity.subject,
+      identity.email || "",
+      `最近登录 ${formatDate(identity.last_authenticated_at)}`,
+    ].filter(Boolean).join(" · ");
+    const details = element("div", { className: "external-identity-details" }, [
+      element("strong", { text: primary }),
+      element("small", { text: provider }),
+      element("small", { text: metadata }),
+    ]);
+    const trailing = element("div", { className: "row-actions" });
+    if (identity.email_trusted) trailing.append(statusBadge("邮箱可信", "success"));
+    if (can("admin.users.write")) {
+      trailing.append(button("解除绑定", "delete-external-identity", identity.id, "danger"));
+    }
+    list.append(element("div", { className: "compact-item external-identity-item" }, [details, trailing]));
+  }
+}
+
+async function loadUserExternalIdentities(userID) {
+  const value = await api(`/api/v1/admin/users/${userID}/external-identities`);
+  if (userForm.elements.user_id.value !== userID) return;
+  state.userExternalIdentities = value.items || [];
+  renderUserExternalIdentities();
+}
+
+document.querySelector("#user-external-identity-list").addEventListener("click", async (event) => {
+  const target = event.target.closest("[data-action='delete-external-identity']");
+  if (!target) return;
+  const userID = userForm.elements.user_id.value;
+  const identity = state.userExternalIdentities.find((item) => item.id === target.dataset.value);
+  if (!identity) return;
+  const provider = externalIdentityProviderLabel(identity.provider_id);
+  if (!window.confirm(`确定解除“${provider}”的身份绑定吗？该用户的全部会话和令牌将被撤销。`)) return;
+  try {
+    await api(`/api/v1/admin/users/${userID}/external-identities/${identity.id}`, { method: "DELETE" });
+    await loadUserExternalIdentities(userID);
+    showUserSecurity("外部身份已解除绑定，用户全部会话与令牌已撤销。");
+    setStatus("外部身份绑定已解除。", "success");
   } catch (error) {
     setStatus(error.message, "error");
   }
