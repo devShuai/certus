@@ -161,12 +161,13 @@ jobs:
       - name: Upload platform package
         uses: actions/upload-artifact@v7
         with:
-          name: certus-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: certus-binary-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             dist/*.zip
             dist/*.tar.gz
             dist/*.sha256
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
   binary-bundle:
@@ -178,7 +179,7 @@ jobs:
       - name: Download platform packages
         uses: actions/download-artifact@v7
         with:
-          pattern: certus-*
+          pattern: certus-binary-*
           path: dist
           merge-multiple: true
 
@@ -194,6 +195,7 @@ jobs:
           name: certus-server-binaries
           path: dist
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
   docker:
@@ -307,4 +309,5 @@ jobs:
             /tmp/certus-image.tar
             /tmp/certus-image.tar.sha256
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
