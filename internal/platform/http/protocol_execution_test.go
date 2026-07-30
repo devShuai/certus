@@ -292,6 +292,101 @@ func TestCASProxyGrantingAndProxyTicketExecution(t *testing.T) {
 	}
 }
 
+func TestOIDCAuthenticationRequestPrompts(t *testing.T) {
+	handler := newProtocolTestHandler(t, "https://service.example.com")
+
+	silentBrowser := newTestBrowser(handler)
+	silentQuery := oidcAuthorizationQuery("silent-state")
+	silentQuery.Set("prompt", "none")
+	silent := silentBrowser.request(t, http.MethodGet, "/oauth2/authorize?"+silentQuery.Encode(), "", "")
+	if silent.Code != http.StatusFound {
+		t.Fatalf("silent authorize: %d %s", silent.Code, silent.Body.String())
+	}
+	silentCallback, err := url.Parse(silent.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if silentCallback.Host != "app.example.com" ||
+		silentCallback.Query().Get("error") != "login_required" ||
+		silentCallback.Query().Get("state") != "silent-state" {
+		t.Fatalf("unexpected silent authorization response: %s", silentCallback.String())
+	}
+
+	browser := newTestBrowser(handler)
+	browser.login(t, "/portal")
+	freshQuery := oidcAuthorizationQuery("fresh-state")
+	freshQuery.Set("prompt", "none")
+	freshQuery.Set("max_age", "300")
+	fresh := browser.request(t, http.MethodGet, "/oauth2/authorize?"+freshQuery.Encode(), "", "")
+	freshCallback, err := url.Parse(fresh.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Code != http.StatusFound || freshCallback.Query().Get("code") == "" {
+		t.Fatalf("fresh silent authorize: %d %s", fresh.Code, fresh.Header().Get("Location"))
+	}
+
+	loginQuery := oidcAuthorizationQuery("login-state")
+	loginQuery.Set("prompt", "login")
+	forced := browser.request(t, http.MethodGet, "/oauth2/authorize?"+loginQuery.Encode(), "", "")
+	loginLocation, err := url.Parse(forced.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forced.Code != http.StatusFound || loginLocation.Path != "/login" {
+		t.Fatalf("forced authorize did not request login: %d %s", forced.Code, forced.Header().Get("Location"))
+	}
+	returnTo := loginLocation.Query().Get("continue")
+	if returnTo == "" || browser.cookies[oauthReauthCookieName] == nil {
+		t.Fatalf("missing signed reauthentication transaction: %s", forced.Header().Get("Location"))
+	}
+	browser.login(t, returnTo)
+	completed := browser.request(t, http.MethodGet, returnTo, "", "")
+	completedCallback, err := url.Parse(completed.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Code != http.StatusFound || completedCallback.Query().Get("code") == "" ||
+		completedCallback.Query().Get("state") != "login-state" {
+		t.Fatalf("forced authorize did not complete: %d %s", completed.Code, completed.Header().Get("Location"))
+	}
+
+	replayed := browser.request(t, http.MethodGet, returnTo, "", "")
+	replayLocation, err := url.Parse(replayed.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Code != http.StatusFound || replayLocation.Path != "/login" {
+		t.Fatalf("reauthentication transaction was reusable: %d %s", replayed.Code, replayed.Header().Get("Location"))
+	}
+
+	maxAgeQuery := oidcAuthorizationQuery("max-age-state")
+	maxAgeQuery.Set("max_age", "0")
+	maxAge := browser.request(t, http.MethodGet, "/oauth2/authorize?"+maxAgeQuery.Encode(), "", "")
+	maxAgeLocation, err := url.Parse(maxAge.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxAge.Code != http.StatusFound || maxAgeLocation.Path != "/login" {
+		t.Fatalf("max_age=0 did not request login: %d %s", maxAge.Code, maxAge.Header().Get("Location"))
+	}
+}
+
+func oidcAuthorizationQuery(state string) url.Values {
+	verifier := strings.Repeat("v", 64)
+	sum := sha256.Sum256([]byte(verifier))
+	return url.Values{
+		"client_id":             {"integration"},
+		"redirect_uri":          {"https://app.example.com/callback"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+		"state":                 {state},
+		"nonce":                 {"nonce-" + state},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
+		"code_challenge_method": {"S256"},
+	}
+}
+
 func newProtocolTestHandler(t *testing.T, serviceURL string, outboundClients ...*http.Client) http.Handler {
 	t.Helper()
 	user, err := identity.NewUser(identity.CreateUser{

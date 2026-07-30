@@ -22,7 +22,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - 外部 OIDC Discovery、授权码 + PKCE、state/nonce 校验与账号自动建档
 - OAuth 2.0/2.1 授权码 + PKCE、访问令牌、刷新令牌轮换和客户端凭据
 - RFC 7662 Token Introspection 与 RFC 7009 访问/刷新令牌撤销
-- OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS 和 UserInfo
+- OpenID Connect Discovery、RS256 ID Token、持久化签名密钥、JWKS、UserInfo 与重新认证语义
 - OAuth 设备授权码、浏览器确认和标准轮询错误
 - CAS 1.0/2.0/3.0 Service Ticket 校验、PGT/PT 代理认证、Gateway、Renew 和后端单点登出
 - 可选 PostgreSQL 连接池与内嵌、带校验和的自动迁移
@@ -369,6 +369,8 @@ GET /api/v1/access/users/{user_id}
 - CAS：Gateway、Renew 和单点登出选项
 
 OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开放 OAuth implicit 和 resource owner password grant；OAuth Security BCP 已明确不应使用这些遗留流程。
+
+OIDC 授权请求支持 `prompt=none`、`prompt=login` 与非负整数 `max_age`。静默认证无法完成时，Certus 会将 `login_required` 和原始 `state` 返回到已登记的精确回调地址；强制重新认证使用 5 分钟有效、绑定完整授权请求且完成后即失效的签名事务。授权码签发记录认证时间，后续 ID Token 始终携带 `auth_time`。
 
 ## 运维与密钥轮换
 

@@ -28,6 +28,8 @@ const (
 )
 
 func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	registered, err := s.clients.Find(r.Context(), r.URL.Query().Get("client_id"))
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid_request", "未知的 client_id")
@@ -35,16 +37,45 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	request, err := oauth.ParseAuthorizationRequest(r.URL.Query(), registered)
 	if err != nil {
+		redirectURI := r.URL.Query().Get("redirect_uri")
+		if registered.Enabled && registered.SupportsOAuth() && registered.AllowsRedirectURI(redirectURI) {
+			redirectOAuthAuthorizationError(w, r, redirectURI, r.URL.Query().Get("state"), "invalid_request", err.Error())
+			return
+		}
 		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	current, ok := s.currentSession(r)
-	if !ok {
-		query := url.Values{
-			"continue":  []string{r.URL.RequestURI()},
-			"client_id": []string{registered.ID},
+	now := s.now().UTC()
+	stale := request.MaxAge != nil && authenticationTooOld(now, current.AuthenticatedAt, *request.MaxAge)
+	marker := r.URL.Query().Get("certus_reauth")
+	if marker != "" {
+		if ok && s.validOAuthReauthMarker(r, marker, current.AuthenticatedAt) {
+			s.clearOAuthReauthCookie(w)
+			stale = false
+		} else {
+			if request.HasPrompt("none") {
+				redirectOAuthAuthorizationError(w, r, request.RedirectURI, request.State, "login_required", "End-user authentication is required")
+				return
+			}
+			s.redirectOAuthCredentials(w, r, registered.ID)
+			return
 		}
-		http.Redirect(w, r, "/login?"+query.Encode(), http.StatusFound)
+	} else if request.HasPrompt("none") {
+		if !ok || stale {
+			redirectOAuthAuthorizationError(w, r, request.RedirectURI, request.State, "login_required", "End-user authentication is required")
+			return
+		}
+	} else if !ok || request.HasPrompt("login") || request.MaxAge != nil && *request.MaxAge == 0 || stale {
+		if !ok && !request.HasPrompt("login") && (request.MaxAge == nil || *request.MaxAge > 0) {
+			query := url.Values{
+				"continue":  []string{r.URL.RequestURI()},
+				"client_id": []string{registered.ID},
+			}
+			http.Redirect(w, r, "/login?"+query.Encode(), http.StatusFound)
+			return
+		}
+		s.redirectOAuthCredentials(w, r, registered.ID)
 		return
 	}
 	code, err := security.RandomToken(32)
@@ -52,7 +83,6 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "生成授权码失败")
 		return
 	}
-	now := s.now().UTC()
 	if err := s.oauth.SaveAuthorizationCode(r.Context(), oauth.AuthorizationCode{
 		Hash:            security.HashToken(code),
 		ClientID:        request.ClientID,
@@ -76,6 +106,118 @@ func (s *server) authorize(w http.ResponseWriter, r *http.Request) {
 	query := target.Query()
 	query.Set("code", code)
 	query.Set("state", request.State)
+	target.RawQuery = query.Encode()
+	http.Redirect(w, r, target.String(), http.StatusFound)
+}
+
+func (s *server) redirectOAuthCredentials(w http.ResponseWriter, r *http.Request, clientID string) {
+	query := r.URL.Query()
+	query.Del("certus_reauth")
+	now := s.now().UTC()
+	marker, err := s.signer.Sign(map[string]any{
+		"purpose":     "oauth_reauth",
+		"fingerprint": oauthAuthorizationFingerprint(query),
+		"issued_at":   now.Format(time.RFC3339Nano),
+		"exp":         now.Add(5 * time.Minute).Unix(),
+	})
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建重新认证请求失败")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthReauthCookieName,
+		Value:    marker,
+		Path:     "/oauth2/authorize",
+		MaxAge:   int((5 * time.Minute).Seconds()),
+		HttpOnly: true,
+		Secure:   s.secureCookies(),
+		SameSite: http.SameSiteLaxMode,
+	})
+	query.Set("certus_reauth", marker)
+	returnTo := "/oauth2/authorize?" + query.Encode()
+	loginQuery := url.Values{
+		"continue":  []string{returnTo},
+		"client_id": []string{clientID},
+	}
+	http.Redirect(w, r, "/login?"+loginQuery.Encode(), http.StatusFound)
+}
+
+func (s *server) validOAuthReauthMarker(r *http.Request, marker string, authenticatedAt time.Time) bool {
+	cookie, err := r.Cookie(oauthReauthCookieName)
+	if err != nil || len(cookie.Value) != len(marker) ||
+		subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(marker)) != 1 {
+		return false
+	}
+	claims, err := s.signer.Verify(marker)
+	if err != nil {
+		return false
+	}
+	purpose, _ := claims["purpose"].(string)
+	fingerprint, _ := claims["fingerprint"].(string)
+	issuedAtValue, _ := claims["issued_at"].(string)
+	expiration, _ := claims["exp"].(float64)
+	issuedAt, err := time.Parse(time.RFC3339Nano, issuedAtValue)
+	if err != nil {
+		return false
+	}
+	query := r.URL.Query()
+	query.Del("certus_reauth")
+	now := s.now().UTC()
+	return purpose == "oauth_reauth" &&
+		subtle.ConstantTimeCompare([]byte(fingerprint), []byte(oauthAuthorizationFingerprint(query))) == 1 &&
+		int64(expiration) > now.Unix() &&
+		!issuedAt.After(now.Add(30*time.Second)) &&
+		authenticatedAt.After(issuedAt)
+}
+
+func (s *server) clearOAuthReauthCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthReauthCookieName,
+		Value:    "",
+		Path:     "/oauth2/authorize",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secureCookies(),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func oauthAuthorizationFingerprint(query url.Values) string {
+	clone := make(url.Values, len(query))
+	for key, values := range query {
+		clone[key] = append([]string(nil), values...)
+	}
+	clone.Del("certus_reauth")
+	sum := sha256.Sum256([]byte(clone.Encode()))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func authenticationTooOld(now, authenticatedAt time.Time, maxAge int64) bool {
+	if authenticatedAt.IsZero() {
+		return true
+	}
+	if !authenticatedAt.Before(now) {
+		return false
+	}
+	return now.Unix()-authenticatedAt.Unix() > maxAge
+}
+
+func redirectOAuthAuthorizationError(
+	w http.ResponseWriter,
+	r *http.Request,
+	redirectURI, state, code, description string,
+) {
+	target, err := url.Parse(redirectURI)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, code, description)
+		return
+	}
+	query := target.Query()
+	query.Set("error", code)
+	query.Set("error_description", description)
+	if state != "" {
+		query.Set("state", state)
+	}
 	target.RawQuery = query.Encode()
 	http.Redirect(w, r, target.String(), http.StatusFound)
 }
