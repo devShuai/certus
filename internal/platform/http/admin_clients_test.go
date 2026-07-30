@@ -87,12 +87,8 @@ func TestAdminClientsPage(t *testing.T) {
 
 		handler.ServeHTTP(response, request)
 
-		if response.Code != http.StatusOK ||
-			!strings.Contains(response.Body.String(), "统一认证管理") ||
-			!strings.Contains(response.Body.String(), "用户管理") ||
-			!strings.Contains(response.Body.String(), "角色与权限") ||
-			!strings.Contains(response.Body.String(), "保存并生成接入参数") ||
-			!strings.Contains(response.Body.String(), "/static/admin-clients.js") {
+		if response.Code != http.StatusSeeOther ||
+			!strings.HasPrefix(response.Header().Get("Location"), "/login?continue=") {
 			t.Fatalf("unexpected response for %s: %d %s", path, response.Code, response.Body.String())
 		}
 		if !strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'self'") {

@@ -532,7 +532,7 @@ func validatedReturnTo(value string) string {
 		return ""
 	}
 	switch target.Path {
-	case "/portal", "/account", "/oauth2/authorize", "/cas/login", "/device":
+	case "/portal", "/account", "/admin", "/admin/clients", "/oauth2/authorize", "/cas/login", "/device":
 		return target.String()
 	default:
 		return ""
@@ -550,6 +550,9 @@ func (s *server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "读取用户失败")
+		return
+	}
+	if !s.authorizeSensitiveAdministratorTarget(w, r, userID) {
 		return
 	}
 	var input struct {

@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRFToken}}">
+  <meta name="admin-permissions" content="{{range $index,$permission := .Permissions}}{{if $index}},{{end}}{{$permission}}{{end}}">
   <title>{{.Title}}</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">
   <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
@@ -23,20 +25,22 @@
       <a href="#audit" data-section="audit">审计日志</a>
       <a href="#operations" data-section="operations">安全运维</a>
     </nav>
+    <div class="console-identity">
+      <strong>{{.User.DisplayName}}</strong>
+      <small>{{.User.Username}} · {{range $index,$role := .Roles}}{{if $index}} / {{end}}{{$role}}{{end}}</small>
+    </div>
     <a class="console-back" href="/portal">返回中间落地页 →</a>
   </aside>
 
   <main class="console-main">
     <header class="console-header">
       <div><p class="eyebrow">Certus · 可信身份</p><h1>统一认证管理</h1></div>
-      <form id="admin-session-form" class="token-form">
-        <label for="admin-token">管理员令牌</label>
-        <input id="admin-token" type="password" autocomplete="off" required minlength="32" placeholder="CERTUS_ADMIN_TOKEN">
-        <button type="submit">连接</button>
-        <button id="disconnect-admin" class="secondary" type="button">断开</button>
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button class="secondary" type="submit">退出管理员会话</button>
       </form>
     </header>
-    <div id="global-status" class="console-status" role="status" aria-live="polite">输入管理员令牌以加载数据。</div>
+    <div id="global-status" class="console-status" role="status" aria-live="polite">正在加载授权范围内的管理数据…</div>
 
     <section id="overview" class="console-section">
       <div class="section-heading"><div><p class="eyebrow">运行概况</p><h2>总览</h2></div><button class="secondary" type="button" data-action="refresh-all">刷新</button></div>
@@ -75,6 +79,11 @@
         <div id="user-security" class="security-actions hidden">
           <form id="user-password-form"><label>设置新密码<input name="password" type="password" autocomplete="new-password" required minlength="12"></label><button class="secondary" type="submit">设置并撤销会话</button></form>
           <div><button id="issue-reset" class="secondary" type="button">签发一次性重置凭据</button><button id="list-user-sessions" class="secondary" type="button">查看会话</button><button id="revoke-user-sessions" class="danger" type="button">撤销全部会话</button><button id="reset-user-mfa" class="danger" type="button">重置 MFA</button></div>
+          <form id="user-admin-role-form" class="stack hidden">
+            <div><strong>Certus 管理员角色</strong><p class="muted">管理员必须启用 MFA，并以 AAL2 会话登录后台。</p></div>
+            <div id="user-admin-role-options" class="check-list"></div>
+            <button type="submit">保存管理员角色</button>
+          </form>
           <pre id="user-security-output" class="hidden"></pre>
         </div>
       </div>

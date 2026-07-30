@@ -1,8 +1,6 @@
 package httpserver
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,25 +13,6 @@ import (
 )
 
 const maxRequestBody = 1 << 20
-
-func (s *server) requireAdmin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if s.cfg.AdminToken == "" {
-			writeProblem(w, http.StatusServiceUnavailable, "admin_not_configured", "管理 API 尚未配置")
-			return
-		}
-		supplied := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		expectedHash := sha256.Sum256([]byte(s.cfg.AdminToken))
-		suppliedHash := sha256.Sum256([]byte(supplied))
-		if supplied == "" || subtle.ConstantTimeCompare(expectedHash[:], suppliedHash[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="certus-admin"`)
-			writeProblem(w, http.StatusUnauthorized, "unauthorized", "需要有效的管理员凭据")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
 
 func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	limit, err := queryInt(r, "limit", 20, 1, 100)
@@ -133,6 +112,11 @@ func (s *server) replaceUser(w http.ResponseWriter, r *http.Request) {
 	user, err := identity.Replace(current, input, time.Now())
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid_user", err.Error())
+		return
+	}
+	if current.Status == identity.UserActive &&
+		user.Status != identity.UserActive &&
+		!s.authorizeAdministratorDeactivation(w, r, userID) {
 		return
 	}
 	user, err = s.users.Replace(r.Context(), user)

@@ -24,14 +24,14 @@ func TestAdminUsersRequireToken(t *testing.T) {
 	}
 }
 
-func TestAdminUsersStayClosedWithoutConfiguredToken(t *testing.T) {
+func TestAdminUsersRequireIdentityOrEmergencyToken(t *testing.T) {
 	handler := New(config.Config{Issuer: "https://auth.example.com"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users", nil)
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"admin_not_configured"`) {
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"unauthorized"`) {
 		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
 	}
 }

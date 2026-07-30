@@ -32,9 +32,10 @@ func (s *server) accountPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	s.render(w, "account.html", map[string]string{
-		"Title":     "账户安全 · Certus",
-		"CSRFToken": s.ensureCSRF(w, r),
+	s.render(w, "account.html", map[string]any{
+		"Title":            "账户安全 · Certus",
+		"CSRFToken":        s.ensureCSRF(w, r),
+		"AdminMFARequired": r.URL.Query().Get("admin_mfa") == "required",
 	})
 }
 
@@ -228,6 +229,9 @@ func (s *server) issueUserPasswordReset(w http.ResponseWriter, r *http.Request) 
 		writeProblem(w, http.StatusInternalServerError, "server_error", "读取用户失败")
 		return
 	}
+	if !s.authorizeSensitiveAdministratorTarget(w, r, userID) {
+		return
+	}
 	token, err := s.passwords.IssueReset(r.Context(), userID, 30*time.Minute)
 	if err != nil {
 		s.logger.Error("issue password reset", "error", err)
@@ -309,6 +313,9 @@ func (s *server) revokeAdminUserSession(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if !s.authorizeSensitiveAdministratorTarget(w, r, userID) {
+		return
+	}
 	sessionID := r.PathValue("sessionID")
 	if err := s.sessions.RevokeForUser(r.Context(), userID, sessionID); errors.Is(err, session.ErrNotFound) {
 		writeProblem(w, http.StatusNotFound, "not_found", "会话不存在")
@@ -329,6 +336,9 @@ func (s *server) revokeAdminUserSession(w http.ResponseWriter, r *http.Request) 
 func (s *server) revokeAllAdminUserSessions(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.adminSessionUser(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorizeSensitiveAdministratorTarget(w, r, userID) {
 		return
 	}
 	items, err := s.sessions.ListByUser(r.Context(), userID)

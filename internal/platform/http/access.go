@@ -175,7 +175,8 @@ func (s *server) replaceUserRoles(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_role_grants", err.Error())
 		return
 	}
-	err := s.accessControl.ReplaceUserRoles(r.Context(), userID, input.Roles, "admin-token", now)
+	principal, _ := adminPrincipalFrom(r)
+	err := s.accessControl.ReplaceUserRoles(r.Context(), userID, input.Roles, principal.grantedBy(), now)
 	if errors.Is(err, access.ErrNotFound) {
 		writeProblem(w, http.StatusNotFound, "not_found", "用户或角色不存在")
 		return

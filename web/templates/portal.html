@@ -17,6 +17,7 @@
       {{if .User}}
       <div class="account-menu">
         <span><strong>{{.User.DisplayName}}</strong><small>{{.User.Username}}</small></span>
+        {{if .Administrator}}<a class="button secondary" href="/admin">管理后台</a>{{end}}
         <a class="button secondary" href="/account">账户安全</a>
         <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="secondary" type="submit">退出</button></form>
       </div>

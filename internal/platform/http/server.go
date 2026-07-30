@@ -7,10 +7,12 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"certus/internal/access"
+	"certus/internal/administration"
 	"certus/internal/audit"
 	"certus/internal/cas"
 	"certus/internal/client"
@@ -37,6 +39,7 @@ type server struct {
 	oauth            oauth.Repository
 	cas              cas.Repository
 	accessControl    access.Repository
+	administrators   administration.Repository
 	audit            audit.Repository
 	mfa              *mfa.Service
 	maintenance      *maintenance.Service
@@ -98,6 +101,7 @@ type Dependencies struct {
 	OAuth              oauth.Repository
 	CAS                cas.Repository
 	Access             access.Repository
+	Administration     administration.Repository
 	Audit              audit.Repository
 	MFA                mfa.Repository
 	Maintenance        *maintenance.Service
@@ -121,6 +125,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	}
 	if dependencies.Access == nil {
 		dependencies.Access = access.NewMemoryRepository()
+	}
+	if dependencies.Administration == nil {
+		dependencies.Administration = administration.NewMemoryRepository()
 	}
 	if dependencies.Audit == nil {
 		dependencies.Audit = audit.NewMemoryRepository()
@@ -149,23 +156,24 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		outbound = &configured
 	}
 	s := &server{
-		cfg:           cfg,
-		logger:        logger,
-		templates:     templates,
-		clients:       dependencies.Clients,
-		users:         dependencies.Users,
-		externalUsers: externalUsers,
-		passwords:     identity.NewPasswordService(dependencies.Passwords),
-		sessions:      session.NewService(dependencies.Sessions, 12*time.Hour),
-		oauth:         dependencies.OAuth,
-		cas:           dependencies.CAS,
-		accessControl: dependencies.Access,
-		audit:         dependencies.Audit,
-		mfa:           mfa.NewService(dependencies.MFA, cfg.MFAEncryptionKey, "Certus"),
-		maintenance:   dependencies.Maintenance,
-		signer:        signer,
-		outbound:      outbound,
-		ldap:          federation.NewLDAPAuthenticator(cfg.LDAP),
+		cfg:            cfg,
+		logger:         logger,
+		templates:      templates,
+		clients:        dependencies.Clients,
+		users:          dependencies.Users,
+		externalUsers:  externalUsers,
+		passwords:      identity.NewPasswordService(dependencies.Passwords),
+		sessions:       session.NewService(dependencies.Sessions, 12*time.Hour),
+		oauth:          dependencies.OAuth,
+		cas:            dependencies.CAS,
+		accessControl:  dependencies.Access,
+		administrators: dependencies.Administration,
+		audit:          dependencies.Audit,
+		mfa:            mfa.NewService(dependencies.MFA, cfg.MFAEncryptionKey, "Certus"),
+		maintenance:    dependencies.Maintenance,
+		signer:         signer,
+		outbound:       outbound,
+		ldap:           federation.NewLDAPAuthenticator(cfg.LDAP),
 		externalOIDC: federation.NewOIDCAuthenticator(
 			cfg.ExternalOIDC,
 			cfg.Issuer+"/login/oidc/callback",
@@ -193,35 +201,39 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("GET /admin/clients", s.adminClientsPage)
 	mux.HandleFunc("GET /api/v1/clients", s.listClients)
 	mux.HandleFunc("GET /api/v1/clients/{clientID}", s.getClient)
-	mux.Handle("GET /api/v1/admin/users", s.requireAdmin(http.HandlerFunc(s.listUsers)))
-	mux.Handle("POST /api/v1/admin/users", s.requireAdmin(http.HandlerFunc(s.createUser)))
-	mux.Handle("GET /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.getUser)))
-	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(http.HandlerFunc(s.replaceUser)))
-	mux.Handle("PUT /api/v1/admin/users/{userID}/password", s.requireAdmin(http.HandlerFunc(s.setUserPassword)))
-	mux.Handle("POST /api/v1/admin/users/{userID}/password-reset", s.requireAdmin(http.HandlerFunc(s.issueUserPasswordReset)))
-	mux.Handle("GET /api/v1/admin/users/{userID}/sessions", s.requireAdmin(http.HandlerFunc(s.listAdminUserSessions)))
-	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions", s.requireAdmin(http.HandlerFunc(s.revokeAllAdminUserSessions)))
-	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions/{sessionID}", s.requireAdmin(http.HandlerFunc(s.revokeAdminUserSession)))
-	mux.Handle("DELETE /api/v1/admin/users/{userID}/mfa", s.requireAdmin(http.HandlerFunc(s.resetAdminUserMFA)))
-	mux.Handle("GET /api/v1/admin/audit-events", s.requireAdmin(http.HandlerFunc(s.listAuditEvents)))
-	mux.Handle("GET /api/v1/admin/signing-keys", s.requireAdmin(http.HandlerFunc(s.listSigningKeys)))
-	mux.Handle("POST /api/v1/admin/signing-keys/rotate", s.requireAdmin(http.HandlerFunc(s.rotateSigningKey)))
-	mux.Handle("POST /api/v1/admin/maintenance/cleanup", s.requireAdmin(http.HandlerFunc(s.runMaintenance)))
-	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.listAdminClients)))
-	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(http.HandlerFunc(s.createClient)))
-	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.getAdminClient)))
-	mux.Handle("PUT /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.replaceClient)))
-	mux.Handle("DELETE /api/v1/admin/clients/{clientID}", s.requireAdmin(http.HandlerFunc(s.archiveClient)))
-	mux.Handle("POST /api/v1/admin/clients/{clientID}/secret", s.requireAdmin(http.HandlerFunc(s.rotateClientSecret)))
-	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(http.HandlerFunc(s.getClientIntegration)))
-	mux.Handle("GET /api/v1/admin/clients/{clientID}/roles", s.requireAdmin(http.HandlerFunc(s.listRoles)))
-	mux.Handle("POST /api/v1/admin/clients/{clientID}/roles", s.requireAdmin(http.HandlerFunc(s.createRole)))
-	mux.Handle("GET /api/v1/admin/clients/{clientID}/permissions", s.requireAdmin(http.HandlerFunc(s.listPermissions)))
-	mux.Handle("POST /api/v1/admin/clients/{clientID}/permissions", s.requireAdmin(http.HandlerFunc(s.createPermission)))
-	mux.Handle("GET /api/v1/admin/clients/{clientID}/roles/{roleID}/permissions", s.requireAdmin(http.HandlerFunc(s.listRolePermissions)))
-	mux.Handle("PUT /api/v1/admin/clients/{clientID}/roles/{roleID}/permissions", s.requireAdmin(http.HandlerFunc(s.replaceRolePermissions)))
-	mux.Handle("GET /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.listUserRoles)))
-	mux.Handle("PUT /api/v1/admin/users/{userID}/roles", s.requireAdmin(http.HandlerFunc(s.replaceUserRoles)))
+	mux.Handle("GET /api/v1/admin/me", s.requireAdmin("", http.HandlerFunc(s.adminMe)))
+	mux.Handle("GET /api/v1/admin/roles", s.requireAdmin(administration.PermissionAdminRolesRead, http.HandlerFunc(s.listAdministratorRoleDefinitions)))
+	mux.Handle("GET /api/v1/admin/users", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.listUsers)))
+	mux.Handle("POST /api/v1/admin/users", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.createUser)))
+	mux.Handle("GET /api/v1/admin/users/{userID}", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.getUser)))
+	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.replaceUser)))
+	mux.Handle("PUT /api/v1/admin/users/{userID}/password", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.setUserPassword)))
+	mux.Handle("POST /api/v1/admin/users/{userID}/password-reset", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.issueUserPasswordReset)))
+	mux.Handle("GET /api/v1/admin/users/{userID}/sessions", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.listAdminUserSessions)))
+	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.revokeAllAdminUserSessions)))
+	mux.Handle("DELETE /api/v1/admin/users/{userID}/sessions/{sessionID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.revokeAdminUserSession)))
+	mux.Handle("DELETE /api/v1/admin/users/{userID}/mfa", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.resetAdminUserMFA)))
+	mux.Handle("GET /api/v1/admin/users/{userID}/admin-roles", s.requireAdmin(administration.PermissionAdminRolesRead, http.HandlerFunc(s.listUserAdministratorRoles)))
+	mux.Handle("PUT /api/v1/admin/users/{userID}/admin-roles", s.requireAdmin(administration.PermissionAdminRolesWrite, http.HandlerFunc(s.replaceUserAdministratorRoles)))
+	mux.Handle("GET /api/v1/admin/audit-events", s.requireAdmin(administration.PermissionAuditRead, http.HandlerFunc(s.listAuditEvents)))
+	mux.Handle("GET /api/v1/admin/signing-keys", s.requireAdmin(administration.PermissionSecurityRead, http.HandlerFunc(s.listSigningKeys)))
+	mux.Handle("POST /api/v1/admin/signing-keys/rotate", s.requireAdmin(administration.PermissionSecurityWrite, http.HandlerFunc(s.rotateSigningKey)))
+	mux.Handle("POST /api/v1/admin/maintenance/cleanup", s.requireAdmin(administration.PermissionMaintenanceExecute, http.HandlerFunc(s.runMaintenance)))
+	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.listAdminClients)))
+	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.createClient)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getAdminClient)))
+	mux.Handle("PUT /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.replaceClient)))
+	mux.Handle("DELETE /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.archiveClient)))
+	mux.Handle("POST /api/v1/admin/clients/{clientID}/secret", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.rotateClientSecret)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getClientIntegration)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/roles", s.requireAdmin(administration.PermissionAccessRead, http.HandlerFunc(s.listRoles)))
+	mux.Handle("POST /api/v1/admin/clients/{clientID}/roles", s.requireAdmin(administration.PermissionAccessWrite, http.HandlerFunc(s.createRole)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/permissions", s.requireAdmin(administration.PermissionAccessRead, http.HandlerFunc(s.listPermissions)))
+	mux.Handle("POST /api/v1/admin/clients/{clientID}/permissions", s.requireAdmin(administration.PermissionAccessWrite, http.HandlerFunc(s.createPermission)))
+	mux.Handle("GET /api/v1/admin/clients/{clientID}/roles/{roleID}/permissions", s.requireAdmin(administration.PermissionAccessRead, http.HandlerFunc(s.listRolePermissions)))
+	mux.Handle("PUT /api/v1/admin/clients/{clientID}/roles/{roleID}/permissions", s.requireAdmin(administration.PermissionAccessWrite, http.HandlerFunc(s.replaceRolePermissions)))
+	mux.Handle("GET /api/v1/admin/users/{userID}/roles", s.requireAdmin(administration.PermissionAccessRead, http.HandlerFunc(s.listUserRoles)))
+	mux.Handle("PUT /api/v1/admin/users/{userID}/roles", s.requireAdmin(administration.PermissionAccessWrite, http.HandlerFunc(s.replaceUserRoles)))
 	mux.HandleFunc("GET /api/v1/access/users/{userID}", s.getEffectiveAccess)
 	mux.HandleFunc("GET /api/v1/account/profile", s.getAccountProfile)
 	mux.HandleFunc("GET /api/v1/account/sessions", s.listAccountSessions)
@@ -288,28 +300,84 @@ func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var currentUser *identity.User
+	administrator := false
 	csrfToken := ""
 	if current, ok := s.currentSession(r); ok {
 		if user, findErr := s.users.Find(r.Context(), current.UserID); findErr == nil {
 			currentUser = &user
 			csrfToken = s.ensureCSRF(w, r)
+			if access, accessErr := s.administrators.Effective(r.Context(), current.UserID); accessErr == nil {
+				administrator = len(access.Roles) > 0
+			}
 		}
 	}
 	s.render(w, "portal.html", struct {
-		Title     string
-		Clients   []client.Client
-		User      *identity.User
-		CSRFToken string
+		Title         string
+		Clients       []client.Client
+		User          *identity.User
+		Administrator bool
+		CSRFToken     string
 	}{
-		Title:     "Certus 统一认证中心",
-		Clients:   activeClients(clients),
-		User:      currentUser,
-		CSRFToken: csrfToken,
+		Title:         "Certus 统一认证中心",
+		Clients:       activeClients(clients),
+		User:          currentUser,
+		Administrator: administrator,
+		CSRFToken:     csrfToken,
 	})
 }
 
-func (s *server) adminClientsPage(w http.ResponseWriter, _ *http.Request) {
-	s.render(w, "admin-clients.html", map[string]string{"Title": "管理控制台 · Certus"})
+func (s *server) adminClientsPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	current, ok := s.currentSession(r)
+	if !ok {
+		http.Redirect(
+			w,
+			r,
+			"/login?continue="+url.QueryEscape(r.URL.Path),
+			http.StatusSeeOther,
+		)
+		return
+	}
+	administratorAccess, err := s.administrators.Effective(r.Context(), current.UserID)
+	if err != nil {
+		s.logger.Error("read administrator page access", "user_id", current.UserID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取管理员权限失败")
+		return
+	}
+	if len(administratorAccess.Roles) == 0 {
+		writeProblem(w, http.StatusForbidden, "not_administrator", "当前账号不是 Certus 管理员")
+		return
+	}
+	if !administratorMFA(current) {
+		status, statusErr := s.mfa.Status(r.Context(), current.UserID)
+		if statusErr != nil {
+			writeProblem(w, http.StatusServiceUnavailable, "mfa_unavailable", "无法确认管理员多因素认证状态")
+			return
+		}
+		if !status.Enabled {
+			http.Redirect(w, r, "/account?admin_mfa=required", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(
+			w,
+			r,
+			"/login?continue="+url.QueryEscape(r.URL.Path),
+			http.StatusSeeOther,
+		)
+		return
+	}
+	user, err := s.users.Find(r.Context(), current.UserID)
+	if err != nil {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized", "管理员账号不可用")
+		return
+	}
+	s.render(w, "admin-clients.html", adminPageData{
+		Title:       "管理控制台 · Certus",
+		CSRFToken:   s.ensureCSRF(w, r),
+		User:        user,
+		Roles:       administratorAccess.Roles,
+		Permissions: administratorAccess.Permissions,
+	})
 }
 
 func (s *server) listClients(w http.ResponseWriter, r *http.Request) {

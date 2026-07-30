@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"certus/internal/access"
+	"certus/internal/administration"
 	"certus/internal/audit"
 	"certus/internal/client"
 	"certus/internal/identity"
@@ -124,6 +125,33 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	}
 	if active, err := sessions.IsActive(ctx, user.ID, current.ID); err != nil || !active {
 		t.Fatalf("PostgreSQL session active check failed: %v %v", active, err)
+	}
+	administrators := NewAdministrationRepository(pool)
+	if err := administrators.ReplaceUserRoles(
+		ctx,
+		user.ID,
+		[]administration.Role{administration.RoleSuperAdmin},
+		"emergency_token",
+		time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	administratorAccess, err := administrators.Effective(ctx, user.ID)
+	if err != nil || !administratorAccess.Has(administration.PermissionAdminRolesWrite) {
+		t.Fatalf("PostgreSQL administrator role was not effective: %#v %v", administratorAccess, err)
+	}
+	superAdministrators, err := administrators.ListRoleUsers(ctx, administration.RoleSuperAdmin)
+	if err != nil || len(superAdministrators) != 1 || superAdministrators[0] != user.ID {
+		t.Fatalf("PostgreSQL super administrator listing failed: %#v %v", superAdministrators, err)
+	}
+	if err := administrators.ReplaceUserRoles(
+		ctx,
+		user.ID,
+		nil,
+		user.ID,
+		time.Now(),
+	); !errors.Is(err, administration.ErrLastSuperAdmin) {
+		t.Fatalf("PostgreSQL last super administrator was removable: %v", err)
 	}
 	oauthRepository := NewOAuthRepository(pool)
 	if err := oauthRepository.SaveOIDCClientSession(ctx, oauth.OIDCClientSession{

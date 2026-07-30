@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"certus/internal/access"
+	"certus/internal/administration"
 	"certus/internal/audit"
 	"certus/internal/cas"
 	"certus/internal/client"
@@ -54,6 +55,7 @@ func main() {
 	var oauthRepository oauth.Repository = oauth.NewMemoryRepository()
 	var casRepository cas.Repository = cas.NewMemoryRepository()
 	var accessRepository access.Repository = access.NewMemoryRepository()
+	var administrationRepository administration.Repository = administration.NewMemoryRepository()
 	var auditRepository audit.Repository = audit.NewMemoryRepository()
 	var mfaRepository mfa.Repository = mfa.NewMemoryRepository()
 	var maintenanceRepository maintenance.Repository
@@ -78,6 +80,7 @@ func main() {
 		oauthRepository = postgres.NewOAuthRepository(pool)
 		casRepository = postgres.NewCASRepository(pool)
 		accessRepository = postgres.NewAccessRepository(pool)
+		administrationRepository = postgres.NewAdministrationRepository(pool)
 		auditRepository = postgres.NewAuditRepository(pool)
 		mfaRepository = postgres.NewMFARepository(pool)
 		keys = postgres.NewOIDCKeyRepository(pool)
@@ -95,17 +98,18 @@ func main() {
 	go maintenanceService.Run(ctx, cfg.CleanupInterval, logger)
 
 	handler, err := httpserver.NewWithDependencies(ctx, cfg, logger, httpserver.Dependencies{
-		Clients:     clients,
-		Users:       users,
-		Passwords:   passwords,
-		Sessions:    sessions,
-		OAuth:       oauthRepository,
-		CAS:         casRepository,
-		Access:      accessRepository,
-		Audit:       auditRepository,
-		MFA:         mfaRepository,
-		Maintenance: maintenanceService,
-		Keys:        keys,
+		Clients:        clients,
+		Users:          users,
+		Passwords:      passwords,
+		Sessions:       sessions,
+		OAuth:          oauthRepository,
+		CAS:            casRepository,
+		Access:         accessRepository,
+		Administration: administrationRepository,
+		Audit:          auditRepository,
+		MFA:            mfaRepository,
+		Maintenance:    maintenanceService,
+		Keys:           keys,
 	})
 	if err != nil {
 		logger.Error("initialize protocol execution", "error", err)

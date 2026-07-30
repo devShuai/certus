@@ -79,7 +79,7 @@ go run ./cmd/certus
 - OAuth 授权码和支持轮换检测的刷新令牌族
 - 审计事件
 
-增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT、OIDC 持久化签名密钥、OAuth 用户授权记录，以及用户令牌的登录会话关联。升级到会话关联迁移时会撤销无法安全回填会话标识的历史用户令牌，客户端凭据令牌不受影响。
+增量 migration 还包含访问令牌、设备授权、CAS Service Ticket / 服务会话、CAS PGT/PT、OIDC 持久化签名密钥、OAuth 用户授权记录、用户令牌的登录会话关联，以及管理员角色授权。升级到会话关联迁移时会撤销无法安全回填会话标识的历史用户令牌，客户端凭据令牌不受影响。
 
 迁移文件已嵌入可执行文件，并在 `certus_schema_migrations` 中记录版本与 SHA-256 校验和；已执行的 migration 被修改时，服务会拒绝启动。
 
@@ -94,16 +94,38 @@ go run ./cmd/certus
 - 更新显示名称、邮箱和状态
 - 内存与 PostgreSQL 两种仓储
 
-管理 API 默认关闭。设置至少 32 个字符的随机 Bearer Token 后启用：
+后台使用 Certus 用户身份、独立管理员 RBAC 和强制 MFA。管理员必须先以普通用户身份启用 TOTP，再通过包含 `otp` 的 AAL2 会话访问 `/admin`。内置角色：
+
+- `super_admin`：全部权限及管理员角色分配
+- `identity_admin`：用户、密码、会话和 MFA
+- `application_admin`：接入系统及业务角色权限
+- `security_admin`：签名密钥、数据清理与安全审计
+- `auditor`：用户、客户端、安全状态与审计日志只读访问
+
+首次引导或应急自动化可临时配置至少 32 个字符的高熵 Bearer Token：
 
 ```powershell
 $env:CERTUS_ADMIN_TOKEN='<至少 32 个字符的随机密钥>'
 go run ./cmd/certus
 ```
 
-请求通过 `Authorization: Bearer <token>` 鉴权：
+应急令牌拥有超级管理员权限，但不用于浏览器控制台；完成首位 `super_admin` 授权后可从运行环境移除。通过应急令牌分配首位管理员：
+
+```http
+PUT /api/v1/admin/users/{user_id}/admin-roles
+Authorization: Bearer <CERTUS_ADMIN_TOKEN>
+Content-Type: application/json
+
+{"roles":["super_admin"]}
+```
+
+服务端禁止移除最后一个 `super_admin`。管理员角色在每次请求时动态计算，权限收回立即生效。管理员会话的写请求还必须同时携带页面签发的 CSRF Cookie 与 `X-CSRF-Token` 请求头；应急 Bearer Token 不依赖浏览器 Cookie。
+
+管理 API：
 
 ```text
+GET  /api/v1/admin/me
+GET  /api/v1/admin/roles
 GET  /api/v1/admin/users?q=&status=&limit=20&offset=0
 POST /api/v1/admin/users
 GET  /api/v1/admin/users/{user_id}
@@ -114,6 +136,8 @@ GET  /api/v1/admin/users/{user_id}/sessions
 DELETE /api/v1/admin/users/{user_id}/sessions
 DELETE /api/v1/admin/users/{user_id}/sessions/{session_id}
 DELETE /api/v1/admin/users/{user_id}/mfa
+GET  /api/v1/admin/users/{user_id}/admin-roles
+PUT  /api/v1/admin/users/{user_id}/admin-roles
 GET  /api/v1/admin/audit-events
 GET  /api/v1/admin/signing-keys
 POST /api/v1/admin/signing-keys/rotate
@@ -220,7 +244,7 @@ POST /api/v1/admin/clients/{client_id}/secret
 GET  /api/v1/admin/clients/{client_id}/integration
 ```
 
-`/admin` 是统一管理控制台，覆盖用户生命周期、密码与会话处置、MFA 重置、接入系统、角色权限、审计日志、OIDC 签名密钥和过期数据清理。`/admin/clients` 保留为兼容入口并展示同一控制台。管理员令牌只保存于当前浏览器的 `sessionStorage`，关闭会话后自动清除。
+`/admin` 是统一管理控制台，覆盖用户生命周期、管理员角色、密码与会话处置、MFA 重置、接入系统、业务角色权限、审计日志、OIDC 签名密钥和过期数据清理。`/admin/clients` 保留为兼容入口并展示同一控制台。未登录访问会跳转到统一登录；没有管理员角色的用户会被拒绝，未达到 AAL2 的管理员会被引导完成 MFA 或重新登录。后台不再把全局管理员令牌保存到浏览器。
 
 创建配置：
 

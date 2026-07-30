@@ -1,5 +1,12 @@
 const state = {
-  token: sessionStorage.getItem("certus.adminToken") || "",
+  csrf: document.querySelector('meta[name="csrf-token"]')?.content || "",
+  adminPermissions: new Set(
+    (document.querySelector('meta[name="admin-permissions"]')?.content || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  ),
+  adminRoleDefinitions: [],
   clients: [],
   users: [],
   allUsers: [],
@@ -13,15 +20,12 @@ const state = {
   auditTotal: 0,
 };
 
-const tokenInput = document.querySelector("#admin-token");
 const globalStatus = document.querySelector("#global-status");
 const userForm = document.querySelector("#user-form");
 const clientForm = document.querySelector("#client-form");
 const integrationCard = document.querySelector("#integration-card");
 const integrationOutput = document.querySelector("#integration-output");
 const secretWarning = document.querySelector("#secret-warning");
-
-tokenInput.value = state.token;
 
 function element(tag, attributes = {}, children = []) {
   const node = document.createElement(tag);
@@ -90,15 +94,15 @@ function setCheckedValues(form, name, values) {
 }
 
 async function api(path, options = {}) {
-  if (!state.token) {
-    throw new Error("请先连接管理员令牌");
-  }
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body !== undefined) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(path, { ...options, headers });
+  const method = String(options.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    headers.set("X-CSRF-Token", state.csrf);
+  }
+  const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
   const raw = await response.text();
   let body = null;
   if (raw) {
@@ -110,16 +114,74 @@ async function api(path, options = {}) {
   }
   if (!response.ok) {
     if (response.status === 401) {
-      setStatus("管理员令牌无效或已失效。", "error");
+      window.location.assign(`/login?continue=${encodeURIComponent("/admin")}`);
+      throw new Error("管理员会话已失效，正在重新登录");
+    }
+    if (response.status === 403 && body?.code === "admin_mfa_required") {
+      window.location.assign("/account?admin_mfa=required");
+      throw new Error("管理员操作要求多因素认证");
     }
     throw new Error(body?.detail || body?.title || `请求失败（${response.status}）`);
   }
   return body;
 }
 
+function can(permission) {
+  return state.adminPermissions.has("*") || state.adminPermissions.has(permission);
+}
+
+function applyPermissions() {
+  const sectionPermissions = {
+    users: "admin.users.read",
+    clients: "admin.clients.read",
+    access: "admin.access.read",
+    audit: "admin.audit.read",
+    operations: "admin.security.read",
+  };
+  for (const link of document.querySelectorAll("#console-nav a[data-section]")) {
+    const permission = sectionPermissions[link.dataset.section];
+    link.classList.toggle("hidden", Boolean(permission) && !can(permission));
+  }
+  const visibility = [
+    ["#new-user", "admin.users.write"],
+    ["#user-form button[type='submit']", "admin.users.write"],
+    ["#user-password-form", "admin.users.write"],
+    ["#issue-reset", "admin.users.write"],
+    ["#revoke-user-sessions", "admin.users.write"],
+    ["#reset-user-mfa", "admin.users.write"],
+    ["#new-client", "admin.clients.write"],
+    ["#role-form", "admin.access.write"],
+    ["#permission-form", "admin.access.write"],
+    ["#role-permission-form button[type='submit']", "admin.access.write"],
+    ["#user-role-form button[type='submit']", "admin.access.write"],
+    ["#rotate-signing-key", "admin.security.write"],
+    ["#run-cleanup", "admin.maintenance.execute"],
+  ];
+  for (const [selector, permission] of visibility) {
+    const target = document.querySelector(selector);
+    if (target) target.classList.toggle("hidden", !can(permission));
+  }
+  const userFieldsReadOnly = !can("admin.users.write");
+  for (const field of userForm.elements) {
+    if (field.type !== "hidden") field.disabled = userFieldsReadOnly;
+  }
+  const clientFieldsReadOnly = !can("admin.clients.write");
+  for (const field of clientForm.elements) {
+    field.disabled = clientFieldsReadOnly;
+  }
+}
+
 function activateSection(name) {
   const available = new Set(["overview", "users", "clients", "access", "audit", "operations"]);
-  const target = available.has(name) ? name : "overview";
+  const required = {
+    users: "admin.users.read",
+    clients: "admin.clients.read",
+    access: "admin.access.read",
+    audit: "admin.audit.read",
+    operations: "admin.security.read",
+  };
+  let target = available.has(name) ? name : "overview";
+  if (required[target] && !can(required[target])) target = "overview";
   for (const section of document.querySelectorAll(".console-section")) {
     section.classList.toggle("hidden", section.id !== target);
   }
@@ -133,52 +195,40 @@ window.addEventListener("hashchange", () => {
   activateSection(section);
   refreshSection(section);
 });
-activateSection(location.hash.slice(1));
 
 function refreshSection(name) {
-  if (!state.token) return;
   let task;
   switch (name) {
     case "users":
+      if (!can("admin.users.read")) return;
       task = Promise.all([loadUsers(), loadAllUsers()]);
       break;
     case "clients":
+      if (!can("admin.clients.read")) return;
       task = loadClients();
       break;
     case "access": {
+      if (!can("admin.access.read")) return;
       const clientID = document.querySelector("#access-client").value;
       task = clientID ? loadAccessData(clientID) : loadClients();
       break;
     }
     case "audit":
+      if (!can("admin.audit.read")) return;
       task = loadAudit();
       break;
     case "operations":
+      if (!can("admin.security.read")) return;
       task = loadKeys();
       break;
     case "overview":
-      task = Promise.all([loadUsers(), loadClients(), loadKeys()]);
+      task = refreshAll();
       break;
     default:
       return;
   }
   task.catch((error) => setStatus(error.message, "error"));
 }
-
-document.querySelector("#admin-session-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  state.token = tokenInput.value.trim();
-  sessionStorage.setItem("certus.adminToken", state.token);
-  await refreshAll();
-});
-
-document.querySelector("#disconnect-admin").addEventListener("click", () => {
-  state.token = "";
-  tokenInput.value = "";
-  sessionStorage.removeItem("certus.adminToken");
-  clearConsole();
-  setStatus("已断开。管理员令牌已从当前浏览器会话中清除。");
-});
 
 function clearConsole() {
   state.clients = [];
@@ -191,21 +241,22 @@ function clearConsole() {
   document.querySelector("#metric-clients").textContent = "—";
   document.querySelector("#metric-active-clients").textContent = "—";
   document.querySelector("#metric-keys").textContent = "—";
-  document.querySelector("#user-rows").replaceChildren(emptyRow(5, "尚未连接"));
-  document.querySelector("#client-rows").replaceChildren(emptyRow(5, "尚未连接"));
-  document.querySelector("#audit-rows").replaceChildren(emptyRow(5, "尚未连接"));
-  document.querySelector("#signing-key-list").replaceChildren(element("p", { className: "empty", text: "尚未连接" }));
+  document.querySelector("#user-rows").replaceChildren(emptyRow(5, "当前角色无权读取用户"));
+  document.querySelector("#client-rows").replaceChildren(emptyRow(5, "当前角色无权读取接入系统"));
+  document.querySelector("#audit-rows").replaceChildren(emptyRow(5, "当前角色无权读取审计日志"));
+  document.querySelector("#signing-key-list").replaceChildren(element("p", { className: "empty", text: "当前角色无权读取签名密钥" }));
 }
 
 async function refreshAll() {
-  if (!state.token) {
-    clearConsole();
-    setStatus("输入管理员令牌以加载数据。");
-    return;
-  }
   setStatus("正在加载管理数据…");
   try {
-    await Promise.all([loadUsers(), loadAllUsers(), loadClients(), loadKeys(), loadAudit()]);
+    const tasks = [];
+    if (can("admin.users.read")) tasks.push(loadUsers(), loadAllUsers());
+    if (can("admin.clients.read")) tasks.push(loadClients());
+    if (can("admin.security.read")) tasks.push(loadKeys());
+    if (can("admin.audit.read")) tasks.push(loadAudit());
+    if (can("admin.roles.read")) tasks.push(loadAdminRoleDefinitions());
+    await Promise.all(tasks);
     setStatus("管理数据已更新。", "success");
   } catch (error) {
     setStatus(error.message, "error");
@@ -264,6 +315,40 @@ function renderUsers() {
   document.querySelector("#users-next").disabled = state.userOffset + state.users.length >= state.userTotal;
 }
 
+async function loadAdminRoleDefinitions() {
+  const value = await api("/api/v1/admin/roles");
+  state.adminRoleDefinitions = value.items || [];
+}
+
+async function loadUserAdminRoles(userID) {
+  const form = document.querySelector("#user-admin-role-form");
+  if (!can("admin.roles.read")) {
+    form.classList.add("hidden");
+    return;
+  }
+  if (!state.adminRoleDefinitions.length) {
+    await loadAdminRoleDefinitions();
+  }
+  const value = await api(`/api/v1/admin/users/${userID}/admin-roles`);
+  const selected = new Set((value.items || []).map((item) => item.role));
+  const options = document.querySelector("#user-admin-role-options");
+  options.replaceChildren();
+  for (const definition of state.adminRoleDefinitions) {
+    const checkbox = element("input", { type: "checkbox", name: "roles", value: definition.code });
+    checkbox.checked = selected.has(definition.code);
+    checkbox.disabled = !can("admin.roles.write");
+    options.append(element("label", { className: "check" }, [
+      checkbox,
+      element("span", {}, [
+        element("strong", { text: definition.name }),
+        element("small", { text: definition.description }),
+      ]),
+    ]));
+  }
+  form.querySelector("button[type='submit']").classList.toggle("hidden", !can("admin.roles.write"));
+  form.classList.remove("hidden");
+}
+
 document.querySelector("#user-filter").addEventListener("submit", async (event) => {
   event.preventDefault();
   state.userOffset = 0;
@@ -290,6 +375,7 @@ function openNewUser() {
   userForm.elements.username.readOnly = false;
   document.querySelector("#user-editor-title").textContent = "新建用户";
   document.querySelector("#user-security").classList.add("hidden");
+  document.querySelector("#user-admin-role-form").classList.add("hidden");
   document.querySelector("#user-security-output").classList.add("hidden");
   document.querySelector("#user-editor").classList.remove("hidden");
   document.querySelector("#user-editor").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -297,6 +383,7 @@ function openNewUser() {
 
 function openUser(user) {
   userForm.reset();
+  document.querySelector("#user-admin-role-form").classList.add("hidden");
   userForm.elements.user_id.value = user.id;
   userForm.elements.username.value = user.username;
   userForm.elements.username.readOnly = true;
@@ -308,6 +395,7 @@ function openUser(user) {
   document.querySelector("#user-security-output").classList.add("hidden");
   document.querySelector("#user-editor").classList.remove("hidden");
   document.querySelector("#user-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+  loadUserAdminRoles(user.id).catch((error) => setStatus(error.message, "error"));
 }
 
 document.querySelector("#new-user").addEventListener("click", openNewUser);
@@ -400,6 +488,24 @@ document.querySelector("#reset-user-mfa").addEventListener("click", async () => 
   }
 });
 
+document.querySelector("#user-admin-role-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!can("admin.roles.write")) return;
+  const userID = userForm.elements.user_id.value;
+  const roles = checkedValues(event.currentTarget, "roles");
+  if (!window.confirm("管理员角色会立即影响该用户的后台权限，确定保存吗？")) return;
+  try {
+    await api(`/api/v1/admin/users/${userID}/admin-roles`, {
+      method: "PUT",
+      body: JSON.stringify({ roles }),
+    });
+    await loadUserAdminRoles(userID);
+    setStatus("管理员角色已更新。", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});
+
 async function loadClients() {
   const value = await api("/api/v1/admin/clients");
   state.clients = value.items || [];
@@ -452,8 +558,11 @@ function renderClientSelectors() {
 
 function resetClientForm() {
   clientForm.reset();
+  for (const field of clientForm.elements) {
+    field.disabled = !can("admin.clients.write");
+  }
   clientForm.elements.id.readOnly = false;
-  clientForm.elements.application_type.disabled = false;
+  clientForm.elements.application_type.disabled = !can("admin.clients.write");
   clientForm.elements.allowed_scopes.value = "openid profile email";
   clientForm.elements.enabled.checked = true;
   setCheckedValues(clientForm, "protocols", ["oauth2.1"]);
@@ -495,10 +604,16 @@ function openClient(client) {
   setCheckedValues(clientForm, "grant_types", client.grant_types);
   setCheckedValues(clientForm, "login_methods", client.login_methods);
   const archived = Boolean(client.archived_at);
-  for (const field of clientForm.elements) field.disabled = archived;
+  for (const field of clientForm.elements) field.disabled = archived || !can("admin.clients.write");
   document.querySelector("#client-editor-title").textContent = `${client.name} · ${client.id}`;
-  document.querySelector("#rotate-client-secret").classList.toggle("hidden", archived || client.application_type !== "confidential");
-  document.querySelector("#archive-client").classList.toggle("hidden", archived);
+  document.querySelector("#rotate-client-secret").classList.toggle(
+    "hidden",
+    archived || client.application_type !== "confidential" || !can("admin.clients.write"),
+  );
+  document.querySelector("#archive-client").classList.toggle(
+    "hidden",
+    archived || !can("admin.clients.write"),
+  );
   document.querySelector("#client-editor").classList.remove("hidden");
   document.querySelector("#client-editor").scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -859,8 +974,7 @@ document.querySelector("#client-rows").addEventListener("click", async (event) =
   }
 });
 
-if (state.token) {
-  refreshAll();
-} else {
-  clearConsole();
-}
+clearConsole();
+applyPermissions();
+activateSection(location.hash.slice(1));
+refreshAll();

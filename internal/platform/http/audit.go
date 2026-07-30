@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -36,6 +37,8 @@ func (s *server) auditMutations(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		principalState := &adminPrincipal{}
+		r = r.WithContext(context.WithValue(r.Context(), adminPrincipalContextKey{}, principalState))
 		writer := &auditStatusWriter{ResponseWriter: w}
 		next.ServeHTTP(writer, r)
 		status := writer.status
@@ -50,15 +53,25 @@ func (s *server) auditMutations(next http.Handler) http.Handler {
 			EventType: "admin.request",
 			Outcome:   outcome,
 			Details: map[string]any{
-				"method": r.Method,
-				"path":   r.URL.Path,
-				"status": status,
+				"method":            r.Method,
+				"path":              r.URL.Path,
+				"status":            status,
+				"admin_auth_method": principalState.AuthMethod,
 			},
 		})
 	})
 }
 
 func (s *server) recordAudit(r *http.Request, event audit.Event) {
+	if principal, ok := adminPrincipalFrom(r); ok {
+		if event.ActorUserID == nil && principal.Access.UserID != "" {
+			event.ActorUserID = auditActor(principal.Access.UserID)
+		}
+		if event.Details == nil {
+			event.Details = make(map[string]any)
+		}
+		event.Details["admin_auth_method"] = principal.AuthMethod
+	}
 	event.IPAddress = requestIPAddress(r)
 	event.RequestID = requestIDValue(r)
 	normalized, err := audit.Normalize(event, s.now().UTC())

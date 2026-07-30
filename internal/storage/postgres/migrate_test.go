@@ -198,3 +198,20 @@ func TestOAuthSessionRevocationMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestAdministratorRolesMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/018_administrator_roles.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE admin_role_grants",
+		"'super_admin'",
+		"'identity_admin'",
+		"admin_role_grants_by_role",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("administrator roles migration does not contain %s", expected)
+		}
+	}
+}

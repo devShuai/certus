@@ -19,6 +19,7 @@
       <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="secondary" type="submit">退出登录</button></form>
     </div>
   </header>
+  {{if .AdminMFARequired}}<div class="warning">管理员后台要求启用多因素认证。请在下方完成 TOTP 配置，然后重新登录后台。</div>{{end}}
   <div id="account-status" class="console-status" role="status" aria-live="polite">正在读取账户安全状态…</div>
 
   <section class="account-hero panel">

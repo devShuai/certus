@@ -273,6 +273,9 @@ func (s *server) resetAdminUserMFA(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.authorizeSensitiveAdministratorTarget(w, r, userID) {
+		return
+	}
 	if err := s.mfa.Disable(r.Context(), userID); err != nil && !errors.Is(err, mfa.ErrNotFound) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "重置多因素认证失败")
 		return
