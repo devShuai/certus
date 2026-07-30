@@ -144,6 +144,16 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if sourceAuthenticator.Label() != "Workforce SSO" {
 		t.Fatalf("unexpected stored OIDC source label: %q", sourceAuthenticator.Label())
 	}
+	registered.LoginMethods = []client.LoginMethod{client.LoginOIDC}
+	registered.IdentitySourceIDs = []string{createdSource.ID}
+	if _, err := clientRepository.Replace(ctx, registered); err != nil {
+		t.Fatalf("bind client identity source: %v", err)
+	}
+	storedClient, err = clientRepository.Find(ctx, registered.ID)
+	if err != nil || len(storedClient.IdentitySourceIDs) != 1 ||
+		storedClient.IdentitySourceIDs[0] != createdSource.ID {
+		t.Fatalf("client identity source round trip failed: %#v %v", storedClient, err)
+	}
 
 	user, err := identity.NewUser(identity.CreateUser{
 		Username: "alice", DisplayName: "Alice", Status: identity.UserActive,

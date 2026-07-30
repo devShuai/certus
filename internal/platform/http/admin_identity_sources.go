@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"certus/internal/federation"
@@ -61,7 +62,20 @@ func (s *server) replaceIdentitySource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) archiveIdentitySource(w http.ResponseWriter, r *http.Request) {
-	err := s.identitySources.Archive(r.Context(), r.PathValue("sourceID"))
+	sourceID := r.PathValue("sourceID")
+	clients, err := s.clients.List(r.Context())
+	if err != nil {
+		s.logger.Error("list clients before identity source archive", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "检查身份源使用情况失败")
+		return
+	}
+	for _, item := range clients {
+		if item.ArchivedAt == nil && slices.Contains(item.IdentitySourceIDs, sourceID) {
+			writeProblem(w, http.StatusConflict, "source_in_use", "身份源仍被接入系统使用，请先解除绑定")
+			return
+		}
+	}
+	err = s.identitySources.Archive(r.Context(), sourceID)
 	if identitySourceError(w, err) {
 		return
 	}

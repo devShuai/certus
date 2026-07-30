@@ -1,8 +1,10 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -30,17 +32,21 @@ type loginPageData struct {
 	Title           string
 	Client          client.Client
 	Methods         []loginMethodView
+	LDAPSources     []loginSourceView
+	OIDCSources     []loginSourceView
 	ReturnTo        string
 	CSRFToken       string
 	Error           string
 	PasswordEnabled bool
-	LDAPEnabled     bool
-	OIDCEnabled     bool
-	OIDCLabel       string
 	Unavailable     bool
 }
 
 type loginMethodView struct {
+	Label string
+}
+
+type loginSourceView struct {
+	ID    string
 	Label string
 }
 
@@ -64,9 +70,6 @@ func (s *server) newLoginPageData(r *http.Request, returnTo, csrfToken, message 
 		CSRFToken:       csrfToken,
 		Error:           message,
 		PasswordEnabled: true,
-		LDAPEnabled:     s.ldap.Enabled(),
-		OIDCEnabled:     s.externalOIDC.Enabled(),
-		OIDCLabel:       s.externalOIDC.Label(),
 	}
 	clientID := r.URL.Query().Get("client_id")
 	if clientID == "" {
@@ -84,24 +87,112 @@ func (s *server) newLoginPageData(r *http.Request, returnTo, csrfToken, message 
 		}
 		page.Client = item
 		page.PasswordEnabled = slices.Contains(item.LoginMethods, client.LoginPassword)
-		page.LDAPEnabled = slices.Contains(item.LoginMethods, client.LoginLDAP) && s.ldap.Enabled()
-		page.OIDCEnabled = slices.Contains(item.LoginMethods, client.LoginOIDC) && s.externalOIDC.Enabled()
-		for _, method := range item.LoginMethods {
-			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(method)})
-			if method == client.LoginLDAP && !s.ldap.Enabled() || method == client.LoginOIDC && !s.externalOIDC.Enabled() {
-				page.Unavailable = true
-			}
+		if page.PasswordEnabled {
+			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(client.LoginPassword)})
+		}
+		if err := s.populateLoginSources(r.Context(), &page, &item); err != nil {
+			return loginPageData{}, err
 		}
 	} else {
 		page.Methods = []loginMethodView{{Label: loginMethodLabel(client.LoginPassword)}}
-		if s.ldap.Enabled() {
-			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(client.LoginLDAP)})
-		}
-		if s.externalOIDC.Enabled() {
-			page.Methods = append(page.Methods, loginMethodView{Label: loginMethodLabel(client.LoginOIDC)})
+		if err := s.populateLoginSources(r.Context(), &page, nil); err != nil {
+			return loginPageData{}, err
 		}
 	}
 	return page, nil
+}
+
+func (s *server) populateLoginSources(
+	ctx context.Context,
+	page *loginPageData,
+	registered *client.Client,
+) error {
+	sources, err := s.identitySources.List(ctx)
+	if err != nil {
+		return err
+	}
+	bound := make(map[string]struct{})
+	dynamicOnly := registered != nil && len(registered.IdentitySourceIDs) > 0
+	if dynamicOnly {
+		for _, sourceID := range registered.IdentitySourceIDs {
+			bound[sourceID] = struct{}{}
+		}
+	}
+	for _, source := range sources {
+		if source.ArchivedAt != nil {
+			if _, selected := bound[source.ID]; selected {
+				page.Unavailable = true
+			}
+			continue
+		}
+		if dynamicOnly {
+			if _, selected := bound[source.ID]; !selected {
+				continue
+			}
+			delete(bound, source.ID)
+		}
+		if registered != nil && !dynamicOnly {
+			continue
+		}
+		allowed := registered == nil
+		switch source.Type {
+		case federation.SourceLDAP:
+			allowed = allowed || slices.Contains(registered.LoginMethods, client.LoginLDAP)
+		case federation.SourceOIDC:
+			allowed = allowed || slices.Contains(registered.LoginMethods, client.LoginOIDC)
+		}
+		if !allowed {
+			page.Unavailable = true
+			continue
+		}
+		if !source.Enabled {
+			page.Unavailable = true
+			continue
+		}
+		view := loginSourceView{ID: source.ID, Label: source.Name}
+		switch source.Type {
+		case federation.SourceLDAP:
+			page.LDAPSources = append(page.LDAPSources, view)
+		case federation.SourceOIDC:
+			page.OIDCSources = append(page.OIDCSources, view)
+		}
+		page.Methods = append(page.Methods, loginMethodView{Label: source.Name})
+	}
+	if len(bound) > 0 {
+		page.Unavailable = true
+	}
+	if registered == nil || !dynamicOnly {
+		allowLDAP := registered == nil || slices.Contains(registered.LoginMethods, client.LoginLDAP)
+		allowOIDC := registered == nil || slices.Contains(registered.LoginMethods, client.LoginOIDC)
+		if allowLDAP {
+			if s.ldap.Enabled() {
+				page.LDAPSources = append(page.LDAPSources, loginSourceView{
+					Label: legacyLDAPLabel(s.ldap),
+				})
+				page.Methods = append(page.Methods, loginMethodView{Label: legacyLDAPLabel(s.ldap)})
+			} else if registered != nil {
+				page.Unavailable = true
+			}
+		}
+		if allowOIDC {
+			if s.externalOIDC.Enabled() {
+				page.OIDCSources = append(page.OIDCSources, loginSourceView{
+					Label: s.externalOIDC.Label(),
+				})
+				page.Methods = append(page.Methods, loginMethodView{Label: s.externalOIDC.Label()})
+			} else if registered != nil {
+				page.Unavailable = true
+			}
+		}
+	}
+	return nil
+}
+
+func legacyLDAPLabel(authenticator *federation.LDAPAuthenticator) string {
+	if authenticator != nil && strings.TrimSpace(authenticator.Label()) != "" {
+		return authenticator.Label()
+	}
+	return loginMethodLabel(client.LoginLDAP)
 }
 
 func (s *server) loginPassword(w http.ResponseWriter, r *http.Request) {
@@ -166,28 +257,35 @@ func (s *server) loginLDAP(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_csrf", "登录页面已失效，请刷新后重试")
 		return
 	}
-	if !s.ldap.Enabled() {
-		writeProblem(w, http.StatusServiceUnavailable, "login_method_unavailable", "LDAP 身份源尚未配置")
-		return
-	}
+	sourceID := strings.TrimSpace(r.Form.Get("source_id"))
 	clientID := ""
-	if registered, ok := s.loginClient(r, returnTo); ok {
-		clientID = registered.ID
-		if !slices.Contains(registered.LoginMethods, client.LoginLDAP) {
+	var registered *client.Client
+	if value, ok := s.loginClient(r, returnTo); ok {
+		clientID = value.ID
+		if !slices.Contains(value.LoginMethods, client.LoginLDAP) {
 			writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用 LDAP 登录")
 			return
 		}
+		registered = &value
+	}
+	authenticator, err := s.ldapAuthenticatorForLogin(r.Context(), sourceID, registered)
+	if err != nil {
+		writeLoginSourceError(w, err, "LDAP")
+		return
 	}
 	if !s.allowLoginAttempt(w, r, r.Form.Get("username")) {
 		return
 	}
-	profile, err := s.ldap.Authenticate(r.Context(), r.Form.Get("username"), r.Form.Get("password"))
+	profile, err := authenticator.Authenticate(r.Context(), r.Form.Get("username"), r.Form.Get("password"))
 	if err != nil {
 		s.recordAudit(r, audit.Event{
 			EventType: "login.ldap",
 			ClientID:  auditClient(clientID),
 			Outcome:   audit.OutcomeFailure,
-			Details:   map[string]any{"username": strings.TrimSpace(r.Form.Get("username"))},
+			Details: map[string]any{
+				"username":  strings.TrimSpace(r.Form.Get("username")),
+				"source_id": sourceID,
+			},
 		})
 		if errors.Is(err, federation.ErrUnavailable) {
 			s.logger.Warn("LDAP login unavailable", "error", err)
@@ -216,12 +314,18 @@ func (s *server) loginOIDC(w http.ResponseWriter, r *http.Request) {
 	if returnTo == "" {
 		returnTo = "/portal"
 	}
-	if !s.externalOIDC.Enabled() {
-		writeProblem(w, http.StatusServiceUnavailable, "login_method_unavailable", "外部 OIDC 身份源尚未配置")
-		return
+	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
+	var registered *client.Client
+	if value, ok := s.loginClient(r, returnTo); ok {
+		if !slices.Contains(value.LoginMethods, client.LoginOIDC) {
+			writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用外部身份提供商登录")
+			return
+		}
+		registered = &value
 	}
-	if registered, ok := s.loginClient(r, returnTo); ok && !slices.Contains(registered.LoginMethods, client.LoginOIDC) {
-		writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用外部身份提供商登录")
+	authenticator, err := s.oidcAuthenticatorForLogin(r.Context(), sourceID, registered)
+	if err != nil {
+		writeLoginSourceError(w, err, "OIDC")
 		return
 	}
 	if !s.allowLoginSource(w, r, "login.oidc_source") {
@@ -244,19 +348,20 @@ func (s *server) loginOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.now().UTC()
 	transaction, err := s.signer.Sign(map[string]any{
-		"purpose":  "external_oidc",
-		"state":    state,
-		"nonce":    nonce,
-		"verifier": verifier,
-		"continue": returnTo,
-		"iat":      now.Unix(),
-		"exp":      now.Add(5 * time.Minute).Unix(),
+		"purpose":   "external_oidc",
+		"state":     state,
+		"nonce":     nonce,
+		"verifier":  verifier,
+		"continue":  returnTo,
+		"source_id": sourceID,
+		"iat":       now.Unix(),
+		"exp":       now.Add(5 * time.Minute).Unix(),
 	})
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "创建外部登录请求失败")
 		return
 	}
-	target, err := s.externalOIDC.AuthorizationURL(r.Context(), state, nonce, verifier)
+	target, err := authenticator.AuthorizationURL(r.Context(), state, nonce, verifier)
 	if err != nil {
 		s.logger.Warn("start external OIDC login", "error", err)
 		writeProblem(w, http.StatusBadGateway, "identity_provider_unavailable", "外部身份提供商暂时不可用")
@@ -292,12 +397,23 @@ func (s *server) loginOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	returnTo, _ := claims["continue"].(string)
 	nonce, _ := claims["nonce"].(string)
 	verifier, _ := claims["verifier"].(string)
+	sourceID, _ := claims["source_id"].(string)
+	var registered *client.Client
+	if value, ok := s.loginClient(r, returnTo); ok {
+		registered = &value
+	}
+	authenticator, err := s.oidcAuthenticatorForLogin(r.Context(), sourceID, registered)
+	if err != nil {
+		s.metrics.RecordAuthentication("oidc", "failure")
+		writeLoginSourceError(w, err, "OIDC")
+		return
+	}
 	if providerError := r.URL.Query().Get("error"); providerError != "" {
 		s.metrics.RecordAuthentication("oidc", "failure")
 		s.renderLoginError(w, r, returnTo, "外部身份提供商未完成登录")
 		return
 	}
-	profile, err := s.externalOIDC.Exchange(r.Context(), r.URL.Query().Get("code"), nonce, verifier)
+	profile, err := authenticator.Exchange(r.Context(), r.URL.Query().Get("code"), nonce, verifier)
 	if err != nil {
 		s.metrics.RecordAuthentication("oidc", "failure")
 		s.logger.Warn("complete external OIDC login", "error", err)
@@ -317,10 +433,88 @@ func (s *server) loginOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := ""
-	if registered, ok := s.loginClient(r, returnTo); ok {
+	if registered != nil {
 		clientID = registered.ID
 	}
 	s.completeLogin(w, r, user, returnTo, "oidc", clientID)
+}
+
+func (s *server) ldapAuthenticatorForLogin(
+	ctx context.Context,
+	sourceID string,
+	registered *client.Client,
+) (*federation.LDAPAuthenticator, error) {
+	if err := allowClientIdentitySource(registered, sourceID, client.LoginLDAP); err != nil {
+		return nil, err
+	}
+	if sourceID == "" {
+		if !s.ldap.Enabled() {
+			return nil, federation.ErrSourceDisabled
+		}
+		return s.ldap, nil
+	}
+	return s.identitySources.LDAPAuthenticator(ctx, sourceID)
+}
+
+func (s *server) oidcAuthenticatorForLogin(
+	ctx context.Context,
+	sourceID string,
+	registered *client.Client,
+) (*federation.OIDCAuthenticator, error) {
+	if err := allowClientIdentitySource(registered, sourceID, client.LoginOIDC); err != nil {
+		return nil, err
+	}
+	if sourceID == "" {
+		if !s.externalOIDC.Enabled() {
+			return nil, federation.ErrSourceDisabled
+		}
+		return s.externalOIDC, nil
+	}
+	return s.identitySources.OIDCAuthenticator(
+		ctx,
+		sourceID,
+		s.cfg.Issuer+"/login/oidc/callback",
+		s.outbound,
+	)
+}
+
+func allowClientIdentitySource(
+	registered *client.Client,
+	sourceID string,
+	method client.LoginMethod,
+) error {
+	if registered == nil {
+		return nil
+	}
+	if !slices.Contains(registered.LoginMethods, method) {
+		return fmt.Errorf("%w: login method is not allowed", federation.ErrInvalidSource)
+	}
+	if sourceID == "" {
+		if len(registered.IdentitySourceIDs) > 0 {
+			return fmt.Errorf("%w: legacy identity source is not bound to client", federation.ErrInvalidSource)
+		}
+		return nil
+	}
+	if len(registered.IdentitySourceIDs) == 0 ||
+		!slices.Contains(registered.IdentitySourceIDs, sourceID) {
+		return fmt.Errorf("%w: identity source is not bound to client", federation.ErrInvalidSource)
+	}
+	return nil
+}
+
+func writeLoginSourceError(w http.ResponseWriter, err error, sourceType string) {
+	switch {
+	case errors.Is(err, federation.ErrInvalidSource):
+		writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用所选身份源")
+	case errors.Is(err, federation.ErrSourceEncryptionUnavailable):
+		writeProblem(w, http.StatusServiceUnavailable, "identity_source_unavailable", "身份源密钥暂时无法解密")
+	case errors.Is(err, federation.ErrSourceNotFound),
+		errors.Is(err, federation.ErrSourceArchived),
+		errors.Is(err, federation.ErrSourceDisabled):
+		writeProblem(w, http.StatusServiceUnavailable, "login_method_unavailable", sourceType+" 身份源不可用")
+	default:
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取身份源失败")
+	}
 }
 
 func (s *server) validExternalOIDCClaims(claims map[string]any, state string) bool {

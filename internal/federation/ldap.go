@@ -33,6 +33,13 @@ func (a *LDAPAuthenticator) Enabled() bool {
 	return a != nil && a.config.Enabled()
 }
 
+func (a *LDAPAuthenticator) Label() string {
+	if a == nil {
+		return ""
+	}
+	return a.config.Label
+}
+
 func (a *LDAPAuthenticator) Authenticate(ctx context.Context, username, password string) (identity.ExternalProfile, error) {
 	username = strings.TrimSpace(username)
 	if !a.Enabled() {

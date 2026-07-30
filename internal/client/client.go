@@ -84,6 +84,7 @@ type Client struct {
 	BackchannelLogoutURI             string                  `json:"backchannel_logout_uri,omitempty"`
 	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
 	LoginMethods                     []LoginMethod           `json:"login_methods"`
+	IdentitySourceIDs                []string                `json:"identity_source_ids,omitempty"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
 	CASVersion                       CASVersion              `json:"cas_version,omitempty"`
 	CASServiceURLs                   []string                `json:"cas_service_urls,omitempty"`
@@ -109,6 +110,7 @@ type CreateClient struct {
 	BackchannelLogoutURI             string                  `json:"backchannel_logout_uri"`
 	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
 	LoginMethods                     []LoginMethod           `json:"login_methods"`
+	IdentitySourceIDs                []string                `json:"identity_source_ids"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
 	CASVersion                       CASVersion              `json:"cas_version"`
 	CASServiceURLs                   []string                `json:"cas_service_urls"`
@@ -130,6 +132,7 @@ type ReplaceClient struct {
 	BackchannelLogoutURI             string                  `json:"backchannel_logout_uri"`
 	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
 	LoginMethods                     []LoginMethod           `json:"login_methods"`
+	IdentitySourceIDs                []string                `json:"identity_source_ids"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
 	CASVersion                       CASVersion              `json:"cas_version"`
 	CASServiceURLs                   []string                `json:"cas_service_urls"`
@@ -260,6 +263,7 @@ func clone(item Client) Client {
 	item.RedirectURIs = slices.Clone(item.RedirectURIs)
 	item.PostLogoutRedirectURIs = slices.Clone(item.PostLogoutRedirectURIs)
 	item.LoginMethods = slices.Clone(item.LoginMethods)
+	item.IdentitySourceIDs = slices.Clone(item.IdentitySourceIDs)
 	item.AllowedScopes = slices.Clone(item.AllowedScopes)
 	item.Protocols = slices.Clone(item.Protocols)
 	item.GrantTypes = slices.Clone(item.GrantTypes)
@@ -289,6 +293,7 @@ func New(input CreateClient) (Client, string, error) {
 		BackchannelLogoutURI:             strings.TrimSpace(input.BackchannelLogoutURI),
 		BackchannelLogoutSessionRequired: input.BackchannelLogoutSessionRequired,
 		LoginMethods:                     uniqueMethods(input.LoginMethods),
+		IdentitySourceIDs:                uniqueSourceIDs(input.IdentitySourceIDs),
 		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
 		CASVersion:                       input.CASVersion,
 		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
@@ -354,6 +359,7 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 		BackchannelLogoutURI:             strings.TrimSpace(input.BackchannelLogoutURI),
 		BackchannelLogoutSessionRequired: input.BackchannelLogoutSessionRequired,
 		LoginMethods:                     uniqueMethods(input.LoginMethods),
+		IdentitySourceIDs:                uniqueSourceIDs(input.IdentitySourceIDs),
 		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
 		CASVersion:                       input.CASVersion,
 		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
@@ -489,6 +495,19 @@ func (c Client) Validate() error {
 			return fmt.Errorf("%w: unsupported login_method %q", ErrInvalid, method)
 		}
 	}
+	if len(c.IdentitySourceIDs) > 20 {
+		return fmt.Errorf("%w: identity_source_ids supports at most 20 entries", ErrInvalid)
+	}
+	if len(c.IdentitySourceIDs) > 0 &&
+		!slices.Contains(c.LoginMethods, LoginLDAP) &&
+		!slices.Contains(c.LoginMethods, LoginOIDC) {
+		return fmt.Errorf("%w: identity_source_ids require ldap or oidc login methods", ErrInvalid)
+	}
+	for _, sourceID := range c.IdentitySourceIDs {
+		if !clientIDPattern.MatchString(sourceID) {
+			return fmt.Errorf("%w: invalid identity_source_id %q", ErrInvalid, sourceID)
+		}
+	}
 	for _, scope := range c.AllowedScopes {
 		if !scopePattern.MatchString(scope) {
 			return fmt.Errorf("%w: invalid scope %q", ErrInvalid, scope)
@@ -577,6 +596,23 @@ func uniqueMethods(values []LoginMethod) []LoginMethod {
 	seen := make(map[LoginMethod]struct{}, len(values))
 	for _, value := range values {
 		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func uniqueSourceIDs(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
 			continue
 		}
 		seen[value] = struct{}{}

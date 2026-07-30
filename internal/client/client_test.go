@@ -14,6 +14,7 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 		RedirectURIs:           []string{"https://specus.example.com/callback"},
 		PostLogoutRedirectURIs: []string{"https://specus.example.com/logout"},
 		LoginMethods:           []LoginMethod{LoginPassword},
+		IdentitySourceIDs:      []string{"workforce"},
 		Enabled:                true,
 	})
 
@@ -24,6 +25,7 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 	first.RedirectURIs[0] = "https://attacker.example.com"
 	first.PostLogoutRedirectURIs[0] = "https://attacker.example.com/logout"
 	first.LoginMethods[0] = LoginOIDC
+	first.IdentitySourceIDs[0] = "attacker"
 
 	second, err := repository.Find(context.Background(), "specus")
 	if err != nil {
@@ -31,7 +33,8 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 	}
 	if second.RedirectURIs[0] != "https://specus.example.com/callback" ||
 		second.PostLogoutRedirectURIs[0] != "https://specus.example.com/logout" ||
-		second.LoginMethods[0] != LoginPassword {
+		second.LoginMethods[0] != LoginPassword ||
+		second.IdentitySourceIDs[0] != "workforce" {
 		t.Fatal("repository state was mutated through returned client")
 	}
 }
@@ -125,6 +128,44 @@ func TestNewClientAllowsLoopbackHTTPForDevelopment(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientNormalizesAndValidatesIdentitySourceBindings(t *testing.T) {
+	item, _, err := New(CreateClient{
+		ID:                "federated-app",
+		Name:              "Federated App",
+		RedirectURIs:      []string{"https://app.example.com/callback"},
+		LoginMethods:      []LoginMethod{LoginOIDC},
+		IdentitySourceIDs: []string{" Workforce ", "workforce", "partners"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.IdentitySourceIDs) != 2 ||
+		item.IdentitySourceIDs[0] != "workforce" ||
+		item.IdentitySourceIDs[1] != "partners" {
+		t.Fatalf("identity source bindings were not normalized: %#v", item.IdentitySourceIDs)
+	}
+	for _, input := range []CreateClient{
+		{
+			ID:                "no-external-method",
+			Name:              "No External Method",
+			RedirectURIs:      []string{"https://app.example.com/callback"},
+			LoginMethods:      []LoginMethod{LoginPassword},
+			IdentitySourceIDs: []string{"workforce"},
+		},
+		{
+			ID:                "invalid-source-id",
+			Name:              "Invalid Source ID",
+			RedirectURIs:      []string{"https://app.example.com/callback"},
+			LoginMethods:      []LoginMethod{LoginOIDC},
+			IdentitySourceIDs: []string{"invalid source"},
+		},
+	} {
+		if _, _, err := New(input); err == nil {
+			t.Fatalf("invalid identity source binding was accepted: %#v", input)
+		}
 	}
 }
 

@@ -154,6 +154,16 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 			return client.Client{}, fmt.Errorf("insert replacement login method: %w", err)
 		}
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_client_identity_sources WHERE client_id = $1`, item.ID); err != nil {
+		return client.Client{}, fmt.Errorf("replace client identity sources: %w", err)
+	}
+	for position, sourceID := range item.IdentitySourceIDs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_identity_sources (client_id, source_id, position)
+			VALUES ($1, $2, $3)`, item.ID, sourceID, position); err != nil {
+			return client.Client{}, fmt.Errorf("insert replacement identity source: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return client.Client{}, fmt.Errorf("commit client replacement: %w", err)
 	}
@@ -256,6 +266,13 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 			INSERT INTO oauth_client_login_methods (client_id, method, position)
 			VALUES ($1, $2, $3)`, item.ID, method, position); err != nil {
 			return client.Client{}, fmt.Errorf("insert login method: %w", err)
+		}
+	}
+	for position, sourceID := range item.IdentitySourceIDs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_identity_sources (client_id, source_id, position)
+			VALUES ($1, $2, $3)`, item.ID, sourceID, position); err != nil {
+			return client.Client{}, fmt.Errorf("insert client identity source: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -374,7 +391,6 @@ func (r *ClientRepository) loadRelations(ctx context.Context, item *client.Clien
 	if err != nil {
 		return fmt.Errorf("list login methods: %w", err)
 	}
-	defer methodRows.Close()
 	for methodRows.Next() {
 		var method string
 		if err := methodRows.Scan(&method); err != nil {
@@ -384,6 +400,27 @@ func (r *ClientRepository) loadRelations(ctx context.Context, item *client.Clien
 	}
 	if err := methodRows.Err(); err != nil {
 		return fmt.Errorf("iterate login methods: %w", err)
+	}
+	methodRows.Close()
+
+	sourceRows, err := r.pool.Query(ctx, `
+		SELECT source_id
+		FROM oauth_client_identity_sources
+		WHERE client_id = $1
+		ORDER BY position, source_id`, item.ID)
+	if err != nil {
+		return fmt.Errorf("list client identity sources: %w", err)
+	}
+	defer sourceRows.Close()
+	for sourceRows.Next() {
+		var sourceID string
+		if err := sourceRows.Scan(&sourceID); err != nil {
+			return fmt.Errorf("scan client identity source: %w", err)
+		}
+		item.IdentitySourceIDs = append(item.IdentitySourceIDs, sourceID)
+	}
+	if err := sourceRows.Err(); err != nil {
+		return fmt.Errorf("iterate client identity sources: %w", err)
 	}
 	return nil
 }

@@ -1,10 +1,14 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 
 	"certus/internal/client"
+	"certus/internal/federation"
 )
 
 type clientRegistrationResponse struct {
@@ -19,6 +23,7 @@ type integrationParameters struct {
 	ClientID                         string             `json:"client_id"`
 	ClientSecret                     string             `json:"client_secret,omitempty"`
 	ClientAuthenticationMethod       string             `json:"client_authentication_method,omitempty"`
+	IdentitySourceIDs                []string           `json:"identity_source_ids,omitempty"`
 	AuthorizationEndpoint            string             `json:"authorization_endpoint,omitempty"`
 	TokenEndpoint                    string             `json:"token_endpoint,omitempty"`
 	IntrospectionEndpoint            string             `json:"introspection_endpoint,omitempty"`
@@ -90,6 +95,10 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_client", err.Error())
 		return
 	}
+	if err := s.validateClientIdentitySources(r.Context(), item); err != nil {
+		writeClientIdentitySourceError(w, err)
+		return
+	}
 	item, err = s.clients.Create(r.Context(), item)
 	if errors.Is(err, client.ErrConflict) {
 		writeProblem(w, http.StatusConflict, "client_conflict", "client_id 已存在")
@@ -132,6 +141,10 @@ func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_client", err.Error())
 		return
 	}
+	if err := s.validateClientIdentitySources(r.Context(), item); err != nil {
+		writeClientIdentitySourceError(w, err)
+		return
+	}
 	item, err = s.clients.Replace(r.Context(), item)
 	if errors.Is(err, client.ErrArchived) {
 		writeProblem(w, http.StatusConflict, "client_archived", "已归档的接入系统不能修改")
@@ -153,6 +166,53 @@ func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 		Client:      item,
 		Integration: s.integrationParameters(item, ""),
 	})
+}
+
+func (s *server) validateClientIdentitySources(ctx context.Context, item client.Client) error {
+	for _, sourceID := range item.IdentitySourceIDs {
+		source, err := s.identitySources.Find(ctx, sourceID)
+		if err != nil {
+			return err
+		}
+		if source.ArchivedAt != nil {
+			return fmt.Errorf("%w: identity source %q is archived", federation.ErrInvalidSource, sourceID)
+		}
+		if !source.Enabled {
+			return fmt.Errorf("%w: identity source %q is disabled", federation.ErrInvalidSource, sourceID)
+		}
+		switch source.Type {
+		case federation.SourceLDAP:
+			if !slices.Contains(item.LoginMethods, client.LoginLDAP) {
+				return fmt.Errorf(
+					"%w: LDAP identity source %q requires the ldap login method",
+					federation.ErrInvalidSource,
+					sourceID,
+				)
+			}
+		case federation.SourceOIDC:
+			if !slices.Contains(item.LoginMethods, client.LoginOIDC) {
+				return fmt.Errorf(
+					"%w: OIDC identity source %q requires the oidc login method",
+					federation.ErrInvalidSource,
+					sourceID,
+				)
+			}
+		default:
+			return fmt.Errorf("%w: unsupported identity source %q", federation.ErrInvalidSource, sourceID)
+		}
+	}
+	return nil
+}
+
+func writeClientIdentitySourceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, federation.ErrSourceNotFound):
+		writeProblem(w, http.StatusBadRequest, "invalid_identity_source", "客户端绑定的身份源不存在")
+	case errors.Is(err, federation.ErrInvalidSource):
+		writeProblem(w, http.StatusBadRequest, "invalid_identity_source", err.Error())
+	default:
+		writeProblem(w, http.StatusInternalServerError, "server_error", "校验客户端身份源失败")
+	}
 }
 
 func (s *server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +287,7 @@ func (s *server) integrationParameters(item client.Client, secret string) integr
 		SupportedProtocols: item.Protocols,
 		ClientID:           item.ID,
 		ClientSecret:       secret,
+		IdentitySourceIDs:  item.IdentitySourceIDs,
 	}
 	if item.SupportsOAuth() {
 		parameters.Issuer = s.cfg.Issuer
