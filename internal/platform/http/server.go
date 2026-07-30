@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"certus/internal/access"
@@ -23,33 +22,34 @@ import (
 	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
+	"certus/internal/ratelimit"
 	"certus/internal/session"
 	"certus/web"
 )
 
 type server struct {
-	cfg              config.Config
-	logger           *slog.Logger
-	templates        *template.Template
-	clients          client.Repository
-	users            identity.UserRepository
-	externalUsers    identity.ExternalIdentityRepository
-	passwords        *identity.PasswordService
-	sessions         *session.Service
-	oauth            oauth.Repository
-	cas              cas.Repository
-	accessControl    access.Repository
-	administrators   administration.Repository
-	audit            audit.Repository
-	mfa              *mfa.Service
-	maintenance      *maintenance.Service
-	signer           *oidc.Signer
-	outbound         *http.Client
-	ldap             *federation.LDAPAuthenticator
-	externalOIDC     *federation.OIDCAuthenticator
-	now              func() time.Time
-	deviceAttemptsMu sync.Mutex
-	deviceAttempts   map[string]deviceAttemptWindow
+	cfg            config.Config
+	logger         *slog.Logger
+	templates      *template.Template
+	clients        client.Repository
+	users          identity.UserRepository
+	externalUsers  identity.ExternalIdentityRepository
+	passwords      *identity.PasswordService
+	sessions       *session.Service
+	oauth          oauth.Repository
+	cas            cas.Repository
+	accessControl  access.Repository
+	administrators administration.Repository
+	audit          audit.Repository
+	mfa            *mfa.Service
+	maintenance    *maintenance.Service
+	signer         *oidc.Signer
+	rateLimits     *ratelimit.Service
+	readiness      func(context.Context) error
+	outbound       *http.Client
+	ldap           *federation.LDAPAuthenticator
+	externalOIDC   *federation.OIDCAuthenticator
+	now            func() time.Time
 }
 
 func New(cfg config.Config, logger *slog.Logger) http.Handler {
@@ -106,6 +106,8 @@ type Dependencies struct {
 	MFA                mfa.Repository
 	Maintenance        *maintenance.Service
 	Keys               oidc.KeyRepository
+	RateLimits         ratelimit.Repository
+	Readiness          func(context.Context) error
 	OutboundHTTPClient *http.Client
 }
 
@@ -134,6 +136,12 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	}
 	if dependencies.MFA == nil {
 		dependencies.MFA = mfa.NewMemoryRepository()
+	}
+	if dependencies.RateLimits == nil {
+		dependencies.RateLimits = ratelimit.NewMemoryRepository()
+	}
+	if dependencies.Readiness == nil {
+		dependencies.Readiness = func(context.Context) error { return nil }
 	}
 	if dependencies.Maintenance == nil {
 		dependencies.Maintenance = maintenance.NewService(
@@ -172,6 +180,8 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		mfa:            mfa.NewService(dependencies.MFA, cfg.MFAEncryptionKey, "Certus"),
 		maintenance:    dependencies.Maintenance,
 		signer:         signer,
+		rateLimits:     ratelimit.NewService(dependencies.RateLimits),
+		readiness:      dependencies.Readiness,
 		outbound:       outbound,
 		ldap:           federation.NewLDAPAuthenticator(cfg.LDAP),
 		externalOIDC: federation.NewOIDCAuthenticator(
@@ -179,8 +189,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 			cfg.Issuer+"/login/oidc/callback",
 			outbound,
 		),
-		now:            time.Now,
-		deviceAttempts: make(map[string]deviceAttemptWindow),
+		now: time.Now,
 	}
 	if cfg.SigningKeyRotation > 0 {
 		go s.runSigningKeyRotation(ctx, cfg.SigningKeyRotation)
@@ -188,7 +197,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
-	mux.HandleFunc("GET /readyz", s.health)
+	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /", s.home)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPassword)
@@ -290,6 +299,17 @@ func (s *server) render(w http.ResponseWriter, name string, data any) {
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *server) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.readiness(ctx); err != nil {
+		s.logger.Warn("readiness check failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (s *server) home(w http.ResponseWriter, r *http.Request) {

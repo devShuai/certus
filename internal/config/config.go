@@ -2,12 +2,15 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"certus/internal/mfa"
+	"certus/internal/ratelimit"
 	"certus/internal/secrets"
 )
 
@@ -19,6 +22,8 @@ type Config struct {
 	AdminToken           string
 	MFAEncryptionKey     []byte
 	SecretEncryptionKeys secrets.KeyRing
+	TrustedProxies       []netip.Prefix
+	RateLimits           RateLimitConfig
 	LDAP                 LDAPConfig
 	ExternalOIDC         ExternalOIDCConfig
 	ReadHeaderTimeout    time.Duration
@@ -28,6 +33,14 @@ type Config struct {
 	AuditRetention       time.Duration
 	SigningKeyRetention  time.Duration
 	SigningKeyRotation   time.Duration
+}
+
+type RateLimitConfig struct {
+	LoginSource   ratelimit.Policy
+	LoginIdentity ratelimit.Policy
+	MFA           ratelimit.Policy
+	OAuth         ratelimit.Policy
+	Device        ratelimit.Policy
 }
 
 type LDAPConfig struct {
@@ -121,6 +134,45 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("CERTUS_SECRET_ENCRYPTION_KEYS: %w", err)
 	}
+	cfg.TrustedProxies, err = trustedProxies(os.Getenv("CERTUS_TRUSTED_PROXIES"))
+	if err != nil {
+		return Config{}, fmt.Errorf("CERTUS_TRUSTED_PROXIES: %w", err)
+	}
+	cfg.RateLimits.LoginSource, err = rateLimitPolicy(
+		"CERTUS_LOGIN_SOURCE_RATE_LIMIT", "CERTUS_LOGIN_SOURCE_RATE_WINDOW",
+		30, time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RateLimits.LoginIdentity, err = rateLimitPolicy(
+		"CERTUS_LOGIN_IDENTITY_RATE_LIMIT", "CERTUS_LOGIN_IDENTITY_RATE_WINDOW",
+		10, 5*time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RateLimits.MFA, err = rateLimitPolicy(
+		"CERTUS_MFA_RATE_LIMIT", "CERTUS_MFA_RATE_WINDOW",
+		10, 5*time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RateLimits.OAuth, err = rateLimitPolicy(
+		"CERTUS_OAUTH_RATE_LIMIT", "CERTUS_OAUTH_RATE_WINDOW",
+		600, time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RateLimits.Device, err = rateLimitPolicy(
+		"CERTUS_DEVICE_RATE_LIMIT", "CERTUS_DEVICE_RATE_WINDOW",
+		20, time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
 	if strings.EqualFold(cfg.Environment, "production") &&
 		cfg.DatabaseURL != "" &&
 		!cfg.SecretEncryptionKeys.Available() {
@@ -171,6 +223,75 @@ func boolean(name string, fallback bool) (bool, error) {
 	default:
 		return false, fmt.Errorf("%s must be a boolean", name)
 	}
+}
+
+func rateLimitPolicy(
+	limitName, windowName string,
+	defaultLimit int,
+	defaultWindow time.Duration,
+) (ratelimit.Policy, error) {
+	limit, err := integer(limitName, defaultLimit)
+	if err != nil || limit < 0 {
+		return ratelimit.Policy{}, fmt.Errorf("%s must be a non-negative integer", limitName)
+	}
+	if limit == 0 {
+		return ratelimit.Policy{}, nil
+	}
+	window, err := duration(windowName, defaultWindow)
+	if err != nil {
+		return ratelimit.Policy{}, err
+	}
+	policy := ratelimit.Policy{Limit: limit, Window: window}
+	if err := policy.Validate(); err != nil {
+		return ratelimit.Policy{}, fmt.Errorf(
+			"%s and %s must define 1-1000000 attempts over 1s-24h",
+			limitName, windowName,
+		)
+	}
+	return policy, nil
+}
+
+func integer(name string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func trustedProxies(raw string) ([]netip.Prefix, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	result := make([]netip.Prefix, 0)
+	seen := make(map[netip.Prefix]struct{})
+	for _, entry := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(entry)
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return nil, fmt.Errorf("%q is not an IP address or CIDR", value)
+			}
+			bits := 128
+			if address.Is4() {
+				bits = 32
+			}
+			prefix = netip.PrefixFrom(address.Unmap(), bits)
+		}
+		prefix = prefix.Masked()
+		if _, duplicate := seen[prefix]; duplicate {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		result = append(result, prefix)
+	}
+	return result, nil
 }
 
 func validateLDAP(cfg LDAPConfig) error {

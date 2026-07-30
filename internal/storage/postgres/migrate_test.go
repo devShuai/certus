@@ -230,3 +230,19 @@ func TestOIDCKeyEncryptionMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestRateLimitMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/020_rate_limits.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE rate_limit_buckets",
+		"octet_length(subject_hash) = 32",
+		"rate_limit_buckets_by_expiration",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("rate-limit migration does not contain %s", expected)
+		}
+	}
+}

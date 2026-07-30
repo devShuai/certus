@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"errors"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,11 +22,6 @@ type devicePageData struct {
 	Done      string
 }
 
-type deviceAttemptWindow struct {
-	start time.Time
-	count int
-}
-
 func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
@@ -37,6 +31,9 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
+		return
+	}
+	if !s.allowOAuthAttempt(w, r) {
 		return
 	}
 	registered, ok := s.authenticateOAuthClient(w, r)
@@ -100,9 +97,7 @@ func (s *server) devicePage(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "device.html", page)
 		return
 	}
-	if !s.allowDeviceLookup(r) {
-		w.Header().Set("Retry-After", "60")
-		writeProblem(w, http.StatusTooManyRequests, "rate_limited", "设备代码尝试过多，请稍后重试")
+	if !s.allowDeviceLookup(w, r) {
 		return
 	}
 	record, err := s.oauth.FindDeviceByUserCode(r.Context(), security.HashToken(normalizeUserCode(userCode)), s.now().UTC())
@@ -238,32 +233,4 @@ func displayUserCode(value string) string {
 		return ""
 	}
 	return normalized[:4] + "-" + normalized[4:]
-}
-
-func (s *server) allowDeviceLookup(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	now := s.now().UTC()
-	s.deviceAttemptsMu.Lock()
-	defer s.deviceAttemptsMu.Unlock()
-	if len(s.deviceAttempts) > 4096 {
-		for key, existing := range s.deviceAttempts {
-			if now.Sub(existing.start) >= time.Minute {
-				delete(s.deviceAttempts, key)
-			}
-		}
-	}
-	window := s.deviceAttempts[host]
-	if window.start.IsZero() || now.Sub(window.start) >= time.Minute {
-		s.deviceAttempts[host] = deviceAttemptWindow{start: now, count: 1}
-		return true
-	}
-	if window.count >= 20 {
-		return false
-	}
-	window.count++
-	s.deviceAttempts[host] = window
-	return true
 }

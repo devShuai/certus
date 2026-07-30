@@ -73,6 +73,9 @@ func (s *server) mfaLoginVerify(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_login_transaction", "多因素认证请求无效或已过期")
 		return
 	}
+	if !s.allowMFAAttempt(w, r, userID) {
+		return
+	}
 	err := s.mfa.Verify(r.Context(), userID, r.Form.Get("code"))
 	if err != nil {
 		message := "动态口令或恢复码不正确"

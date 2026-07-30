@@ -22,6 +22,7 @@ import (
 	"certus/internal/oauth"
 	"certus/internal/oidc"
 	httpserver "certus/internal/platform/http"
+	"certus/internal/ratelimit"
 	"certus/internal/session"
 	"certus/internal/storage/postgres"
 )
@@ -60,6 +61,8 @@ func main() {
 	var mfaRepository mfa.Repository = mfa.NewMemoryRepository()
 	var maintenanceRepository maintenance.Repository
 	var keys oidc.KeyRepository = &oidc.MemoryKeyRepository{}
+	var rateLimits ratelimit.Repository = ratelimit.NewMemoryRepository()
+	readiness := func(context.Context) error { return nil }
 	maintenanceRepository = maintenance.NewMemoryRepository(keys)
 	if cfg.DatabaseURL != "" {
 		pool, err := postgres.Open(ctx, cfg.DatabaseURL)
@@ -97,6 +100,8 @@ func main() {
 			)
 		}
 		keys = keyRepository
+		rateLimits = postgres.NewRateLimitRepository(pool)
+		readiness = pool.Ping
 		maintenanceRepository = postgres.NewMaintenanceRepository(pool)
 		logger.Info("postgres storage enabled")
 	} else {
@@ -123,6 +128,8 @@ func main() {
 		MFA:            mfaRepository,
 		Maintenance:    maintenanceService,
 		Keys:           keys,
+		RateLimits:     rateLimits,
+		Readiness:      readiness,
 	})
 	if err != nil {
 		logger.Error("initialize protocol execution", "error", err)

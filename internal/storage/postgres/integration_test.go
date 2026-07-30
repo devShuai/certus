@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
+	"certus/internal/ratelimit"
 	"certus/internal/secrets"
 	"certus/internal/session"
 
@@ -267,6 +270,46 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if credential, err := mfaRepository.Find(ctx, user.ID); err != nil || credential.RecoveryCodes != 1 {
 		t.Fatalf("MFA repository round trip failed: %#v %v", credential, err)
 	}
+	limiter := ratelimit.NewService(NewRateLimitRepository(pool))
+	rateNow := time.Now().UTC().Add(-2 * time.Minute)
+	for index, expected := range []bool{true, true, false} {
+		decision, err := limiter.Allow(
+			ctx,
+			"login.source",
+			"192.0.2.10",
+			ratelimit.Policy{Limit: 2, Window: time.Minute},
+			rateNow,
+		)
+		if err != nil || decision.Allowed != expected {
+			t.Fatalf("PostgreSQL rate-limit attempt %d: %#v %v", index+1, decision, err)
+		}
+	}
+	var allowed atomic.Int64
+	var attempts sync.WaitGroup
+	for range 20 {
+		attempts.Add(1)
+		go func() {
+			defer attempts.Done()
+			decision, err := limiter.Allow(
+				ctx,
+				"oauth.source",
+				"192.0.2.11",
+				ratelimit.Policy{Limit: 10, Window: time.Minute},
+				rateNow,
+			)
+			if err != nil {
+				t.Errorf("concurrent PostgreSQL rate limit: %v", err)
+				return
+			}
+			if decision.Allowed {
+				allowed.Add(1)
+			}
+		}()
+	}
+	attempts.Wait()
+	if allowed.Load() != 10 {
+		t.Fatalf("unexpected concurrent PostgreSQL allowance count: %d", allowed.Load())
+	}
 
 	legacyKeys := NewOIDCKeyRepository(pool)
 	legacySigner, err := oidc.NewSigner(ctx, legacyKeys)
@@ -369,5 +412,8 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	}
 	if deleted["audit_events"] != 1 {
 		t.Fatalf("maintenance did not remove expired audit event: %#v", deleted)
+	}
+	if deleted["rate_limit_buckets"] != 2 {
+		t.Fatalf("maintenance did not remove expired rate-limit bucket: %#v", deleted)
 	}
 }

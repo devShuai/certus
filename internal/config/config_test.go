@@ -67,6 +67,35 @@ func TestLoadSecretEncryptionKeyRingAndSigningRotation(t *testing.T) {
 	}
 }
 
+func TestLoadRateLimitsAndTrustedProxies(t *testing.T) {
+	t.Setenv("CERTUS_TRUSTED_PROXIES", "10.0.0.0/8, 192.0.2.10")
+	t.Setenv("CERTUS_LOGIN_SOURCE_RATE_LIMIT", "12")
+	t.Setenv("CERTUS_LOGIN_SOURCE_RATE_WINDOW", "2m")
+	t.Setenv("CERTUS_OAUTH_RATE_LIMIT", "0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TrustedProxies) != 2 ||
+		cfg.RateLimits.LoginSource.Limit != 12 ||
+		cfg.RateLimits.LoginSource.Window != 2*time.Minute ||
+		cfg.RateLimits.OAuth.Enabled() {
+		t.Fatalf("unexpected proxy or rate-limit configuration: %#v", cfg)
+	}
+}
+
+func TestLoadRejectsInvalidRateLimitAndTrustedProxy(t *testing.T) {
+	t.Setenv("CERTUS_LOGIN_SOURCE_RATE_WINDOW", "500ms")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "1s-24h") {
+		t.Fatalf("expected invalid rate-limit error, got %v", err)
+	}
+	t.Setenv("CERTUS_LOGIN_SOURCE_RATE_WINDOW", "1m")
+	t.Setenv("CERTUS_TRUSTED_PROXIES", "not-an-address")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "IP address or CIDR") {
+		t.Fatalf("expected invalid trusted proxy error, got %v", err)
+	}
+}
+
 func TestLoadAcceptsStrongAdminToken(t *testing.T) {
 	t.Setenv("CERTUS_ADMIN_TOKEN", strings.Repeat("a", 32))
 	cfg, err := Load()

@@ -42,6 +42,7 @@ func (r *MaintenanceRepository) Cleanup(
 		{"cas_proxy_granting_tickets", `DELETE FROM cas_proxy_granting_tickets WHERE expires_at < $1`, []any{now}},
 		{"password_reset_tokens", `DELETE FROM password_reset_tokens WHERE expires_at < $1 OR consumed_at < $2`, []any{now, cutoff}},
 		{"sessions", `DELETE FROM sessions WHERE expires_at < $1 OR revoked_at < $2`, []any{now, cutoff}},
+		{"rate_limit_buckets", `DELETE FROM rate_limit_buckets WHERE window_ends_at < $1`, []any{now}},
 		{"audit_events", `DELETE FROM audit_events WHERE occurred_at < $1`, []any{auditBefore}},
 		{"oidc_signing_keys", `DELETE FROM oidc_signing_keys WHERE active = false AND retired_at < $1`, []any{signingKeyBefore}},
 	}

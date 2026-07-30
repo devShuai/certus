@@ -3,7 +3,6 @@ package httpserver
 import (
 	"crypto/subtle"
 	"errors"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -128,6 +127,9 @@ func (s *server) loginPassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !s.allowLoginAttempt(w, r, r.Form.Get("username")) {
+		return
+	}
 	user, err := s.passwords.Authenticate(r.Context(), r.Form.Get("username"), r.Form.Get("password"))
 	if err != nil {
 		s.recordAudit(r, audit.Event{
@@ -176,6 +178,9 @@ func (s *server) loginLDAP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !s.allowLoginAttempt(w, r, r.Form.Get("username")) {
+		return
+	}
 	profile, err := s.ldap.Authenticate(r.Context(), r.Form.Get("username"), r.Form.Get("password"))
 	if err != nil {
 		s.recordAudit(r, audit.Event{
@@ -217,6 +222,9 @@ func (s *server) loginOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	if registered, ok := s.loginClient(r, returnTo); ok && !slices.Contains(registered.LoginMethods, client.LoginOIDC) {
 		writeProblem(w, http.StatusBadRequest, "login_method_not_allowed", "此系统未启用外部身份提供商登录")
+		return
+	}
+	if !s.allowLoginSource(w, r, "login.oidc_source") {
 		return
 	}
 	state, err := security.RandomToken(24)
@@ -371,7 +379,6 @@ func (s *server) completeLogin(w http.ResponseWriter, r *http.Request, user iden
 }
 
 func (s *server) createLoginSession(w http.ResponseWriter, r *http.Request, user identity.User, returnTo, method, clientID string, mfaVerified bool) {
-	ipAddress, _, _ := net.SplitHostPort(r.RemoteAddr)
 	authMethods := []string{"pwd"}
 	if method == "oidc" {
 		authMethods = []string{"federated"}
@@ -382,7 +389,7 @@ func (s *server) createLoginSession(w http.ResponseWriter, r *http.Request, user
 		assuranceLevel = "urn:certus:aal:2"
 	}
 	_, token, err := s.sessions.CreateWithMethods(
-		r.Context(), user.ID, ipAddress, r.UserAgent(), authMethods, assuranceLevel,
+		r.Context(), user.ID, s.requestIPAddress(r), r.UserAgent(), authMethods, assuranceLevel,
 	)
 	if err != nil {
 		s.recordAudit(r, audit.Event{

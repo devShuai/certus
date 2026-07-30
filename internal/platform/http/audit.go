@@ -72,7 +72,7 @@ func (s *server) recordAudit(r *http.Request, event audit.Event) {
 		}
 		event.Details["admin_auth_method"] = principal.AuthMethod
 	}
-	event.IPAddress = requestIPAddress(r)
+	event.IPAddress = s.requestIPAddress(r)
 	event.RequestID = requestIDValue(r)
 	normalized, err := audit.Normalize(event, s.now().UTC())
 	if err != nil {

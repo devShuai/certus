@@ -13,7 +13,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 
 - 可优雅关闭的 HTTP 服务
 - 环境变量配置与结构化日志
-- 健康检查、请求 ID 和基础安全响应头
+- 区分存活与依赖就绪的健康检查、请求 ID 和基础安全响应头
 - 账号密码登录、Argon2id 凭据、失败锁定和安全 Cookie 会话
 - 登录页与认证后的中间落地页
 - 接入系统领域模型、内存仓储与只读查询 API
@@ -29,6 +29,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 - CAS 1.0/2.0/3.0 Service Ticket 校验、PGT/PT 代理认证、Gateway、Renew 和后端单点登出
 - 可选 PostgreSQL 连接池与内嵌、带校验和的自动迁移
 - PostgreSQL 全协议仓储；未配置数据库时自动使用开发内存仓储
+- 登录、MFA、OAuth 和设备码的统一限流；PostgreSQL 模式支持多实例共享
 - 按客户端隔离的角色、权限点、临时授权与 `roles` scope 声明下发
 - 协议闭环端到端测试
 
@@ -38,7 +39,7 @@ Certus 是使用 Go 开发的统一认证中心，面向账号、单点登录、
 go run ./cmd/certus
 ```
 
-打开 <http://localhost:8080>。健康检查位于 <http://localhost:8080/healthz>。
+打开 <http://localhost:8080>。`/healthz` 只反映进程存活，`/readyz` 会在 2 秒内检查 PostgreSQL 等必要依赖；依赖不可用时返回 `503`，可直接用于容器存活与就绪探针。
 
 当前示例客户端为 `specus`，只读接口如下：
 
@@ -418,9 +419,36 @@ OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oau
 
 配置 `backchannel_logout_uri` 后，Certus 会记录每个统一会话访问过的 OIDC 客户端。用户退出、RP-Initiated Logout、账户或管理员撤销会话、改密/重置密码以及管理员重置 MFA 时，服务端会向相关客户端并行 POST 带签名 `logout+jwt` 的 `logout_token`。令牌包含 `iss`、`sub`、`aud`、`iat`、`exp`、`jti`、`sid` 与标准退出 `events`，不包含 `nonce`；单次注销投递共用 5 秒超时且不跟随重定向。
 
+## 请求来源与认证限流
+
+Certus 对密码/LDAP 登录、MFA、OAuth 令牌及元数据端点和设备码查询执行固定窗口限流。登录同时按来源地址和规范化账号计数，MFA 同时按来源地址和用户计数；PostgreSQL 模式使用原子更新在多个实例间共享状态，数据库仅保存主体的 SHA-256，不保存用户名或 IP 明文。限流仓储不可用时认证请求会拒绝继续，避免无保护降级。
+
+```powershell
+$env:CERTUS_LOGIN_SOURCE_RATE_LIMIT='30'
+$env:CERTUS_LOGIN_SOURCE_RATE_WINDOW='1m'
+$env:CERTUS_LOGIN_IDENTITY_RATE_LIMIT='10'
+$env:CERTUS_LOGIN_IDENTITY_RATE_WINDOW='5m'
+$env:CERTUS_MFA_RATE_LIMIT='10'
+$env:CERTUS_MFA_RATE_WINDOW='5m'
+$env:CERTUS_OAUTH_RATE_LIMIT='600'
+$env:CERTUS_OAUTH_RATE_WINDOW='1m'
+$env:CERTUS_DEVICE_RATE_LIMIT='20'
+$env:CERTUS_DEVICE_RATE_WINDOW='1m'
+```
+
+将对应的 `*_RATE_LIMIT` 设为 `0` 可单独关闭一类限制。每个窗口必须在 1 秒到 24 小时之间；被限制的响应返回 `429`、`Retry-After` 和 `X-RateLimit-*` 元数据。
+
+默认只使用 TCP 直连来源地址并忽略转发头。部署在反向代理后时，应仅登记真实代理的 IP 或 CIDR：
+
+```powershell
+$env:CERTUS_TRUSTED_PROXIES='10.0.0.0/8,192.0.2.10'
+```
+
+只有直接连接来自上述可信网段时才会解析 `X-Forwarded-For`，并从右向左剥离可信代理；格式异常或链路过长时退回直连地址，防止客户端伪造来源绕过限流或污染审计。
+
 ## 运维与密钥轮换
 
-PostgreSQL 模式默认启动时执行一次清理，之后每 15 分钟清理过期或已消费的 OAuth、CAS、会话、密码重置数据；审计默认保留 90 天。管理员也可调用 `POST /api/v1/admin/maintenance/cleanup` 立即执行并取得各表删除计数。
+PostgreSQL 模式默认启动时执行一次清理，之后每 15 分钟清理过期或已消费的 OAuth、CAS、会话、密码重置及限流数据；审计默认保留 90 天。管理员也可调用 `POST /api/v1/admin/maintenance/cleanup` 立即执行并取得各表删除计数。
 
 ```powershell
 $env:CERTUS_CLEANUP_INTERVAL='15m'       # 设为 0 关闭定时清理

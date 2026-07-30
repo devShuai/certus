@@ -1,6 +1,8 @@
 package httpserver
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +25,32 @@ func TestHealth(t *testing.T) {
 	}
 	if response.Header().Get("X-Request-ID") == "" {
 		t.Fatal("missing request ID")
+	}
+}
+
+func TestReadinessReflectsDependencyState(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	readyServer := &server{
+		logger:    logger,
+		readiness: func(context.Context) error { return nil },
+	}
+	response := httptest.NewRecorder()
+	readyServer.ready(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"ready"`) {
+		t.Fatalf("unexpected ready response: %d %s", response.Code, response.Body.String())
+	}
+
+	unavailableServer := &server{
+		logger: logger,
+		readiness: func(context.Context) error {
+			return errors.New("dependency unavailable")
+		},
+	}
+	response = httptest.NewRecorder()
+	unavailableServer.ready(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(response.Body.String(), `"status":"unavailable"`) {
+		t.Fatalf("unexpected unavailable response: %d %s", response.Code, response.Body.String())
 	}
 }
 

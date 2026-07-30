@@ -264,6 +264,9 @@ func (s *server) token(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
 		return
 	}
+	if !s.allowOAuthAttempt(w, r) {
+		return
+	}
 	registered, ok := s.authenticateOAuthClient(w, r)
 	if !ok {
 		return
@@ -626,6 +629,9 @@ func (s *server) introspect(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
 		return
 	}
+	if !s.allowOAuthAttempt(w, r) {
+		return
+	}
 	registered, ok := s.authenticateConfidentialOAuthClient(w, r)
 	if !ok {
 		return
@@ -724,6 +730,9 @@ func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
 		return
 	}
+	if !s.allowOAuthAttempt(w, r) {
+		return
+	}
 	registered, ok := s.authenticateOAuthClient(w, r)
 	if !ok {
 		return
@@ -755,6 +764,9 @@ func (s *server) revokeToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) userinfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if !s.allowOAuthAttempt(w, r) {
+		return
+	}
 	raw := ""
 	authorization := strings.Fields(r.Header.Get("Authorization"))
 	if len(authorization) == 2 && strings.EqualFold(authorization[0], "Bearer") {
