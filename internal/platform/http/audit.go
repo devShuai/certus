@@ -74,6 +74,7 @@ func (s *server) recordAudit(r *http.Request, event audit.Event) {
 	}
 	event.IPAddress = s.requestIPAddress(r)
 	event.RequestID = requestIDValue(r)
+	s.recordAuditMetrics(event)
 	normalized, err := audit.Normalize(event, s.now().UTC())
 	if err != nil {
 		s.logger.Error("normalize audit event", "event_type", event.EventType, "error", err)
@@ -81,6 +82,15 @@ func (s *server) recordAudit(r *http.Request, event audit.Event) {
 	}
 	if _, err := s.audit.Append(r.Context(), normalized); err != nil {
 		s.logger.Error("append audit event", "event_type", event.EventType, "error", err)
+	}
+}
+
+func (s *server) recordAuditMetrics(event audit.Event) {
+	if strings.HasPrefix(event.EventType, "login.") {
+		s.metrics.RecordAuthentication(
+			strings.TrimPrefix(event.EventType, "login."),
+			string(event.Outcome),
+		)
 	}
 }
 

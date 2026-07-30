@@ -19,6 +19,7 @@ import (
 	"certus/internal/federation"
 	"certus/internal/identity"
 	"certus/internal/maintenance"
+	"certus/internal/metrics"
 	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
@@ -45,6 +46,7 @@ type server struct {
 	maintenance    *maintenance.Service
 	signer         *oidc.Signer
 	rateLimits     *ratelimit.Service
+	metrics        *metrics.Registry
 	readiness      func(context.Context) error
 	outbound       *http.Client
 	ldap           *federation.LDAPAuthenticator
@@ -107,6 +109,7 @@ type Dependencies struct {
 	Maintenance        *maintenance.Service
 	Keys               oidc.KeyRepository
 	RateLimits         ratelimit.Repository
+	Metrics            *metrics.Registry
 	Readiness          func(context.Context) error
 	OutboundHTTPClient *http.Client
 }
@@ -139,6 +142,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	}
 	if dependencies.RateLimits == nil {
 		dependencies.RateLimits = ratelimit.NewMemoryRepository()
+	}
+	if dependencies.Metrics == nil {
+		dependencies.Metrics = metrics.NewRegistry()
 	}
 	if dependencies.Readiness == nil {
 		dependencies.Readiness = func(context.Context) error { return nil }
@@ -181,6 +187,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		maintenance:    dependencies.Maintenance,
 		signer:         signer,
 		rateLimits:     ratelimit.NewService(dependencies.RateLimits),
+		metrics:        dependencies.Metrics,
 		readiness:      dependencies.Readiness,
 		outbound:       outbound,
 		ldap:           federation.NewLDAPAuthenticator(cfg.LDAP),
@@ -198,7 +205,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
-	mux.HandleFunc("GET /", s.home)
+	mux.HandleFunc("GET /{$}", s.home)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginPassword)
 	mux.HandleFunc("POST /login/ldap", s.loginLDAP)
@@ -281,13 +288,16 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("GET /cas/logout", s.casLogout)
 	mux.HandleFunc("POST /cas/logout", s.casLogout)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.discovery)
+	if cfg.MetricsToken != "" {
+		mux.HandleFunc("GET /metrics", s.metricsEndpoint)
+	}
 
 	assets, err := fs.Sub(web.Files, "static")
 	if err != nil {
 		panic(err)
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(assets)))
-	return requestID(logging(securityHeaders(s.auditMutations(mux), s.secureCookies()), logger)), nil
+	return requestID(logging(securityHeaders(s.metrics.Middleware(s.auditMutations(mux)), s.secureCookies()), logger)), nil
 }
 
 func (s *server) render(w http.ResponseWriter, name string, data any) {
@@ -302,13 +312,18 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if err := s.readiness(ctx); err != nil {
+		s.metrics.RecordReadiness("unavailable")
+		s.metrics.RecordBackground("readiness", "failure", time.Since(started))
 		s.logger.Warn("readiness check failed", "error", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
 		return
 	}
+	s.metrics.RecordReadiness("ready")
+	s.metrics.RecordBackground("readiness", "success", time.Since(started))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 

@@ -43,6 +43,7 @@ type Service struct {
 	auditRetention      time.Duration
 	signingKeyRetention time.Duration
 	now                 func() time.Time
+	observer            func(string, time.Duration)
 }
 
 func NewService(repository Repository, auditRetention, signingKeyRetention time.Duration) *Service {
@@ -60,7 +61,18 @@ func NewService(repository Repository, auditRetention, signingKeyRetention time.
 	}
 }
 
+func (s *Service) SetObserver(observer func(result string, duration time.Duration)) {
+	s.observer = observer
+}
+
 func (s *Service) RunOnce(ctx context.Context) (Result, error) {
+	started := time.Now()
+	result := "failure"
+	defer func() {
+		if s.observer != nil {
+			s.observer(result, time.Since(started))
+		}
+	}()
 	now := s.now().UTC()
 	deleted, err := s.repository.Cleanup(
 		ctx,
@@ -71,6 +83,7 @@ func (s *Service) RunOnce(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	result = "success"
 	return Result{CompletedAt: now, Deleted: deleted}, nil
 }
 

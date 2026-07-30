@@ -101,6 +101,7 @@ func (s *server) allowRateLimitedRequest(
 	now := s.now().UTC()
 	result, err := s.rateLimits.Allow(r.Context(), scope, subject, policy, now)
 	if err != nil {
+		s.metrics.RecordRateLimit(scope, "error")
 		s.logger.Error("apply rate limit", "scope", scope, "error", err)
 		if oauthStyle {
 			writeOAuthError(
@@ -122,8 +123,10 @@ func (s *server) allowRateLimitedRequest(
 	w.Header().Set("X-RateLimit-Remaining", fmt.Sprint(result.Remaining))
 	w.Header().Set("X-RateLimit-Reset", fmt.Sprint(result.ResetAt.Unix()))
 	if result.Allowed {
+		s.metrics.RecordRateLimit(scope, "allowed")
 		return true
 	}
+	s.metrics.RecordRateLimit(scope, "blocked")
 	retryAfter := int(math.Ceil(result.ResetAt.Sub(now).Seconds()))
 	if retryAfter < 1 {
 		retryAfter = 1

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"certus/internal/access"
 	"certus/internal/administration"
@@ -18,6 +19,7 @@ import (
 	"certus/internal/config"
 	"certus/internal/identity"
 	"certus/internal/maintenance"
+	"certus/internal/metrics"
 	"certus/internal/mfa"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
@@ -46,6 +48,8 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	metricRegistry := metrics.NewRegistry()
+	metricRegistry.SetBuildInfo(version, commit)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -102,6 +106,19 @@ func main() {
 		keys = keyRepository
 		rateLimits = postgres.NewRateLimitRepository(pool)
 		readiness = pool.Ping
+		metricRegistry.SetDatabaseStatsProvider(func() metrics.DatabaseStats {
+			stats := pool.Stat()
+			return metrics.DatabaseStats{
+				MaxConnections:       stats.MaxConns(),
+				TotalConnections:     stats.TotalConns(),
+				AcquiredConnections:  stats.AcquiredConns(),
+				IdleConnections:      stats.IdleConns(),
+				AcquireCount:         stats.AcquireCount(),
+				EmptyAcquireCount:    stats.EmptyAcquireCount(),
+				CanceledAcquireCount: stats.CanceledAcquireCount(),
+				AcquireDuration:      stats.AcquireDuration(),
+			}
+		})
 		maintenanceRepository = postgres.NewMaintenanceRepository(pool)
 		logger.Info("postgres storage enabled")
 	} else {
@@ -113,6 +130,9 @@ func main() {
 		cfg.AuditRetention,
 		cfg.SigningKeyRetention,
 	)
+	maintenanceService.SetObserver(func(result string, duration time.Duration) {
+		metricRegistry.RecordBackground("maintenance", result, duration)
+	})
 	go maintenanceService.Run(ctx, cfg.CleanupInterval, logger)
 
 	handler, err := httpserver.NewWithDependencies(ctx, cfg, logger, httpserver.Dependencies{
@@ -129,6 +149,7 @@ func main() {
 		Maintenance:    maintenanceService,
 		Keys:           keys,
 		RateLimits:     rateLimits,
+		Metrics:        metricRegistry,
 		Readiness:      readiness,
 	})
 	if err != nil {

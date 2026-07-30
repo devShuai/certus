@@ -446,6 +446,26 @@ $env:CERTUS_TRUSTED_PROXIES='10.0.0.0/8,192.0.2.10'
 
 只有直接连接来自上述可信网段时才会解析 `X-Forwarded-For`，并从右向左剥离可信代理；格式异常或链路过长时退回直连地址，防止客户端伪造来源绕过限流或污染审计。
 
+## Prometheus 指标
+
+配置独立的高熵令牌后才会注册 `GET /metrics`；未配置时该路径返回 `404`。指标令牌与管理员应急令牌相互独立：
+
+```powershell
+$env:CERTUS_METRICS_TOKEN='<至少 32 个字符的随机值>'
+curl.exe -H "Authorization: Bearer $env:CERTUS_METRICS_TOKEN" http://localhost:8080/metrics
+```
+
+当前指标覆盖：
+
+- HTTP 请求数、响应字节和固定桶耗时直方图
+- 密码、LDAP、OIDC 与 MFA 各认证阶段的成功/失败数
+- 各限流作用域的允许、拦截与仓储错误数
+- 就绪检查、过期数据清理和签名密钥轮换结果及耗时
+- PostgreSQL 连接池总量、占用、空闲、获取次数和获取耗时
+- 可执行文件版本和提交信息
+
+HTTP 指标的 `route` 标签来自 Go 路由模板，例如 `GET /api/v1/admin/users/{userID}`，不会使用原始 URL；认证和限流标签也只接受代码内的固定低基数值，不包含用户名、用户 ID、客户端 ID、IP、令牌或密钥。
+
 ## 运维与密钥轮换
 
 PostgreSQL 模式默认启动时执行一次清理，之后每 15 分钟清理过期或已消费的 OAuth、CAS、会话、密码重置及限流数据；审计默认保留 90 天。管理员也可调用 `POST /api/v1/admin/maintenance/cleanup` 立即执行并取得各表删除计数。

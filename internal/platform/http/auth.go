@@ -279,11 +279,13 @@ func (s *server) loginOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(externalOIDCCookieName)
 	s.clearExternalOIDCCookie(w)
 	if err != nil {
+		s.metrics.RecordAuthentication("oidc", "failure")
 		writeProblem(w, http.StatusBadRequest, "invalid_login_transaction", "外部登录请求已失效")
 		return
 	}
 	claims, err := s.signer.Verify(cookie.Value)
 	if err != nil || !s.validExternalOIDCClaims(claims, r.URL.Query().Get("state")) {
+		s.metrics.RecordAuthentication("oidc", "failure")
 		writeProblem(w, http.StatusBadRequest, "invalid_login_transaction", "外部登录请求无效或已过期")
 		return
 	}
@@ -291,22 +293,26 @@ func (s *server) loginOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	nonce, _ := claims["nonce"].(string)
 	verifier, _ := claims["verifier"].(string)
 	if providerError := r.URL.Query().Get("error"); providerError != "" {
+		s.metrics.RecordAuthentication("oidc", "failure")
 		s.renderLoginError(w, r, returnTo, "外部身份提供商未完成登录")
 		return
 	}
 	profile, err := s.externalOIDC.Exchange(r.Context(), r.URL.Query().Get("code"), nonce, verifier)
 	if err != nil {
+		s.metrics.RecordAuthentication("oidc", "failure")
 		s.logger.Warn("complete external OIDC login", "error", err)
 		s.renderLoginError(w, r, returnTo, "外部身份验证失败")
 		return
 	}
 	user, err := s.externalUsers.ResolveExternalIdentity(r.Context(), profile, s.now().UTC())
 	if err != nil {
+		s.metrics.RecordAuthentication("oidc", "failure")
 		s.logger.Error("resolve external OIDC identity", "error", err)
 		s.renderLoginError(w, r, returnTo, "无法同步外部身份账号")
 		return
 	}
 	if user.Status != identity.UserActive {
+		s.metrics.RecordAuthentication("oidc", "failure")
 		s.renderLoginError(w, r, returnTo, "账号当前不可登录")
 		return
 	}

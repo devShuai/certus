@@ -107,6 +107,18 @@ func TestLoadAcceptsStrongAdminToken(t *testing.T) {
 	}
 }
 
+func TestLoadValidatesMetricsToken(t *testing.T) {
+	t.Setenv("CERTUS_METRICS_TOKEN", "short")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CERTUS_METRICS_TOKEN") {
+		t.Fatalf("expected short metrics token error, got %v", err)
+	}
+	t.Setenv("CERTUS_METRICS_TOKEN", strings.Repeat("m", 32))
+	cfg, err := Load()
+	if err != nil || len(cfg.MetricsToken) != 32 {
+		t.Fatalf("valid metrics token was rejected: %#v %v", cfg, err)
+	}
+}
+
 func TestLoadLDAPConfiguration(t *testing.T) {
 	t.Setenv("CERTUS_LDAP_URL", "ldaps://directory.example.com")
 	t.Setenv("CERTUS_LDAP_BASE_DN", "ou=people,dc=example,dc=com")

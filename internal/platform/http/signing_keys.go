@@ -38,16 +38,20 @@ func (s *server) runSigningKeyRotation(ctx context.Context, maxAge time.Duration
 		return
 	}
 	run := func() {
+		started := time.Now()
 		kid, rotated, err := s.signer.RotateIfOlderThan(ctx, maxAge, s.now().UTC())
 		if err != nil {
+			s.metrics.RecordBackground("signing_key_rotation", "failure", time.Since(started))
 			if ctx.Err() == nil {
 				s.logger.Error("automatic OIDC signing key rotation failed", "error", err)
 			}
 			return
 		}
 		if !rotated {
+			s.metrics.RecordBackground("signing_key_rotation", "not_due", time.Since(started))
 			return
 		}
+		s.metrics.RecordBackground("signing_key_rotation", "success", time.Since(started))
 		s.logger.Info("OIDC signing key automatically rotated", "kid", kid)
 		s.recordSystemAudit(ctx, audit.Event{
 			EventType: "oidc.signing_key_rotated",

@@ -20,6 +20,7 @@ type Config struct {
 	Environment          string
 	DatabaseURL          string
 	AdminToken           string
+	MetricsToken         string
 	MFAEncryptionKey     []byte
 	SecretEncryptionKeys secrets.KeyRing
 	TrustedProxies       []netip.Prefix
@@ -77,6 +78,9 @@ func Load() (Config, error) {
 		Environment: env("CERTUS_ENV", "development"),
 		DatabaseURL: strings.TrimSpace(os.Getenv("CERTUS_DATABASE_URL")),
 		AdminToken:  strings.TrimSpace(os.Getenv("CERTUS_ADMIN_TOKEN")),
+		MetricsToken: strings.TrimSpace(
+			os.Getenv("CERTUS_METRICS_TOKEN"),
+		),
 		LDAP: LDAPConfig{
 			URL:                  strings.TrimSpace(os.Getenv("CERTUS_LDAP_URL")),
 			BaseDN:               strings.TrimSpace(os.Getenv("CERTUS_LDAP_BASE_DN")),
@@ -125,6 +129,9 @@ func Load() (Config, error) {
 	}
 	if cfg.AdminToken != "" && len(cfg.AdminToken) < 32 {
 		return Config{}, fmt.Errorf("CERTUS_ADMIN_TOKEN must contain at least 32 characters")
+	}
+	if cfg.MetricsToken != "" && len(cfg.MetricsToken) < 32 {
+		return Config{}, fmt.Errorf("CERTUS_METRICS_TOKEN must contain at least 32 characters")
 	}
 	cfg.MFAEncryptionKey, err = mfa.DecodeEncryptionKey(os.Getenv("CERTUS_MFA_ENCRYPTION_KEY"))
 	if err != nil {
