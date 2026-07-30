@@ -370,13 +370,21 @@ GET  /api/v1/admin/clients/{client_id}/integration
 ```text
 GET  /api/v1/admin/clients/{client_id}/roles
 POST /api/v1/admin/clients/{client_id}/roles
+GET  /api/v1/admin/clients/{client_id}/roles/{role_id}
+PUT  /api/v1/admin/clients/{client_id}/roles/{role_id}
+DELETE /api/v1/admin/clients/{client_id}/roles/{role_id}
 GET  /api/v1/admin/clients/{client_id}/permissions
 POST /api/v1/admin/clients/{client_id}/permissions
+GET  /api/v1/admin/clients/{client_id}/permissions/{permission_id}
+PUT  /api/v1/admin/clients/{client_id}/permissions/{permission_id}
+DELETE /api/v1/admin/clients/{client_id}/permissions/{permission_id}
 GET  /api/v1/admin/clients/{client_id}/roles/{role_id}/permissions
 PUT  /api/v1/admin/clients/{client_id}/roles/{role_id}/permissions
 GET  /api/v1/admin/users/{user_id}/roles?client_id=
 PUT  /api/v1/admin/users/{user_id}/roles
 ```
+
+角色和权限点的 `PUT` 都采用完整替换语义。为避免误操作静默改变线上授权，仍分配给任一用户（包括已过期分配）的角色不能删除，仍被任一角色引用的权限点也不能删除；接口返回 `409 Conflict`，管理员解除对应分配或映射后才能继续。角色、权限点、权限映射及用户角色的变更会写入细粒度审计事件。
 
 角色授予采用完整替换语义：
 

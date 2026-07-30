@@ -253,12 +253,65 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if _, err := accessRepository.CreateRole(ctx, role); err != nil {
 		t.Fatal(err)
 	}
+	permission, err := access.NewPermission(registered.ID, access.CreatePermission{Code: "invoice.approve", Name: "Approve invoice"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accessRepository.CreatePermission(ctx, permission); err != nil {
+		t.Fatal(err)
+	}
+	updatedRole, err := role.Updated(access.UpdateRole{Code: "senior-approver", Name: "Senior approver"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedRole, err = accessRepository.ReplaceRole(ctx, updatedRole); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := accessRepository.FindRole(ctx, registered.ID, role.ID); err != nil || found.Code != "senior-approver" {
+		t.Fatalf("find updated PostgreSQL role: %#v %v", found, err)
+	}
+	updatedPermission, err := permission.Updated(access.UpdatePermission{Code: "invoice.approve.high-value", Name: "Approve high-value invoice"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedPermission, err = accessRepository.ReplacePermission(ctx, updatedPermission); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := accessRepository.FindPermission(ctx, registered.ID, permission.ID); err != nil || found.Code != "invoice.approve.high-value" {
+		t.Fatalf("find updated PostgreSQL permission: %#v %v", found, err)
+	}
+	if err := accessRepository.SetRolePermissions(ctx, registered.ID, role.ID, []string{permission.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accessRepository.DeletePermission(ctx, registered.ID, permission.ID); !errors.Is(err, access.ErrInUse) {
+		t.Fatalf("delete referenced PostgreSQL permission: %v", err)
+	}
 	if err := accessRepository.ReplaceUserRoles(ctx, user.ID, []access.RoleGrant{{RoleID: role.ID}}, "integration-test", time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	if err := accessRepository.DeleteRole(ctx, registered.ID, role.ID); !errors.Is(err, access.ErrInUse) {
+		t.Fatalf("delete assigned PostgreSQL role: %v", err)
+	}
 	entitlements, err := accessRepository.Effective(ctx, user.ID, registered.ID, time.Now())
-	if err != nil || len(entitlements.Roles) != 1 || entitlements.Roles[0] != "approver" {
+	if err != nil ||
+		len(entitlements.Roles) != 1 || entitlements.Roles[0] != "senior-approver" ||
+		len(entitlements.Permissions) != 1 || entitlements.Permissions[0] != "invoice.approve.high-value" {
 		t.Fatalf("access repository round trip failed: %#v %v", entitlements, err)
+	}
+	if err := accessRepository.ReplaceUserRoles(ctx, user.ID, nil, "integration-test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := accessRepository.SetRolePermissions(ctx, registered.ID, role.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := accessRepository.DeletePermission(ctx, registered.ID, permission.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := accessRepository.DeleteRole(ctx, registered.ID, role.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accessRepository.FindRole(ctx, registered.ID, role.ID); !errors.Is(err, access.ErrNotFound) {
+		t.Fatalf("find deleted PostgreSQL role: %v", err)
 	}
 
 	mfaRepository := NewMFARepository(pool)

@@ -725,18 +725,28 @@ async function loadAccessData(clientID) {
   await loadUserRoles();
 }
 
-function definitionItem(value) {
+function definitionItem(value, type) {
+  const trailing = element("div", { className: "row-actions" }, [
+    element("small", { text: value.description || value.id }),
+  ]);
+  if (can("admin.access.write")) {
+    const edit = button("编辑", "edit-access-definition", value.id);
+    edit.addEventListener("click", () => editDefinition(type, value));
+    const remove = button("删除", "delete-access-definition", value.id, "danger");
+    remove.addEventListener("click", () => deleteDefinition(type, value));
+    trailing.append(edit, remove);
+  }
   return element("div", { className: "compact-item" }, [
     element("div", {}, [element("strong", { text: value.name }), element("small", { text: value.code })]),
-    element("small", { text: value.description || value.id }),
+    trailing,
   ]);
 }
 
 function renderAccessDefinitions() {
   const roleList = document.querySelector("#role-list");
-  roleList.replaceChildren(...(state.roles.length ? state.roles.map(definitionItem) : [element("p", { className: "empty", text: "尚未创建角色" })]));
+  roleList.replaceChildren(...(state.roles.length ? state.roles.map((value) => definitionItem(value, "roles")) : [element("p", { className: "empty", text: "尚未创建角色" })]));
   const permissionList = document.querySelector("#permission-list");
-  permissionList.replaceChildren(...(state.permissions.length ? state.permissions.map(definitionItem) : [element("p", { className: "empty", text: "尚未创建权限点" })]));
+  permissionList.replaceChildren(...(state.permissions.length ? state.permissions.map((value) => definitionItem(value, "permissions")) : [element("p", { className: "empty", text: "尚未创建权限点" })]));
 
   const roleSelect = document.querySelector("#permission-role");
   const selected = roleSelect.value;
@@ -752,6 +762,7 @@ function renderAccessDefinitions() {
   options.replaceChildren();
   for (const permission of state.permissions) {
     const input = element("input", { type: "checkbox", name: "permission_ids", value: permission.id });
+    input.disabled = !can("admin.access.write");
     options.append(element("label", { className: "check" }, [input, document.createTextNode(`${permission.name}（${permission.code}）`)]));
   }
   if (!state.permissions.length) options.append(element("p", { className: "empty", text: "请先创建权限点" }));
@@ -760,6 +771,7 @@ function renderAccessDefinitions() {
   userOptions.replaceChildren();
   for (const role of state.roles) {
     const input = element("input", { type: "checkbox", name: "role_ids", value: role.id });
+    input.disabled = !can("admin.access.write");
     userOptions.append(element("label", { className: "check" }, [input, document.createTextNode(`${role.name}（${role.code}）`)]));
   }
   if (!state.roles.length) userOptions.append(element("p", { className: "empty", text: "请先创建角色" }));
@@ -784,6 +796,41 @@ async function createDefinition(event, type) {
     form.reset();
     await loadAccessData(clientID);
     setStatus(type === "roles" ? "角色已创建。" : "权限点已创建。", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function editDefinition(type, value) {
+  const label = type === "roles" ? "角色" : "权限点";
+  const code = window.prompt(`${label}代码`, value.code);
+  if (code === null) return;
+  const name = window.prompt(`${label}名称`, value.name);
+  if (name === null) return;
+  const description = window.prompt(`${label}说明`, value.description || "");
+  if (description === null) return;
+  const clientID = document.querySelector("#access-client").value;
+  try {
+    await api(`/api/v1/admin/clients/${clientID}/${type}/${value.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ code, name, description }),
+    });
+    await loadAccessData(clientID);
+    setStatus(`${label}已更新。`, "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function deleteDefinition(type, value) {
+  const label = type === "roles" ? "角色" : "权限点";
+  const referenceHint = type === "roles" ? "已分配给用户的角色不能删除。" : "仍被角色引用的权限点不能删除。";
+  if (!window.confirm(`确定删除${label}“${value.name}”吗？${referenceHint}`)) return;
+  const clientID = document.querySelector("#access-client").value;
+  try {
+    await api(`/api/v1/admin/clients/${clientID}/${type}/${value.id}`, { method: "DELETE" });
+    await loadAccessData(clientID);
+    setStatus(`${label}已删除。`, "success");
   } catch (error) {
     setStatus(error.message, "error");
   }

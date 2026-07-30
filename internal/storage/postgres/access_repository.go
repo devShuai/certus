@@ -8,6 +8,7 @@ import (
 
 	"certus/internal/access"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -63,6 +64,76 @@ func (r *AccessRepository) CreateRole(ctx context.Context, value access.Role) (a
 	return created, nil
 }
 
+func (r *AccessRepository) FindRole(ctx context.Context, clientID, roleID string) (access.Role, error) {
+	value, err := scanRole(r.pool.QueryRow(ctx, `
+		SELECT id::text, client_id, code, name, description, created_at, updated_at
+		FROM access_roles
+		WHERE id = $1 AND client_id = $2`,
+		roleID, clientID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return access.Role{}, access.ErrNotFound
+	}
+	if err != nil {
+		return access.Role{}, fmt.Errorf("find access role: %w", err)
+	}
+	return value, nil
+}
+
+func (r *AccessRepository) ReplaceRole(ctx context.Context, value access.Role) (access.Role, error) {
+	updated, err := scanRole(r.pool.QueryRow(ctx, `
+		UPDATE access_roles
+		SET code = $3, name = $4, description = $5, updated_at = $6
+		WHERE id = $1 AND client_id = $2
+		RETURNING id::text, client_id, code, name, description, created_at, updated_at`,
+		value.ID, value.ClientID, value.Code, value.Name, value.Description, value.UpdatedAt,
+	))
+	if isUniqueViolation(err) {
+		return access.Role{}, access.ErrConflict
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return access.Role{}, access.ErrNotFound
+	}
+	if err != nil {
+		return access.Role{}, fmt.Errorf("replace access role: %w", err)
+	}
+	return updated, nil
+}
+
+func (r *AccessRepository) DeleteRole(ctx context.Context, clientID, roleID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin access role deletion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var lockedID string
+	if err := tx.QueryRow(ctx, `
+		SELECT id::text
+		FROM access_roles
+		WHERE id = $1 AND client_id = $2
+		FOR UPDATE`,
+		roleID, clientID,
+	).Scan(&lockedID); errors.Is(err, pgx.ErrNoRows) {
+		return access.ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("lock access role for deletion: %w", err)
+	}
+	var inUse bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM access_user_roles WHERE role_id = $1)`, roleID).Scan(&inUse); err != nil {
+		return fmt.Errorf("check access role assignments: %w", err)
+	}
+	if inUse {
+		return access.ErrInUse
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM access_roles WHERE id = $1`, roleID); err != nil {
+		return fmt.Errorf("delete access role: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit access role deletion: %w", err)
+	}
+	return nil
+}
+
 func (r *AccessRepository) ListPermissions(ctx context.Context, clientID string) ([]access.Permission, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id::text, client_id, code, name, description, created_at, updated_at
@@ -103,6 +174,76 @@ func (r *AccessRepository) CreatePermission(ctx context.Context, value access.Pe
 		return access.Permission{}, fmt.Errorf("create access permission: %w", err)
 	}
 	return created, nil
+}
+
+func (r *AccessRepository) FindPermission(ctx context.Context, clientID, permissionID string) (access.Permission, error) {
+	value, err := scanPermission(r.pool.QueryRow(ctx, `
+		SELECT id::text, client_id, code, name, description, created_at, updated_at
+		FROM access_permissions
+		WHERE id = $1 AND client_id = $2`,
+		permissionID, clientID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return access.Permission{}, access.ErrNotFound
+	}
+	if err != nil {
+		return access.Permission{}, fmt.Errorf("find access permission: %w", err)
+	}
+	return value, nil
+}
+
+func (r *AccessRepository) ReplacePermission(ctx context.Context, value access.Permission) (access.Permission, error) {
+	updated, err := scanPermission(r.pool.QueryRow(ctx, `
+		UPDATE access_permissions
+		SET code = $3, name = $4, description = $5, updated_at = $6
+		WHERE id = $1 AND client_id = $2
+		RETURNING id::text, client_id, code, name, description, created_at, updated_at`,
+		value.ID, value.ClientID, value.Code, value.Name, value.Description, value.UpdatedAt,
+	))
+	if isUniqueViolation(err) {
+		return access.Permission{}, access.ErrConflict
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return access.Permission{}, access.ErrNotFound
+	}
+	if err != nil {
+		return access.Permission{}, fmt.Errorf("replace access permission: %w", err)
+	}
+	return updated, nil
+}
+
+func (r *AccessRepository) DeletePermission(ctx context.Context, clientID, permissionID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin access permission deletion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var lockedID string
+	if err := tx.QueryRow(ctx, `
+		SELECT id::text
+		FROM access_permissions
+		WHERE id = $1 AND client_id = $2
+		FOR UPDATE`,
+		permissionID, clientID,
+	).Scan(&lockedID); errors.Is(err, pgx.ErrNoRows) {
+		return access.ErrNotFound
+	} else if err != nil {
+		return fmt.Errorf("lock access permission for deletion: %w", err)
+	}
+	var inUse bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM access_role_permissions WHERE permission_id = $1)`, permissionID).Scan(&inUse); err != nil {
+		return fmt.Errorf("check access permission references: %w", err)
+	}
+	if inUse {
+		return access.ErrInUse
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM access_permissions WHERE id = $1`, permissionID); err != nil {
+		return fmt.Errorf("delete access permission: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit access permission deletion: %w", err)
+	}
+	return nil
 }
 
 func (r *AccessRepository) SetRolePermissions(ctx context.Context, clientID, roleID string, permissionIDs []string) error {

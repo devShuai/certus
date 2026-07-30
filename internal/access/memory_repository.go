@@ -58,6 +58,49 @@ func (r *MemoryRepository) CreateRole(_ context.Context, value Role) (Role, erro
 	return value, nil
 }
 
+func (r *MemoryRepository) FindRole(_ context.Context, clientID, roleID string) (Role, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	value, exists := r.roles[roleID]
+	if !exists || value.ClientID != clientID {
+		return Role{}, ErrNotFound
+	}
+	return value, nil
+}
+
+func (r *MemoryRepository) ReplaceRole(_ context.Context, value Role) (Role, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, exists := r.roles[value.ID]
+	if !exists || current.ClientID != value.ClientID {
+		return Role{}, ErrNotFound
+	}
+	for id, existing := range r.roles {
+		if id != value.ID && existing.ClientID == value.ClientID && existing.Code == value.Code {
+			return Role{}, ErrConflict
+		}
+	}
+	r.roles[value.ID] = value
+	return value, nil
+}
+
+func (r *MemoryRepository) DeleteRole(_ context.Context, clientID, roleID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value, exists := r.roles[roleID]
+	if !exists || value.ClientID != clientID {
+		return ErrNotFound
+	}
+	for _, assignment := range r.userRoles {
+		if assignment.RoleID == roleID {
+			return ErrInUse
+		}
+	}
+	delete(r.roles, roleID)
+	delete(r.rolePermissions, roleID)
+	return nil
+}
+
 func (r *MemoryRepository) ListPermissions(_ context.Context, clientID string) ([]Permission, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -83,6 +126,48 @@ func (r *MemoryRepository) CreatePermission(_ context.Context, value Permission)
 	}
 	r.permissions[value.ID] = value
 	return value, nil
+}
+
+func (r *MemoryRepository) FindPermission(_ context.Context, clientID, permissionID string) (Permission, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	value, exists := r.permissions[permissionID]
+	if !exists || value.ClientID != clientID {
+		return Permission{}, ErrNotFound
+	}
+	return value, nil
+}
+
+func (r *MemoryRepository) ReplacePermission(_ context.Context, value Permission) (Permission, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, exists := r.permissions[value.ID]
+	if !exists || current.ClientID != value.ClientID {
+		return Permission{}, ErrNotFound
+	}
+	for id, existing := range r.permissions {
+		if id != value.ID && existing.ClientID == value.ClientID && existing.Code == value.Code {
+			return Permission{}, ErrConflict
+		}
+	}
+	r.permissions[value.ID] = value
+	return value, nil
+}
+
+func (r *MemoryRepository) DeletePermission(_ context.Context, clientID, permissionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value, exists := r.permissions[permissionID]
+	if !exists || value.ClientID != clientID {
+		return ErrNotFound
+	}
+	for _, permissionIDs := range r.rolePermissions {
+		if _, assigned := permissionIDs[permissionID]; assigned {
+			return ErrInUse
+		}
+	}
+	delete(r.permissions, permissionID)
+	return nil
 }
 
 func (r *MemoryRepository) SetRolePermissions(_ context.Context, clientID, roleID string, permissionIDs []string) error {

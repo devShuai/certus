@@ -14,6 +14,7 @@ import (
 var (
 	ErrNotFound = errors.New("access object not found")
 	ErrConflict = errors.New("access object already exists")
+	ErrInUse    = errors.New("access object is in use")
 	ErrInvalid  = errors.New("invalid access object")
 )
 
@@ -49,6 +50,18 @@ type CreatePermission struct {
 	Description string `json:"description"`
 }
 
+type UpdateRole struct {
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type UpdatePermission struct {
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 type RoleGrant struct {
 	RoleID    string     `json:"role_id"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
@@ -71,9 +84,15 @@ type Entitlements struct {
 
 type Repository interface {
 	ListRoles(context.Context, string) ([]Role, error)
+	FindRole(context.Context, string, string) (Role, error)
 	CreateRole(context.Context, Role) (Role, error)
+	ReplaceRole(context.Context, Role) (Role, error)
+	DeleteRole(context.Context, string, string) error
 	ListPermissions(context.Context, string) ([]Permission, error)
+	FindPermission(context.Context, string, string) (Permission, error)
 	CreatePermission(context.Context, Permission) (Permission, error)
+	ReplacePermission(context.Context, Permission) (Permission, error)
+	DeletePermission(context.Context, string, string) error
 	SetRolePermissions(context.Context, string, string, []string) error
 	ListRolePermissions(context.Context, string, string) ([]Permission, error)
 	ReplaceUserRoles(context.Context, string, []RoleGrant, string, time.Time) error
@@ -123,6 +142,30 @@ func NewPermission(clientID string, input CreatePermission, now time.Time) (Perm
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}, nil
+}
+
+func (r Role) Updated(input UpdateRole, now time.Time) (Role, error) {
+	code, name, description, err := validateDefinition(r.ClientID, input.Code, input.Name, input.Description)
+	if err != nil {
+		return Role{}, err
+	}
+	r.Code = code
+	r.Name = name
+	r.Description = description
+	r.UpdatedAt = now.UTC()
+	return r, nil
+}
+
+func (p Permission) Updated(input UpdatePermission, now time.Time) (Permission, error) {
+	code, name, description, err := validateDefinition(p.ClientID, input.Code, input.Name, input.Description)
+	if err != nil {
+		return Permission{}, err
+	}
+	p.Code = code
+	p.Name = name
+	p.Description = description
+	p.UpdatedAt = now.UTC()
+	return p, nil
 }
 
 func ValidateRoleGrants(values []RoleGrant, now time.Time) error {
