@@ -378,7 +378,11 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		panic(err)
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(assets)))
-	return requestID(logging(securityHeaders(s.metrics.Middleware(s.auditMutations(mux)), s.secureCookies()), logger)), nil
+	routes := http.Handler(mux)
+	if dependencies.APM != nil {
+		routes = dependencies.APM.NameHTTPRoute(routes)
+	}
+	return requestID(logging(securityHeaders(s.metrics.Middleware(s.auditMutations(routes)), s.secureCookies()), logger)), nil
 }
 
 func (s *server) render(w http.ResponseWriter, name string, data any) {

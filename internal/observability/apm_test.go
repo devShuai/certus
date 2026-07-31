@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -37,7 +38,7 @@ func TestElasticAPMEnabled(t *testing.T) {
 	}
 }
 
-func TestWrapHTTPUsesServeMuxRoutePattern(t *testing.T) {
+func TestNameHTTPRouteUsesServeMuxPatternAcrossRequestClone(t *testing.T) {
 	recording := apmtest.NewRecordingTracer()
 	defer recording.Close()
 	runtime := &ElasticAPM{tracer: recording.Tracer}
@@ -49,7 +50,8 @@ func TestWrapHTTPUsesServeMuxRoutePattern(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/users/user-123", nil)
 	response := httptest.NewRecorder()
 
-	runtime.WrapHTTP(mux).ServeHTTP(response, request)
+	handler := runtime.WrapHTTP(cloneRequestContext(runtime.NameHTTPRoute(mux)))
+	handler.ServeHTTP(response, request)
 	recording.Flush(nil)
 
 	payloads := recording.Payloads()
@@ -61,7 +63,7 @@ func TestWrapHTTPUsesServeMuxRoutePattern(t *testing.T) {
 	}
 }
 
-func TestWrapHTTPBoundsUnknownRouteName(t *testing.T) {
+func TestNameHTTPRouteBoundsUnknownRouteName(t *testing.T) {
 	recording := apmtest.NewRecordingTracer()
 	defer recording.Close()
 	runtime := &ElasticAPM{tracer: recording.Tracer}
@@ -69,7 +71,8 @@ func TestWrapHTTPBoundsUnknownRouteName(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/not-found/user-123", nil)
 	response := httptest.NewRecorder()
 
-	runtime.WrapHTTP(http.NewServeMux()).ServeHTTP(response, request)
+	handler := runtime.WrapHTTP(cloneRequestContext(runtime.NameHTTPRoute(http.NewServeMux())))
+	handler.ServeHTTP(response, request)
 	recording.Flush(nil)
 
 	payloads := recording.Payloads()
@@ -79,4 +82,11 @@ func TestWrapHTTPBoundsUnknownRouteName(t *testing.T) {
 	if got := payloads.Transactions[0].Name; got != "GET unknown route" {
 		t.Fatalf("transaction name = %q, want bounded unknown route", got)
 	}
+}
+
+func cloneRequestContext(next http.Handler) http.Handler {
+	type contextKey struct{}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, true)))
+	})
 }

@@ -82,14 +82,22 @@ func (a *ElasticAPM) Logger(handler slog.Handler) *slog.Logger {
 	))
 }
 
-// WrapHTTP records inbound requests as transactions. The inner wrapper runs
-// after ServeMux has selected a route, so transaction names use bounded route
-// patterns instead of raw URLs containing user or client identifiers.
+// WrapHTTP records inbound requests as transactions.
 func (a *ElasticAPM) WrapHTTP(handler http.Handler) http.Handler {
 	if !a.Enabled() {
 		return handler
 	}
-	routeNamed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return apmhttp.Wrap(handler, apmhttp.WithTracer(a.tracer))
+}
+
+// NameHTTPRoute must wrap ServeMux directly, inside middleware that may clone a
+// request with WithContext. This ensures it observes the route pattern written
+// by ServeMux and keeps transaction names bounded.
+func (a *ElasticAPM) NameHTTPRoute(handler http.Handler) http.Handler {
+	if !a.Enabled() {
+		return handler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			name := r.Pattern
 			if name == "" {
@@ -101,7 +109,6 @@ func (a *ElasticAPM) WrapHTTP(handler http.Handler) http.Handler {
 		}()
 		handler.ServeHTTP(w, r)
 	})
-	return apmhttp.Wrap(routeNamed, apmhttp.WithTracer(a.tracer))
 }
 
 // WrapClient records outbound HTTP requests as spans when their context carries
