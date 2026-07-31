@@ -142,7 +142,8 @@ func TestAdminImportsSpecusPasswordsAndLoginUpgradesHash(t *testing.T) {
 		form,
 		"application/x-www-form-urlencoded",
 	)
-	if login.Code != http.StatusSeeOther || login.Header().Get("Location") != "/portal" {
+	if login.Code != http.StatusSeeOther ||
+		login.Header().Get("Location") != loginSuccessURL("/portal") {
 		t.Fatalf("migrated login returned %d %s", login.Code, login.Body.String())
 	}
 	_, credential, err := users.FindPasswordByUsername(context.Background(), "alice")

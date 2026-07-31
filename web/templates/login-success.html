@@ -1,0 +1,38 @@
+{{define "login-success.html"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="refresh" content="2.2;url={{.ReturnTo}}">
+  <title>{{.Title}}</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">
+  <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
+  <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <script defer src="/static/login-success.js"></script>
+</head>
+<body>
+<main class="shell success-shell">
+  <section class="card login-success-card" data-login-success data-return-to="{{.ReturnTo}}" aria-live="polite">
+    <img class="app-logo success-brand" src="/static/logo-light.svg" alt="certus 统一认证中心" width="240" height="55">
+    <div class="success-visual" aria-hidden="true">
+      <span class="success-orbit"></span>
+      <span class="success-orbit success-orbit-secondary"></span>
+      <span class="success-icon-wrap">
+        {{if .Client.FaviconURL}}
+        <img class="success-client-icon" src="{{.Client.FaviconURL}}" alt="" width="72" height="72" referrerpolicy="no-referrer">
+        {{else}}
+        <span class="success-client-fallback">✓</span>
+        {{end}}
+        <span class="success-check">✓</span>
+      </span>
+    </div>
+    <p class="eyebrow success-eyebrow">身份验证成功</p>
+    <h1>正在进入 {{if .Client.Name}}{{.Client.Name}}{{else}}Certus{{end}}</h1>
+    <p class="muted">可信身份已确认，正在为你建立安全会话。</p>
+    <div class="success-progress" aria-hidden="true"><span></span></div>
+    <a class="success-skip" href="{{.ReturnTo}}">立即进入 {{if .Client.Name}}{{.Client.Name}}{{else}}Certus{{end}}</a>
+  </section>
+</main>
+</body>
+</html>{{end}}

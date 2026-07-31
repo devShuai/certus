@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -80,6 +81,45 @@ func TestAuthorizeRedirectsValidRequestToLogin(t *testing.T) {
 	location := response.Header().Get("Location")
 	if !strings.HasPrefix(location, "/login?") || !strings.Contains(location, "client_id=specus") {
 		t.Fatalf("unexpected redirect: %s", location)
+	}
+}
+
+func TestLoginPageHighlightsTargetSystem(t *testing.T) {
+	handler := New(config.Config{Issuer: "https://auth.example.com"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	returnTo := "/oauth2/authorize?client_id=specus"
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/login?continue="+url.QueryEscape(returnTo)+"&client_id=specus",
+		nil,
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, `class="login-target"`) ||
+		!strings.Contains(body, "即将登录") ||
+		!strings.Contains(body, "登录 Specus") ||
+		!strings.Contains(body, "<small>specus</small>") {
+		t.Fatalf("login page did not emphasize target system: %d %s", response.Code, body)
+	}
+}
+
+func TestLoginSuccessPageRequiresSession(t *testing.T) {
+	handler := New(config.Config{Issuer: "https://auth.example.com"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(
+		http.MethodGet,
+		loginSuccessURL("/portal"),
+		nil,
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusFound ||
+		response.Header().Get("Location") != "/login?continue=%2Fportal" {
+		t.Fatalf("anonymous success page was not rejected: %d %s", response.Code, response.Header().Get("Location"))
 	}
 }
 

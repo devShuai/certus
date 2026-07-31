@@ -87,7 +87,7 @@ func TestRegistrationCreatesSessionAndPreservesOAuthFlow(t *testing.T) {
 		"application/x-www-form-urlencoded",
 	)
 	if response.Code != http.StatusSeeOther ||
-		response.Header().Get("Location") != returnTo ||
+		response.Header().Get("Location") != loginSuccessURL(returnTo) ||
 		browser.cookies[sessionCookieName] == nil {
 		t.Fatalf("unexpected registration response: %d %s %s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}

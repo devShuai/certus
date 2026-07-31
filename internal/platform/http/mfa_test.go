@@ -158,7 +158,8 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 	request.AddCookie(transaction)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/portal" {
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != loginSuccessURL("/portal") {
 		t.Fatalf("MFA login failed: %d %s %s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	foundSession := false

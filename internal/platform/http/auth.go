@@ -42,6 +42,12 @@ type loginPageData struct {
 	Unavailable         bool
 }
 
+type loginSuccessPageData struct {
+	Title    string
+	Client   client.Client
+	ReturnTo string
+}
+
 type loginMethodView struct {
 	Label string
 }
@@ -62,6 +68,29 @@ func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, "login.html", page)
+}
+
+func (s *server) loginSuccessPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	returnTo := validatedReturnTo(r.URL.Query().Get("continue"))
+	if returnTo == "" {
+		returnTo = "/portal"
+	}
+	if _, ok := s.currentSession(r); !ok {
+		http.Redirect(
+			w,
+			r,
+			"/login?continue="+url.QueryEscape(returnTo),
+			http.StatusFound,
+		)
+		return
+	}
+	registered, _ := s.loginClient(r, returnTo)
+	s.render(w, "login-success.html", loginSuccessPageData{
+		Title:    "登录成功 · Certus",
+		Client:   registered,
+		ReturnTo: returnTo,
+	})
 }
 
 func (s *server) newLoginPageData(r *http.Request, returnTo, csrfToken, message string) (loginPageData, error) {
@@ -620,7 +649,11 @@ func (s *server) createLoginSession(w http.ResponseWriter, r *http.Request, user
 		ClientID:    auditClient(clientID),
 		Outcome:     audit.OutcomeSuccess,
 	})
-	http.Redirect(w, r, returnTo, http.StatusSeeOther)
+	http.Redirect(w, r, loginSuccessURL(returnTo), http.StatusSeeOther)
+}
+
+func loginSuccessURL(returnTo string) string {
+	return "/login/success?continue=" + url.QueryEscape(returnTo)
 }
 
 func (s *server) loginClient(r *http.Request, returnTo string) (client.Client, bool) {

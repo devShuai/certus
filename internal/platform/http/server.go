@@ -261,6 +261,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /{$}", s.home)
 	mux.HandleFunc("GET /login", s.loginPage)
+	mux.HandleFunc("GET /login/success", s.loginSuccessPage)
 	mux.HandleFunc("POST /login", s.loginPassword)
 	mux.HandleFunc("GET /register", s.registrationPage)
 	mux.HandleFunc("POST /register", s.register)

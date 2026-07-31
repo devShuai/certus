@@ -207,7 +207,7 @@ func TestClientBoundDynamicOIDCLoginRoundTrip(t *testing.T) {
 	callback := httptest.NewRecorder()
 	handler.ServeHTTP(callback, callbackRequest)
 	if callback.Code != http.StatusSeeOther ||
-		callback.Header().Get("Location") != returnTo {
+		callback.Header().Get("Location") != loginSuccessURL(returnTo) {
 		t.Fatalf("complete dynamic OIDC login: %d %s %s", callback.Code, callback.Header().Get("Location"), callback.Body.String())
 	}
 	foundSession := false

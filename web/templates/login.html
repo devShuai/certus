@@ -11,12 +11,33 @@
 </head>
 <body>
 <main class="shell">
-  <section class="card">
-    <img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64">
-    {{if .Client.FaviconURL}}<img class="client-login-favicon" src="{{.Client.FaviconURL}}" alt="{{.Client.Name}} 图标" width="56" height="56" referrerpolicy="no-referrer">{{end}}
-    <p class="eyebrow">{{if .Client.Name}}登录到 {{.Client.Name}}{{else}}可信身份{{end}}</p>
-    <h1>可信身份，从这里开始</h1>
-    <p class="muted">使用由 Certus 统一管理或关联的账号登录。</p>
+  <section class="card login-card">
+    <header class="login-brand">
+      <img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64">
+      <span>统一认证中心</span>
+    </header>
+    {{if .Client.Name}}
+    <section class="login-target" aria-label="要登录的系统">
+      <span class="login-target-label">即将登录</span>
+      <div class="login-target-identity">
+        {{if .Client.FaviconURL}}
+        <img class="client-login-favicon" src="{{.Client.FaviconURL}}" alt="{{.Client.Name}} 图标" width="72" height="72" referrerpolicy="no-referrer">
+        {{else}}
+        <span class="client-login-fallback" aria-hidden="true">↗</span>
+        {{end}}
+        <span>
+          <strong>{{.Client.Name}}</strong>
+          <small>{{.Client.ID}}</small>
+        </span>
+      </div>
+      {{if .Client.Description}}<p>{{.Client.Description}}</p>{{end}}
+    </section>
+    {{end}}
+    <div class="login-intro">
+      <p class="eyebrow">安全身份验证</p>
+      <h1>{{if .Client.Name}}登录 {{.Client.Name}}{{else}}可信身份，从这里开始{{end}}</h1>
+      <p class="muted">使用由 Certus 统一管理或关联的账号登录。</p>
+    </div>
     {{if .Error}}<p class="warning" role="alert">{{.Error}}</p>{{end}}
     {{if .PasswordEnabled}}
     <form class="stack" method="post" action="/login">

@@ -24,6 +24,37 @@ import (
 	"certus/internal/session"
 )
 
+func TestLoginSuccessPageShowsTargetAndAnimation(t *testing.T) {
+	handler := newProtocolTestHandler(t, "https://service.example.com")
+	browser := newTestBrowser(handler)
+	returnTo := "/oauth2/authorize?" + oidcAuthorizationQuery("success-page").Encode()
+	browser.login(t, returnTo)
+
+	response := browser.request(t, http.MethodGet, loginSuccessURL(returnTo), "", "")
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		response.Header().Get("Cache-Control") != "no-store" ||
+		!strings.Contains(body, "正在进入 Integration") ||
+		!strings.Contains(body, `class="success-progress"`) ||
+		!strings.Contains(body, `/static/login-success.js`) ||
+		!strings.Contains(body, `http-equiv="refresh"`) {
+		t.Fatalf("unexpected login success page: %d %s", response.Code, body)
+	}
+
+	external := browser.request(
+		t,
+		http.MethodGet,
+		"/login/success?continue="+url.QueryEscape("https://attacker.example.com"),
+		"",
+		"",
+	)
+	if external.Code != http.StatusOK ||
+		strings.Contains(external.Body.String(), "attacker.example.com") ||
+		!strings.Contains(external.Body.String(), `data-return-to="/portal"`) {
+		t.Fatalf("success page accepted an external redirect: %d %s", external.Code, external.Body.String())
+	}
+}
+
 func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 	logoutRequests := make(chan string, 1)
 	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +269,8 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 		"password":   {"correct horse battery staple"},
 	}
 	renewLogin := browser.request(t, http.MethodPost, "/login", renewLoginForm.Encode(), "application/x-www-form-urlencoded")
-	if renewLogin.Code != http.StatusSeeOther || renewLogin.Header().Get("Location") != returnTo {
+	if renewLogin.Code != http.StatusSeeOther ||
+		renewLogin.Header().Get("Location") != loginSuccessURL(returnTo) {
 		t.Fatalf("CAS primary login: %d %s", renewLogin.Code, renewLogin.Header().Get("Location"))
 	}
 	renewTicketResponse := browser.request(t, http.MethodGet, returnTo, "", "")
@@ -880,7 +912,9 @@ func (b *testBrowser) login(t *testing.T, returnTo string) {
 		"password":   {"correct horse battery staple"},
 	}
 	response := b.request(t, http.MethodPost, "/login", form.Encode(), "application/x-www-form-urlencoded")
-	if response.Code != http.StatusSeeOther || b.cookies[sessionCookieName] == nil {
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != loginSuccessURL(returnTo) ||
+		b.cookies[sessionCookieName] == nil {
 		t.Fatalf("login: %d %s", response.Code, response.Body.String())
 	}
 }
