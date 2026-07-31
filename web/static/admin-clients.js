@@ -835,10 +835,24 @@ function renderClients() {
   rows.replaceChildren();
   if (!state.clients.length) rows.append(emptyRow(5, "尚未配置接入系统"));
   for (const client of state.clients) {
-    const identity = element("div", { className: "table-primary" }, [
+    const identityText = element("div", { className: "table-primary" }, [
       element("strong", { text: client.name }),
       element("small", { text: client.id }),
     ]);
+    const identityChildren = [identityText];
+    if (client.favicon_url) {
+      const favicon = element("img", {
+        className: "client-favicon",
+        src: client.favicon_url,
+        alt: "",
+        width: "32",
+        height: "32",
+        referrerpolicy: "no-referrer",
+      });
+      favicon.addEventListener("error", () => favicon.remove());
+      identityChildren.unshift(favicon);
+    }
+    const identity = element("div", { className: "client-identity" }, identityChildren);
     const kind = client.archived_at ? "archived" : client.enabled ? "active" : "disabled";
     const label = client.archived_at ? "已归档" : client.enabled ? "启用" : "停用";
     const actions = element("div", { className: "row-actions" }, [
@@ -940,6 +954,7 @@ function resetClientForm() {
   clientForm.elements.application_type.disabled = !can("admin.clients.write");
   clientForm.elements.token_endpoint_auth_method.value = "client_secret_basic";
   clientForm.elements.allowed_scopes.value = "openid profile email";
+  clientForm.elements.favicon_url.value = "";
   clientForm.elements.enabled.checked = true;
   setCheckedValues(clientForm, "protocols", ["oauth2.1"]);
   setCheckedValues(clientForm, "grant_types", ["authorization_code", "refresh_token"]);
@@ -950,6 +965,7 @@ function resetClientForm() {
   document.querySelector("#rotate-client-secret").classList.add("hidden");
   document.querySelector("#archive-client").classList.add("hidden");
   document.querySelector("#client-form-status").textContent = "";
+  renderClientFaviconPreview();
 }
 
 function openNewClient() {
@@ -964,6 +980,7 @@ function openClient(client) {
   clientForm.elements.id.readOnly = true;
   clientForm.elements.name.value = client.name;
   clientForm.elements.description.value = client.description || "";
+  clientForm.elements.favicon_url.value = client.favicon_url || "";
   clientForm.elements.application_type.value = client.application_type;
   clientForm.elements.application_type.disabled = true;
   clientForm.elements.token_endpoint_auth_method.value = client.token_endpoint_auth_method || (client.application_type === "confidential" ? "client_secret_basic" : "none");
@@ -996,20 +1013,34 @@ function openClient(client) {
     archived || !can("admin.clients.write"),
   );
   document.querySelector("#client-editor").classList.remove("hidden");
+  renderClientFaviconPreview();
   document.querySelector("#client-editor").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 document.querySelector("#new-client").addEventListener("click", openNewClient);
 document.querySelector('[data-action="close-client"]').addEventListener("click", () => document.querySelector("#client-editor").classList.add("hidden"));
 clientForm.elements.application_type.addEventListener("change", () => syncClientAuthenticationMethod());
+clientForm.elements.favicon_url.addEventListener("input", renderClientFaviconPreview);
+for (const fieldName of ["redirect_uris", "cas_service_urls"]) {
+  clientForm.elements[fieldName].addEventListener("change", () => {
+    if (!clientForm.elements.favicon_url.value.trim()) {
+      void discoverClientFavicon(true);
+    }
+  });
+}
+document.querySelector("#discover-client-favicon").addEventListener("click", () => void discoverClientFavicon(false));
 
 clientForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!clientForm.elements.favicon_url.value.trim() && clientFaviconCandidate()) {
+    await discoverClientFavicon(true);
+  }
   const data = new FormData(clientForm);
   const existing = state.clients.find((item) => item.id === data.get("id"));
   const payload = {
     name: data.get("name"),
     description: data.get("description"),
+    favicon_url: data.get("favicon_url"),
     token_endpoint_auth_method: data.get("token_endpoint_auth_method") || "none",
     protocols: data.getAll("protocols"),
     grant_types: data.getAll("grant_types"),
@@ -1047,6 +1078,49 @@ clientForm.addEventListener("submit", async (event) => {
     status.textContent = error.message;
   }
 });
+
+function clientFaviconCandidate() {
+  return lines(clientForm.elements.redirect_uris.value)[0]
+    || lines(clientForm.elements.cas_service_urls.value)[0]
+    || "";
+}
+
+function renderClientFaviconPreview() {
+  const preview = document.querySelector("#client-favicon-preview");
+  const value = clientForm.elements.favicon_url.value.trim();
+  preview.classList.toggle("hidden", !value);
+  if (value) preview.src = value;
+  else preview.removeAttribute("src");
+}
+
+async function discoverClientFavicon(silent) {
+  const candidate = clientFaviconCandidate();
+  const status = document.querySelector("#client-form-status");
+  if (!candidate) {
+    if (!silent) status.textContent = "请先填写 OAuth 回调地址或 CAS Service URL";
+    return false;
+  }
+  const trigger = document.querySelector("#discover-client-favicon");
+  trigger.disabled = true;
+  if (!silent) status.textContent = "正在采集站点 Favicon…";
+  try {
+    const result = await api("/api/v1/admin/clients/favicon", {
+      method: "POST",
+      body: JSON.stringify({ site_url: candidate }),
+    });
+    clientForm.elements.favicon_url.value = result.favicon_url || "";
+    renderClientFaviconPreview();
+    status.textContent = result.source === "html"
+      ? "已从站点页面识别 Favicon"
+      : "已使用站点默认 /favicon.ico";
+    return Boolean(result.favicon_url);
+  } catch (error) {
+    if (!silent) status.textContent = error.message;
+    return false;
+  } finally {
+    trigger.disabled = false;
+  }
+}
 
 function showIntegration(value) {
   integrationOutput.textContent = JSON.stringify(value, null, 2);

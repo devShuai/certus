@@ -13,6 +13,7 @@
 <main class="shell">
   <section class="card">
     <img class="app-logo" src="/static/logo-light.svg" alt="certus 统一认证中心" width="280" height="64">
+    {{if .Client.FaviconURL}}<img class="client-login-favicon" src="{{.Client.FaviconURL}}" alt="{{.Client.Name}} 图标" width="56" height="56" referrerpolicy="no-referrer">{{end}}
     <p class="eyebrow">{{if .Client.Name}}登录到 {{.Client.Name}}{{else}}可信身份{{end}}</p>
     <h1>可信身份，从这里开始</h1>
     <p class="muted">使用由 Certus 统一管理或关联的账号登录。</p>

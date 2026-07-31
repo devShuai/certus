@@ -172,6 +172,18 @@ func TestOIDCBackchannelLogoutMigration(t *testing.T) {
 	}
 }
 
+func TestClientFaviconMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/025_client_favicon.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"ADD COLUMN favicon_url", "oauth_clients_favicon_url_length"} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("client favicon migration does not contain %s", expected)
+		}
+	}
+}
+
 func TestOAuthConsentMigration(t *testing.T) {
 	content, err := migrationFiles.ReadFile("migrations/015_oauth_consents.sql")
 	if err != nil {

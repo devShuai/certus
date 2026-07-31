@@ -55,6 +55,7 @@ type server struct {
 	metrics           *metrics.Registry
 	readiness         func(context.Context) error
 	outbound          *http.Client
+	faviconHTTP       *http.Client
 	ldap              *federation.LDAPAuthenticator
 	externalOIDC      *federation.OIDCAuthenticator
 	now               func() time.Time
@@ -121,6 +122,7 @@ type Dependencies struct {
 	Metrics            *metrics.Registry
 	Readiness          func(context.Context) error
 	OutboundHTTPClient *http.Client
+	FaviconHTTPClient  *http.Client
 	IdentitySources    federation.SourceRepository
 }
 
@@ -205,6 +207,14 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		}
 		outbound = &configured
 	}
+	faviconHTTP := newSafeFaviconHTTPClient()
+	if dependencies.FaviconHTTPClient != nil {
+		configured := *dependencies.FaviconHTTPClient
+		if configured.Timeout == 0 || configured.Timeout > 5*time.Second {
+			configured.Timeout = 5 * time.Second
+		}
+		faviconHTTP = &configured
+	}
 	s := &server{
 		cfg:           cfg,
 		logger:        logger,
@@ -233,6 +243,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		metrics:           dependencies.Metrics,
 		readiness:         dependencies.Readiness,
 		outbound:          outbound,
+		faviconHTTP:       faviconHTTP,
 		ldap:              federation.NewLDAPAuthenticator(cfg.LDAP),
 		externalOIDC: federation.NewOIDCAuthenticator(
 			cfg.ExternalOIDC,
@@ -295,6 +306,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("POST /api/v1/admin/identity-sources/{sourceID}/probe", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.probeIdentitySource)))
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.listAdminClients)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.createClient)))
+	mux.Handle("POST /api/v1/admin/clients/favicon", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.discoverClientFavicon)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getAdminClient)))
 	mux.Handle("PUT /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.replaceClient)))
 	mux.Handle("DELETE /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.archiveClient)))
@@ -539,7 +551,7 @@ func logging(next http.Handler, logger *slog.Logger) http.Handler {
 
 func securityHeaders(next http.Handler, secure bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: https:")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")

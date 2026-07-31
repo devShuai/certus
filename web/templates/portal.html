@@ -30,7 +30,7 @@
     <p class="muted">在这里选择已接入 Certus 的系统，并按其配置继续安全登录。</p>
     {{range .Clients}}{{if .Enabled}}
     <div class="system">
-      <span class="system-icon">{{slice .Name 0 1}}</span>
+      {{if .FaviconURL}}<img class="system-favicon" src="{{.FaviconURL}}" alt="" width="40" height="40" referrerpolicy="no-referrer">{{else}}<span class="system-icon">{{slice .Name 0 1}}</span>{{end}}
       <span><strong>{{.Name}}</strong><small>{{.Description}}</small></span>
       <a class="button" href="/login?client_id={{.ID}}">登录</a>
     </div>

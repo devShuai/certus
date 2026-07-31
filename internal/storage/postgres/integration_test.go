@@ -77,6 +77,7 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	registered, _, err := client.New(client.CreateClient{
 		ID:                               "integration",
 		Name:                             "Integration",
+		FaviconURL:                       "https://app.example.com/favicon.svg",
 		ApplicationType:                  client.ApplicationConfidential,
 		TokenEndpointAuthMethod:          client.TokenEndpointAuthSecretPost,
 		Protocols:                        []client.Protocol{client.ProtocolOAuth21},
@@ -100,6 +101,7 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		storedClient.PostLogoutRedirectURIs[0] != "https://app.example.com/logout/callback" ||
 		storedClient.BackchannelLogoutURI != "https://app.example.com/oidc/backchannel-logout" ||
 		!storedClient.BackchannelLogoutSessionRequired ||
+		storedClient.FaviconURL != "https://app.example.com/favicon.svg" ||
 		storedClient.TokenEndpointAuthMethod != client.TokenEndpointAuthSecretPost {
 		t.Fatalf("client logout redirect round trip failed: %#v %v", storedClient, err)
 	}

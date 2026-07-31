@@ -24,6 +24,7 @@ func TestCreateClientReturnsIntegrationParameters(t *testing.T) {
 		"id":"finance",
 		"name":"Finance",
 		"description":"财务系统",
+		"favicon_url":"https://finance.example.com/favicon.svg",
 		"application_type":"confidential",
 		"token_endpoint_auth_method":"client_secret_post",
 		"protocols":["oauth2.0","oauth2.1","cas"],
@@ -51,6 +52,7 @@ func TestCreateClientReturnsIntegrationParameters(t *testing.T) {
 	}
 	for _, expected := range []string{
 		`"client_id":"finance"`,
+		`"favicon_url":"https://finance.example.com/favicon.svg"`,
 		`"client_secret":"`,
 		`"client_authentication_method":"client_secret_post"`,
 		`"issuer":"https://auth.example.com"`,

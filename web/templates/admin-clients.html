@@ -150,6 +150,8 @@
           <label>Client ID<input name="id" required pattern="[a-z0-9][a-z0-9_-]{1,62}" placeholder="finance"></label>
           <label>系统名称<input name="name" required maxlength="128" placeholder="Finance"></label>
           <label class="full">系统说明<input name="description" maxlength="512" placeholder="财务系统"></label>
+          <label class="full">站点 Favicon URL<input name="favicon_url" type="url" maxlength="2048" placeholder="https://finance.example.com/favicon.ico"></label>
+          <div class="full favicon-config"><img id="client-favicon-preview" class="client-favicon-preview hidden" alt="站点图标预览" referrerpolicy="no-referrer"><button id="discover-client-favicon" class="secondary" type="button">自动采集 Favicon</button><small>留空时会从第一条 OAuth 回调或 CAS Service URL 的公开 HTTPS 站点自动识别，也可手动覆盖。</small></div>
           <label>客户端类型<select name="application_type"><option value="confidential">服务端应用（confidential）</option><option value="public">浏览器/移动应用（public）</option></select></label>
           <label>客户端认证<select name="token_endpoint_auth_method"><option value="client_secret_basic">HTTP Basic（推荐）</option><option value="client_secret_post">表单 Client Secret</option><option value="none">无（public）</option></select></label>
           <label>允许 Scope<input name="allowed_scopes" value="openid profile email" required></label>
