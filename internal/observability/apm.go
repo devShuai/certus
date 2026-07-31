@@ -19,7 +19,8 @@ const serviceName = "certus"
 // ElasticAPM owns the process-wide Elastic APM tracer. A zero-value instance is
 // disabled and leaves handlers, clients, and loggers unchanged.
 type ElasticAPM struct {
-	tracer *apm.Tracer
+	tracer               *apm.Tracer
+	captureSQLParameters bool
 }
 
 // NewElasticAPM creates the tracer when Elastic APM is explicitly configured.
@@ -37,6 +38,10 @@ func NewElasticAPM(serviceVersion string) (*ElasticAPM, error) {
 	if !enabled {
 		return &ElasticAPM{}, nil
 	}
+	captureSQLParameters, err := sqlParameterCaptureEnabled(os.Getenv("CERTUS_APM_SQL_PARAMETERS"))
+	if err != nil {
+		return nil, err
+	}
 
 	options := apm.TracerOptions{ServiceName: serviceName}
 	if version := strings.TrimSpace(serviceVersion); version != "" && version != "dev" {
@@ -47,7 +52,7 @@ func NewElasticAPM(serviceVersion string) (*ElasticAPM, error) {
 		return nil, fmt.Errorf("initialize Elastic APM tracer: %w", err)
 	}
 	apm.SetDefaultTracer(tracer)
-	return &ElasticAPM{tracer: tracer}, nil
+	return &ElasticAPM{tracer: tracer, captureSQLParameters: captureSQLParameters}, nil
 }
 
 func environmentPresent(name string) bool {
@@ -68,6 +73,10 @@ func elasticAPMEnabled(active string, activeSet bool, serverURL string) (bool, e
 
 func (a *ElasticAPM) Enabled() bool {
 	return a != nil && a.tracer != nil
+}
+
+func (a *ElasticAPM) SQLParametersEnabled() bool {
+	return a.Enabled() && a.captureSQLParameters
 }
 
 // Logger preserves the existing JSON handler, adds trace correlation fields,

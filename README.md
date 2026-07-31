@@ -598,6 +598,7 @@ ELASTIC_APM_CAPTURE_BODY=off
 ELASTIC_APM_CAPTURE_HEADERS=false
 ELASTIC_APM_CENTRAL_CONFIG=false
 ELASTIC_APM_TRANSACTION_IGNORE_URLS=/healthz,/readyz,/metrics,/static/*
+CERTUS_APM_SQL_PARAMETERS=detailed
 ```
 
 接入范围包括：
@@ -609,6 +610,8 @@ ELASTIC_APM_TRANSACTION_IGNORE_URLS=/healthz,/readyz,/metrics,/static/*
 - 进程退出前最多等待 5 秒刷新尚未发送的事件
 
 认证服务应保持 `ELASTIC_APM_CAPTURE_BODY=off` 和 `ELASTIC_APM_CAPTURE_HEADERS=false`，避免采集密码、授权码、Cookie 或 Bearer Token。更多采样、认证和传输配置参见 [Elastic APM Go Agent 配置文档](https://www.elastic.co/docs/reference/apm/agents/go/configuration)。
+
+`CERTUS_APM_SQL_PARAMETERS=detailed` 会在 PostgreSQL span 上增加 `db_parameter_count`、`db_parameters_captured` 和 `db_parameter_01` 至 `db_parameter_32` 标签。每个参数包含 Go 类型和值；单个值最多保留 768 个字符，超出时注明原始长度。密码、密钥、令牌、会话、票据、MFA、授权码、私钥、密文、哈希字段以及所有二进制值无条件替换为 `[REDACTED]`，但仍保留类型和长度。此功能默认关闭，因为参数标签会增加 APM 事件体积和索引基数。
 
 ## 运维与密钥轮换
 

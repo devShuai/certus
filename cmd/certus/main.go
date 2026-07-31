@@ -78,7 +78,7 @@ func main() {
 	readiness := func(context.Context) error { return nil }
 	maintenanceRepository = maintenance.NewMemoryRepository(keys)
 	if cfg.DatabaseURL != "" {
-		pool, err := postgres.Open(ctx, cfg.DatabaseURL, apmRuntime.Enabled())
+		pool, err := postgres.Open(ctx, cfg.DatabaseURL, apmRuntime.InstrumentPGX)
 		if err != nil {
 			logger.Error("connect to postgres", "error", err)
 			os.Exit(1)
@@ -211,7 +211,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("certus started", "version", version, "commit", commit, "address", cfg.Address, "issuer", cfg.Issuer, "elastic_apm", apmRuntime.Enabled())
+		logger.Info("certus started", "version", version, "commit", commit, "address", cfg.Address, "issuer", cfg.Issuer, "elastic_apm", apmRuntime.Enabled(), "elastic_apm_sql_parameters", apmRuntime.SQLParametersEnabled())
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped unexpectedly", "error", err)
 			os.Exit(1)
