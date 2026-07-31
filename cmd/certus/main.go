@@ -23,6 +23,7 @@ import (
 	"certus/internal/metrics"
 	"certus/internal/mfa"
 	"certus/internal/oauth"
+	"certus/internal/observability"
 	"certus/internal/oidc"
 	httpserver "certus/internal/platform/http"
 	"certus/internal/ratelimit"
@@ -48,7 +49,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	apmRuntime, err := observability.NewElasticAPM(version)
+	if err != nil {
+		slog.Error("initialize Elastic APM", "error", err)
+		os.Exit(1)
+	}
+	defer apmRuntime.Close(5 * time.Second)
+	logger := apmRuntime.Logger(slog.NewJSONHandler(os.Stdout, nil))
 	metricRegistry := metrics.NewRegistry()
 	metricRegistry.SetBuildInfo(version, commit)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -71,7 +78,7 @@ func main() {
 	readiness := func(context.Context) error { return nil }
 	maintenanceRepository = maintenance.NewMemoryRepository(keys)
 	if cfg.DatabaseURL != "" {
-		pool, err := postgres.Open(ctx, cfg.DatabaseURL)
+		pool, err := postgres.Open(ctx, cfg.DatabaseURL, apmRuntime.Enabled())
 		if err != nil {
 			logger.Error("connect to postgres", "error", err)
 			os.Exit(1)
@@ -190,6 +197,7 @@ func main() {
 		Metrics:         metricRegistry,
 		Readiness:       readiness,
 		IdentitySources: identitySources,
+		APM:             apmRuntime,
 	})
 	if err != nil {
 		logger.Error("initialize protocol execution", "error", err)
@@ -197,13 +205,13 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           handler,
+		Handler:           apmRuntime.WrapHTTP(handler),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 
 	go func() {
-		logger.Info("certus started", "version", version, "commit", commit, "address", cfg.Address, "issuer", cfg.Issuer)
+		logger.Info("certus started", "version", version, "commit", commit, "address", cfg.Address, "issuer", cfg.Issuer, "elastic_apm", apmRuntime.Enabled())
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped unexpectedly", "error", err)
 			os.Exit(1)

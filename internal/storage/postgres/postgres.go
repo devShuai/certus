@@ -6,12 +6,16 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.elastic.co/apm/module/apmpgxv5/v2"
 )
 
-func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+func Open(ctx context.Context, databaseURL string, instrumentAPM bool) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database URL: %w", err)
+	}
+	if instrumentAPM {
+		apmpgxv5.Instrument(config.ConnConfig)
 	}
 	config.MaxConns = 10
 	config.MinIdleConns = 1

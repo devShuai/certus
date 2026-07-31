@@ -583,6 +583,33 @@ curl.exe -H "Authorization: Bearer $env:CERTUS_METRICS_TOKEN" http://localhost:8
 
 HTTP 指标的 `route` 标签来自 Go 路由模板，例如 `GET /api/v1/admin/users/{userID}`，不会使用原始 URL；认证和限流标签也只接受代码内的固定低基数值，不包含用户名、用户 ID、客户端 ID、IP、令牌或密钥。
 
+## Elastic APM
+
+配置 `ELASTIC_APM_SERVER_URL` 后，Certus 会启用 Elastic 官方 Go Agent；也可以显式设置 `ELASTIC_APM_ACTIVE=true` 使用 Agent 的默认地址。未配置这两项时不会初始化 Agent，避免开发环境自动连接 `localhost:8200`。
+
+```bash
+ELASTIC_APM_ACTIVE=true
+ELASTIC_APM_SERVER_URL=http://apm-server.internal:8200
+ELASTIC_APM_ENVIRONMENT=production
+ELASTIC_APM_SERVICE_VERSION=1.0.0
+ELASTIC_APM_TRANSACTION_SAMPLE_RATE=0.2
+ELASTIC_APM_TRANSACTION_MAX_SPANS=200
+ELASTIC_APM_CAPTURE_BODY=off
+ELASTIC_APM_CAPTURE_HEADERS=false
+ELASTIC_APM_CENTRAL_CONFIG=false
+ELASTIC_APM_TRANSACTION_IGNORE_URLS=/healthz,/readyz,/metrics,/static/*
+```
+
+接入范围包括：
+
+- HTTP 服务端事务，事务名使用 Go 路由模板，不把用户 ID、客户端 ID 等动态路径写入事务名
+- pgx PostgreSQL 查询、批处理、复制和连接 span
+- CAS 回调、OIDC 请求、身份源探测及 favicon 抓取等出站 HTTP span
+- `slog` 错误事件以及请求访问日志中的 `trace.id`、`transaction.id` 关联字段
+- 进程退出前最多等待 5 秒刷新尚未发送的事件
+
+认证服务应保持 `ELASTIC_APM_CAPTURE_BODY=off` 和 `ELASTIC_APM_CAPTURE_HEADERS=false`，避免采集密码、授权码、Cookie 或 Bearer Token。更多采样、认证和传输配置参见 [Elastic APM Go Agent 配置文档](https://www.elastic.co/docs/reference/apm/agents/go/configuration)。
+
 ## 运维与密钥轮换
 
 PostgreSQL 模式默认启动时执行一次清理，之后每 15 分钟清理过期或已消费的 OAuth、CAS、会话、密码重置及限流数据；审计默认保留 90 天。管理员也可调用 `POST /api/v1/admin/maintenance/cleanup` 立即执行并取得各表删除计数。

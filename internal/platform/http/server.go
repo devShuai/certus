@@ -24,6 +24,7 @@ import (
 	"certus/internal/metrics"
 	"certus/internal/mfa"
 	"certus/internal/oauth"
+	"certus/internal/observability"
 	"certus/internal/oidc"
 	"certus/internal/ratelimit"
 	"certus/internal/session"
@@ -124,6 +125,7 @@ type Dependencies struct {
 	OutboundHTTPClient *http.Client
 	FaviconHTTPClient  *http.Client
 	IdentitySources    federation.SourceRepository
+	APM                *observability.ElasticAPM
 }
 
 func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Logger, dependencies Dependencies) (http.Handler, error) {
@@ -214,6 +216,10 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 			configured.Timeout = 5 * time.Second
 		}
 		faviconHTTP = &configured
+	}
+	if dependencies.APM != nil {
+		outbound = dependencies.APM.WrapClient(outbound)
+		faviconHTTP = dependencies.APM.WrapClient(faviconHTTP)
 	}
 	s := &server{
 		cfg:           cfg,
@@ -546,7 +552,7 @@ func logging(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		logger.Info("http request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(start).Milliseconds(), "request_id", w.Header().Get("X-Request-ID"))
+		logger.InfoContext(r.Context(), "http request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(start).Milliseconds(), "request_id", w.Header().Get("X-Request-ID"))
 	})
 }
 
