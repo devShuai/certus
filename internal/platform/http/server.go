@@ -67,6 +67,7 @@ func New(cfg config.Config, logger *slog.Logger) http.Handler {
 		ID:                      "specus",
 		Name:                    "Specus",
 		Description:             "示例接入系统",
+		LaunchURI:               "http://localhost:3000/?login=oidc",
 		ApplicationType:         client.ApplicationPublic,
 		TokenEndpointAuthMethod: client.TokenEndpointAuthNone,
 		Protocols:               []client.Protocol{client.ProtocolOAuth21},

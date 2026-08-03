@@ -184,6 +184,18 @@ func TestClientFaviconMigration(t *testing.T) {
 	}
 }
 
+func TestClientLaunchURIMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/026_client_launch_uri.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"ADD COLUMN launch_uri", "oauth_clients_launch_uri_length"} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("client launch URI migration does not contain %s", expected)
+		}
+	}
+}
+
 func TestOAuthConsentMigration(t *testing.T) {
 	content, err := migrationFiles.ReadFile("migrations/015_oauth_consents.sql")
 	if err != nil {

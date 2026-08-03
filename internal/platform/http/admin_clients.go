@@ -21,6 +21,7 @@ type integrationParameters struct {
 	Issuer                           string             `json:"issuer,omitempty"`
 	DiscoveryURL                     string             `json:"discovery_url,omitempty"`
 	ClientID                         string             `json:"client_id"`
+	LaunchURI                        string             `json:"launch_uri,omitempty"`
 	ClientSecret                     string             `json:"client_secret,omitempty"`
 	ClientAuthenticationMethod       string             `json:"client_authentication_method,omitempty"`
 	IdentitySourceIDs                []string           `json:"identity_source_ids,omitempty"`
@@ -286,6 +287,7 @@ func (s *server) integrationParameters(item client.Client, secret string) integr
 	parameters := integrationParameters{
 		SupportedProtocols: item.Protocols,
 		ClientID:           item.ID,
+		LaunchURI:          item.LaunchURI,
 		ClientSecret:       secret,
 		IdentitySourceIDs:  item.IdentitySourceIDs,
 	}

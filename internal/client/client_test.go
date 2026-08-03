@@ -44,6 +44,7 @@ func TestNewConfidentialClientReturnsSecretOnce(t *testing.T) {
 		ID:                               "finance",
 		Name:                             "Finance",
 		FaviconURL:                       "https://finance.example.com/favicon.svg",
+		LaunchURI:                        "https://finance.example.com/?login=oidc",
 		ApplicationType:                  ApplicationConfidential,
 		RedirectURIs:                     []string{"https://finance.example.com/oidc/callback"},
 		PostLogoutRedirectURIs:           []string{"https://finance.example.com/logout/callback"},
@@ -66,6 +67,9 @@ func TestNewConfidentialClientReturnsSecretOnce(t *testing.T) {
 	}
 	if item.FaviconURL != "https://finance.example.com/favicon.svg" {
 		t.Fatalf("favicon URL was not retained: %#v", item)
+	}
+	if item.LaunchURI != "https://finance.example.com/?login=oidc" {
+		t.Fatalf("launch URI was not retained: %#v", item)
 	}
 	if strings.Contains(string(item.SecretHash), secret) {
 		t.Fatal("raw secret was retained in client")
@@ -133,6 +137,19 @@ func TestNewClientRejectsInsecureRemoteFavicon(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected insecure favicon URL to be rejected")
+	}
+}
+
+func TestNewClientRejectsInsecureRemoteLaunchURI(t *testing.T) {
+	_, _, err := New(CreateClient{
+		ID:           "finance-launch",
+		Name:         "Finance",
+		LaunchURI:    "http://finance.example.com/?login=oidc",
+		RedirectURIs: []string{"https://finance.example.com/callback"},
+		LoginMethods: []LoginMethod{LoginPassword},
+	})
+	if err == nil {
+		t.Fatal("expected insecure launch URI to be rejected")
 	}
 }
 

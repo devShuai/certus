@@ -78,6 +78,7 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		ID:                               "integration",
 		Name:                             "Integration",
 		FaviconURL:                       "https://app.example.com/favicon.svg",
+		LaunchURI:                        "https://app.example.com/?login=oidc",
 		ApplicationType:                  client.ApplicationConfidential,
 		TokenEndpointAuthMethod:          client.TokenEndpointAuthSecretPost,
 		Protocols:                        []client.Protocol{client.ProtocolOAuth21},
@@ -102,8 +103,9 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		storedClient.BackchannelLogoutURI != "https://app.example.com/oidc/backchannel-logout" ||
 		!storedClient.BackchannelLogoutSessionRequired ||
 		storedClient.FaviconURL != "https://app.example.com/favicon.svg" ||
+		storedClient.LaunchURI != "https://app.example.com/?login=oidc" ||
 		storedClient.TokenEndpointAuthMethod != client.TokenEndpointAuthSecretPost {
-		t.Fatalf("client logout redirect round trip failed: %#v %v", storedClient, err)
+		t.Fatalf("client configuration round trip failed: %#v %v", storedClient, err)
 	}
 
 	sourceKeyRing, err := secrets.ParseKeyRing(

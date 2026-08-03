@@ -309,6 +309,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
   "id": "finance",
   "name": "Finance",
   "description": "财务系统",
+  "launch_uri": "https://finance.example.com/?login=oidc",
   "application_type": "confidential",
   "token_endpoint_auth_method": "client_secret_basic",
   "protocols": [
@@ -352,6 +353,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
 }
 ```
 
+`launch_uri` 是 `/portal` 中系统按钮使用的业务入口；它必须先在业务系统侧创建 `state`、`nonce` 与 PKCE verifier，再进入 Certus 授权端点。OAuth/OIDC 客户端不要把回调地址直接当作启动地址。
+
 创建成功后响应会同时给出业务系统所需的接入参数：
 
 ```json
@@ -365,6 +368,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
     "issuer": "https://auth.example.com",
     "discovery_url": "https://auth.example.com/.well-known/openid-configuration",
     "client_id": "finance",
+    "launch_uri": "https://finance.example.com/?login=oidc",
     "client_secret": "<仅本次响应显示>",
     "client_authentication_method": "client_secret_basic",
     "authorization_endpoint": "https://auth.example.com/oauth2/authorize",

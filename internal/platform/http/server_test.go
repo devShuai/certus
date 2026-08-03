@@ -62,7 +62,11 @@ func TestPortal(t *testing.T) {
 
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "中间落地页") {
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, "中间落地页") ||
+		!strings.Contains(body, `href="http://localhost:3000/?login=oidc"`) ||
+		strings.Contains(body, `/login?client_id=specus`) {
 		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
 	}
 }

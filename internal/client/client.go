@@ -76,6 +76,7 @@ type Client struct {
 	Name                             string                  `json:"name"`
 	Description                      string                  `json:"description,omitempty"`
 	FaviconURL                       string                  `json:"favicon_url,omitempty"`
+	LaunchURI                        string                  `json:"launch_uri,omitempty"`
 	ApplicationType                  ApplicationType         `json:"application_type"`
 	TokenEndpointAuthMethod          TokenEndpointAuthMethod `json:"token_endpoint_auth_method"`
 	Protocols                        []Protocol              `json:"protocols"`
@@ -103,6 +104,7 @@ type CreateClient struct {
 	Name                             string                  `json:"name"`
 	Description                      string                  `json:"description"`
 	FaviconURL                       string                  `json:"favicon_url"`
+	LaunchURI                        string                  `json:"launch_uri"`
 	ApplicationType                  ApplicationType         `json:"application_type"`
 	TokenEndpointAuthMethod          TokenEndpointAuthMethod `json:"token_endpoint_auth_method"`
 	Protocols                        []Protocol              `json:"protocols"`
@@ -127,6 +129,7 @@ type ReplaceClient struct {
 	Name                             string                  `json:"name"`
 	Description                      string                  `json:"description"`
 	FaviconURL                       string                  `json:"favicon_url"`
+	LaunchURI                        string                  `json:"launch_uri"`
 	TokenEndpointAuthMethod          TokenEndpointAuthMethod `json:"token_endpoint_auth_method"`
 	Protocols                        []Protocol              `json:"protocols"`
 	GrantTypes                       []GrantType             `json:"grant_types"`
@@ -288,6 +291,7 @@ func New(input CreateClient) (Client, string, error) {
 		Name:                             strings.TrimSpace(input.Name),
 		Description:                      strings.TrimSpace(input.Description),
 		FaviconURL:                       strings.TrimSpace(input.FaviconURL),
+		LaunchURI:                        strings.TrimSpace(input.LaunchURI),
 		ApplicationType:                  input.ApplicationType,
 		TokenEndpointAuthMethod:          input.TokenEndpointAuthMethod,
 		Protocols:                        uniqueProtocols(input.Protocols),
@@ -355,6 +359,7 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 		Name:                             strings.TrimSpace(input.Name),
 		Description:                      strings.TrimSpace(input.Description),
 		FaviconURL:                       strings.TrimSpace(input.FaviconURL),
+		LaunchURI:                        strings.TrimSpace(input.LaunchURI),
 		ApplicationType:                  current.ApplicationType,
 		TokenEndpointAuthMethod:          input.TokenEndpointAuthMethod,
 		Protocols:                        uniqueProtocols(input.Protocols),
@@ -417,6 +422,9 @@ func (c Client) Validate() error {
 	}
 	if c.FaviconURL != "" && (len(c.FaviconURL) > 2048 || !validEndpointURL(c.FaviconURL)) {
 		return fmt.Errorf("%w: favicon_url must be an absolute HTTPS URL (HTTP is allowed only for loopback hosts)", ErrInvalid)
+	}
+	if c.LaunchURI != "" && (len(c.LaunchURI) > 2048 || !validEndpointURL(c.LaunchURI)) {
+		return fmt.Errorf("%w: launch_uri must be an absolute HTTPS URL (HTTP is allowed only for loopback hosts)", ErrInvalid)
 	}
 	if c.ApplicationType != ApplicationPublic && c.ApplicationType != ApplicationConfidential {
 		return fmt.Errorf("%w: unsupported application_type", ErrInvalid)

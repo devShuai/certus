@@ -955,6 +955,7 @@ function resetClientForm() {
   clientForm.elements.token_endpoint_auth_method.value = "client_secret_basic";
   clientForm.elements.allowed_scopes.value = "openid profile email";
   clientForm.elements.favicon_url.value = "";
+  clientForm.elements.launch_uri.value = "";
   clientForm.elements.enabled.checked = true;
   setCheckedValues(clientForm, "protocols", ["oauth2.1"]);
   setCheckedValues(clientForm, "grant_types", ["authorization_code", "refresh_token"]);
@@ -981,6 +982,7 @@ function openClient(client) {
   clientForm.elements.name.value = client.name;
   clientForm.elements.description.value = client.description || "";
   clientForm.elements.favicon_url.value = client.favicon_url || "";
+  clientForm.elements.launch_uri.value = client.launch_uri || "";
   clientForm.elements.application_type.value = client.application_type;
   clientForm.elements.application_type.disabled = true;
   clientForm.elements.token_endpoint_auth_method.value = client.token_endpoint_auth_method || (client.application_type === "confidential" ? "client_secret_basic" : "none");
@@ -1021,7 +1023,7 @@ document.querySelector("#new-client").addEventListener("click", openNewClient);
 document.querySelector('[data-action="close-client"]').addEventListener("click", () => document.querySelector("#client-editor").classList.add("hidden"));
 clientForm.elements.application_type.addEventListener("change", () => syncClientAuthenticationMethod());
 clientForm.elements.favicon_url.addEventListener("input", renderClientFaviconPreview);
-for (const fieldName of ["redirect_uris", "cas_service_urls"]) {
+for (const fieldName of ["launch_uri", "redirect_uris", "cas_service_urls"]) {
   clientForm.elements[fieldName].addEventListener("change", () => {
     if (!clientForm.elements.favicon_url.value.trim()) {
       void discoverClientFavicon(true);
@@ -1041,6 +1043,7 @@ clientForm.addEventListener("submit", async (event) => {
     name: data.get("name"),
     description: data.get("description"),
     favicon_url: data.get("favicon_url"),
+    launch_uri: data.get("launch_uri"),
     token_endpoint_auth_method: data.get("token_endpoint_auth_method") || "none",
     protocols: data.getAll("protocols"),
     grant_types: data.getAll("grant_types"),
@@ -1080,7 +1083,8 @@ clientForm.addEventListener("submit", async (event) => {
 });
 
 function clientFaviconCandidate() {
-  return lines(clientForm.elements.redirect_uris.value)[0]
+  return clientForm.elements.launch_uri.value.trim()
+    || lines(clientForm.elements.redirect_uris.value)[0]
     || lines(clientForm.elements.cas_service_urls.value)[0]
     || "";
 }
