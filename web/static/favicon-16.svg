@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="16" height="16" role="img" aria-label="certus 统一认证中心">
   <rect width="64" height="64" rx="12" fill="#14161F"></rect>
-  <path d="M45 17 A20 20 0 1 0 52 40" fill="none" stroke="#F2F3F7" stroke-width="9" stroke-linecap="round"></path>
-  <path d="M21 32 L31 42 L54 16" fill="none" stroke="#E8B34A" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"></path>
+  <path d="M28 12 H10 A6 6 0 0 0 4 18 V46 A6 6 0 0 0 10 52 H25 L32 39 L21 25 Z" fill="#F2F3F7"></path>
+  <path d="M37 12 H54 A6 6 0 0 1 60 18 V46 A6 6 0 0 1 54 52 H34 L41 39 L30 25 Z" fill="#E8B34A"></path>
 </svg>
