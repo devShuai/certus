@@ -14,9 +14,10 @@ import (
 )
 
 type mfaLoginPageData struct {
-	Title     string
-	CSRFToken string
-	Error     string
+	Title          string
+	CSRFToken      string
+	Error          string
+	RememberDevice bool
 }
 
 type mfaSetupResponse struct {
@@ -106,6 +107,7 @@ func (s *server) mfaLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.mfa.Verify(r.Context(), userID, r.Form.Get("code"))
+	rememberDevice := r.Form.Get("remember_device") == "on"
 	if err != nil {
 		message := "动态口令或恢复码不正确"
 		if errors.Is(err, mfa.ErrLocked) {
@@ -121,9 +123,10 @@ func (s *server) mfaLoginVerify(w http.ResponseWriter, r *http.Request) {
 			Details:     map[string]any{"locked": errors.Is(err, mfa.ErrLocked), "replay": errors.Is(err, mfa.ErrReplay)},
 		})
 		s.render(w, "mfa.html", mfaLoginPageData{
-			Title:     "多因素认证 · Certus",
-			CSRFToken: s.ensureCSRF(w, r),
-			Error:     message,
+			Title:          "多因素认证 · Certus",
+			CSRFToken:      s.ensureCSRF(w, r),
+			Error:          message,
+			RememberDevice: rememberDevice,
 		})
 		return
 	}
@@ -134,13 +137,84 @@ func (s *server) mfaLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.clearMFACookie(w)
+	remembered := false
+	if rememberDevice {
+		trustedDevice, rememberErr := s.mfa.RememberDevice(r.Context(), userID, r.UserAgent())
+		if rememberErr != nil {
+			s.logger.Error("remember MFA trusted device", "user_id", userID, "error", rememberErr)
+		} else {
+			s.setTrustedDeviceCookie(w, trustedDevice)
+			remembered = true
+		}
+	}
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(userID),
 		EventType:   "login.mfa",
 		ClientID:    auditClient(clientID),
 		Outcome:     audit.OutcomeSuccess,
+		Details:     map[string]any{"remember_device": remembered},
 	})
-	s.createLoginSession(w, r, user, returnTo, method, clientID, true)
+	s.createLoginSession(w, r, user, returnTo, method, clientID, "otp")
+}
+
+func (s *server) completeLoginWithTrustedDevice(
+	w http.ResponseWriter,
+	r *http.Request,
+	user identity.User,
+	returnTo, method, clientID string,
+) bool {
+	cookie, err := r.Cookie(trustedDeviceCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return false
+	}
+	replacement, trusted, err := s.mfa.UseTrustedDevice(r.Context(), user.ID, cookie.Value, r.UserAgent())
+	if err != nil {
+		s.logger.Error("verify MFA trusted device", "user_id", user.ID, "error", err)
+		return false
+	}
+	if !trusted {
+		s.clearTrustedDeviceCookie(w)
+		return false
+	}
+	s.setTrustedDeviceCookie(w, replacement)
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(user.ID),
+		EventType:   "login.mfa_trusted_device",
+		ClientID:    auditClient(clientID),
+		Outcome:     audit.OutcomeSuccess,
+	})
+	s.createLoginSession(w, r, user, returnTo, method, clientID, "trusted_device")
+	return true
+}
+
+func (s *server) setTrustedDeviceCookie(w http.ResponseWriter, device mfa.TrustedDeviceToken) {
+	maxAge := int(device.ExpiresAt.Sub(s.now().UTC()).Seconds())
+	if maxAge <= 0 {
+		s.clearTrustedDeviceCookie(w)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     trustedDeviceCookieName,
+		Value:    device.Token,
+		Path:     "/",
+		Expires:  device.ExpiresAt,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   s.secureCookies(),
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *server) clearTrustedDeviceCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     trustedDeviceCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.secureCookies(),
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func (s *server) mfaLoginTransaction(r *http.Request) (string, string, string, string, bool) {
@@ -352,10 +426,32 @@ func (s *server) disableAccountMFA(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server_error", "关闭多因素认证失败")
 		return
 	}
+	s.clearTrustedDeviceCookie(w)
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(current.UserID),
 		EventType:   "mfa.disabled",
 		Outcome:     audit.OutcomeSuccess,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) revokeAccountMFATrustedDevices(w http.ResponseWriter, r *http.Request) {
+	current, ok := s.requireCurrentSession(w, r)
+	if !ok || !s.requireAccountCSRF(w, r) {
+		return
+	}
+	count, err := s.mfa.RevokeTrustedDevices(r.Context(), current.UserID)
+	if err != nil {
+		s.logger.Error("revoke account MFA trusted devices", "user_id", current.UserID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "移除受信任设备失败")
+		return
+	}
+	s.clearTrustedDeviceCookie(w)
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(current.UserID),
+		EventType:   "mfa.trusted_devices.revoked",
+		Outcome:     audit.OutcomeSuccess,
+		Details:     map[string]any{"count": count},
 	})
 	w.WriteHeader(http.StatusNoContent)
 }

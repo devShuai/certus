@@ -3,6 +3,7 @@ package mfa
 import (
 	"bytes"
 	"context"
+	"sort"
 	"sync"
 	"time"
 )
@@ -13,14 +14,19 @@ type memoryCredential struct {
 }
 
 type MemoryRepository struct {
-	mu          sync.RWMutex
-	credentials map[string]memoryCredential
+	mu             sync.RWMutex
+	credentials    map[string]memoryCredential
+	trustedDevices map[string]TrustedDevice
 }
 
 var _ SecretRepository = (*MemoryRepository)(nil)
+var _ Repository = (*MemoryRepository)(nil)
 
 func NewMemoryRepository() *MemoryRepository {
-	return &MemoryRepository{credentials: make(map[string]memoryCredential)}
+	return &MemoryRepository{
+		credentials:    make(map[string]memoryCredential),
+		trustedDevices: make(map[string]TrustedDevice),
+	}
 }
 
 func (r *MemoryRepository) Find(_ context.Context, userID string) (Credential, error) {
@@ -43,6 +49,7 @@ func (r *MemoryRepository) ReplacePending(_ context.Context, credential Credenti
 		value.recoveryCodes = append(value.recoveryCodes, append([]byte(nil), code...))
 	}
 	r.credentials[credential.UserID] = value
+	r.deleteTrustedDevicesLocked(credential.UserID)
 	return nil
 }
 
@@ -168,6 +175,91 @@ func (r *MemoryRepository) RecordFailure(_ context.Context, userID string, attem
 	return nil
 }
 
+func (r *MemoryRepository) StoreTrustedDevice(_ context.Context, device TrustedDevice, maxDevices int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	credential, ok := r.credentials[device.UserID]
+	if !ok {
+		return ErrNotFound
+	}
+	if !credential.Enabled {
+		return ErrNotEnabled
+	}
+	now := device.CreatedAt
+	for key, current := range r.trustedDevices {
+		if current.UserID == device.UserID && !current.ExpiresAt.After(now) {
+			delete(r.trustedDevices, key)
+		}
+	}
+	r.trustedDevices[string(device.TokenHash)] = cloneTrustedDevice(device)
+	if maxDevices <= 0 {
+		return nil
+	}
+	type candidate struct {
+		key      string
+		lastUsed time.Time
+	}
+	devices := make([]candidate, 0)
+	for key, current := range r.trustedDevices {
+		if current.UserID == device.UserID {
+			devices = append(devices, candidate{key: key, lastUsed: current.LastUsedAt})
+		}
+	}
+	sort.Slice(devices, func(i, j int) bool { return devices[i].lastUsed.Before(devices[j].lastUsed) })
+	for len(devices) > maxDevices {
+		delete(r.trustedDevices, devices[0].key)
+		devices = devices[1:]
+	}
+	return nil
+}
+
+func (r *MemoryRepository) RotateTrustedDevice(
+	_ context.Context,
+	userID string,
+	currentHash, replacementHash, userAgentHash []byte,
+	now time.Time,
+) (time.Time, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := string(currentHash)
+	device, ok := r.trustedDevices[key]
+	if !ok || device.UserID != userID || !bytes.Equal(device.UserAgentHash, userAgentHash) {
+		return time.Time{}, ErrTrustedDeviceNotFound
+	}
+	if !device.ExpiresAt.After(now) {
+		delete(r.trustedDevices, key)
+		return time.Time{}, ErrTrustedDeviceNotFound
+	}
+	delete(r.trustedDevices, key)
+	device.TokenHash = append([]byte(nil), replacementHash...)
+	device.LastUsedAt = now
+	r.trustedDevices[string(replacementHash)] = device
+	return device.ExpiresAt, nil
+}
+
+func (r *MemoryRepository) CountTrustedDevices(_ context.Context, userID string, now time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for key, device := range r.trustedDevices {
+		if device.UserID != userID {
+			continue
+		}
+		if !device.ExpiresAt.After(now) {
+			delete(r.trustedDevices, key)
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+func (r *MemoryRepository) DeleteTrustedDevices(_ context.Context, userID string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.deleteTrustedDevicesLocked(userID), nil
+}
+
 func (r *MemoryRepository) Delete(_ context.Context, userID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -175,7 +267,19 @@ func (r *MemoryRepository) Delete(_ context.Context, userID string) error {
 		return ErrNotFound
 	}
 	delete(r.credentials, userID)
+	r.deleteTrustedDevicesLocked(userID)
 	return nil
+}
+
+func (r *MemoryRepository) deleteTrustedDevicesLocked(userID string) int {
+	deleted := 0
+	for key, device := range r.trustedDevices {
+		if device.UserID == userID {
+			delete(r.trustedDevices, key)
+			deleted++
+		}
+	}
+	return deleted
 }
 
 func cloneCredential(value Credential) Credential {
@@ -188,5 +292,11 @@ func cloneCredential(value Credential) Credential {
 		lockedUntil := *value.LockedUntil
 		value.LockedUntil = &lockedUntil
 	}
+	return value
+}
+
+func cloneTrustedDevice(value TrustedDevice) TrustedDevice {
+	value.TokenHash = append([]byte(nil), value.TokenHash...)
+	value.UserAgentHash = append([]byte(nil), value.UserAgentHash...)
 	return value
 }

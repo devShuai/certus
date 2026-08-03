@@ -102,7 +102,8 @@ func (s *server) validEmergencyAdminToken(supplied string) bool {
 
 func administratorMFA(current session.Session) bool {
 	return current.AssuranceLevel == "urn:certus:aal:2" &&
-		slices.Contains(current.AuthMethods, "otp")
+		(slices.Contains(current.AuthMethods, "otp") ||
+			slices.Contains(current.AuthMethods, "trusted_device"))
 }
 
 func isMutation(method string) bool {

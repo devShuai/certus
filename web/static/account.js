@@ -237,7 +237,7 @@ document.querySelector("#password-form").addEventListener("submit", async (event
     });
     form.reset();
     await loadSessions();
-    setAccountStatus("密码已更新，其他设备的会话已撤销。", "success");
+    setAccountStatus("密码已更新，其他设备的会话与所有受信任设备已撤销。", "success");
   } catch (error) {
     setAccountStatus(error.message, "error");
   } finally {
@@ -260,11 +260,14 @@ function renderMFA() {
   const setupForm = document.querySelector("#mfa-setup-form");
   const recoveryForm = document.querySelector("#mfa-recovery-form");
   const recoveryResult = document.querySelector("#mfa-recovery-result");
+  const trustedDevicesForm = document.querySelector("#mfa-trusted-devices-form");
+  const trustedDevicesSummary = document.querySelector("#mfa-trusted-devices-summary");
   const disableForm = document.querySelector("#mfa-disable-form");
 
   unavailable.classList.toggle("hidden", status.available);
   setupForm.classList.add("hidden");
   recoveryForm.classList.add("hidden");
+  trustedDevicesForm.classList.add("hidden");
   disableForm.classList.add("hidden");
   if (!status.available) {
     recoveryResult.classList.add("hidden");
@@ -278,6 +281,10 @@ function renderMFA() {
     badge.className = "badge active";
     summary.textContent = `TOTP 已启用，剩余 ${status.recovery_codes} 枚恢复码${status.verified_at ? `，启用于 ${accountDate(status.verified_at)}` : ""}。`;
     recoveryForm.classList.remove("hidden");
+    if (status.trusted_devices > 0) {
+      trustedDevicesSummary.textContent = `当前有 ${status.trusted_devices} 台受信任设备可在 30 天有效期内免输动态口令。`;
+      trustedDevicesForm.classList.remove("hidden");
+    }
     disableForm.classList.remove("hidden");
     return;
   }
@@ -407,6 +414,23 @@ document.querySelector("#mfa-recovery-form").addEventListener("submit", async (e
     document.querySelector("#mfa-recovery-result").classList.remove("hidden");
     await loadMFA();
     setAccountStatus("恢复码已重新生成，所有原恢复码均已失效。", "success");
+  } catch (error) {
+    setAccountStatus(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.querySelector("#mfa-trusted-devices-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!window.confirm("移除后，所有已记住的设备在下次登录时都需要动态口令，确定继续吗？")) return;
+  const form = event.currentTarget;
+  const submit = form.querySelector("button[type='submit']");
+  submit.disabled = true;
+  try {
+    await accountAPI("/api/v1/account/mfa/trusted-devices", { method: "DELETE" });
+    await loadMFA();
+    setAccountStatus("所有受信任设备已移除。", "success");
   } catch (error) {
     setAccountStatus(error.message, "error");
   } finally {

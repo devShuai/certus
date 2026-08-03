@@ -20,12 +20,13 @@ import (
 )
 
 const (
-	sessionCookieName      = "certus_session"
-	csrfCookieName         = "certus_csrf"
-	externalOIDCCookieName = "certus_oidc_transaction"
-	mfaCookieName          = "certus_mfa_transaction"
-	oauthReauthCookieName  = "certus_oauth_reauth"
-	oauthConsentCookieName = "certus_oauth_consent"
+	sessionCookieName       = "certus_session"
+	csrfCookieName          = "certus_csrf"
+	externalOIDCCookieName  = "certus_oidc_transaction"
+	mfaCookieName           = "certus_mfa_transaction"
+	trustedDeviceCookieName = "certus_trusted_device"
+	oauthReauthCookieName   = "certus_oauth_reauth"
+	oauthConsentCookieName  = "certus_oauth_consent"
 )
 
 type loginPageData struct {
@@ -603,20 +604,23 @@ func (s *server) completeLogin(w http.ResponseWriter, r *http.Request, user iden
 		return
 	}
 	if required {
+		if s.completeLoginWithTrustedDevice(w, r, user, returnTo, method, clientID) {
+			return
+		}
 		s.beginMFAChallenge(w, r, user.ID, returnTo, method, clientID)
 		return
 	}
-	s.createLoginSession(w, r, user, returnTo, method, clientID, false)
+	s.createLoginSession(w, r, user, returnTo, method, clientID, "")
 }
 
-func (s *server) createLoginSession(w http.ResponseWriter, r *http.Request, user identity.User, returnTo, method, clientID string, mfaVerified bool) {
+func (s *server) createLoginSession(w http.ResponseWriter, r *http.Request, user identity.User, returnTo, method, clientID, secondFactorMethod string) {
 	authMethods := []string{"pwd"}
 	if method == "oidc" {
 		authMethods = []string{"federated"}
 	}
 	assuranceLevel := "urn:certus:aal:1"
-	if mfaVerified {
-		authMethods = append(authMethods, "otp")
+	if secondFactorMethod != "" {
+		authMethods = append(authMethods, secondFactorMethod)
 		assuranceLevel = "urn:certus:aal:2"
 	}
 	_, token, err := s.sessions.CreateWithMethods(
@@ -818,10 +822,18 @@ func (s *server) setUserPassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.oauth.RevokeUserTokens(r.Context(), userID, "", s.now().UTC()); err != nil {
 		s.logger.Error("revoke OAuth tokens after admin password update", "error", err)
 	}
+	trustedDevicesRevoked, trustedDeviceErr := s.mfa.RevokeTrustedDevices(r.Context(), userID)
+	if trustedDeviceErr != nil {
+		s.logger.Error("revoke trusted devices after admin password update", "error", trustedDeviceErr)
+	}
 	s.recordAudit(r, audit.Event{
 		EventType: "password.set_by_admin",
 		Outcome:   audit.OutcomeSuccess,
-		Details:   map[string]any{"user_id": userID, "sessions_revoked": revoked},
+		Details: map[string]any{
+			"user_id":                 userID,
+			"sessions_revoked":        revoked,
+			"trusted_devices_revoked": trustedDevicesRevoked,
+		},
 	})
 	w.WriteHeader(http.StatusNoContent)
 }

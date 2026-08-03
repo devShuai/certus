@@ -22,6 +22,21 @@ import (
 	"certus/internal/session"
 )
 
+func TestAdministratorMFAAcceptsTrustedDevice(t *testing.T) {
+	if !administratorMFA(session.Session{
+		AuthMethods:    []string{"pwd", "trusted_device"},
+		AssuranceLevel: "urn:certus:aal:2",
+	}) {
+		t.Fatal("trusted MFA device session was not accepted as administrator MFA")
+	}
+	if administratorMFA(session.Session{
+		AuthMethods:    []string{"pwd", "trusted_device"},
+		AssuranceLevel: "urn:certus:aal:1",
+	}) {
+		t.Fatal("trusted MFA device without AAL2 was accepted")
+	}
+}
+
 func TestAdministratorSessionRBACMFAAndAuditActor(t *testing.T) {
 	ctx := context.Background()
 	user, err := identity.NewUser(identity.CreateUser{

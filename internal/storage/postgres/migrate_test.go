@@ -135,6 +135,23 @@ func TestTOTPMFAMigration(t *testing.T) {
 	}
 }
 
+func TestMFATrustedDevicesMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/027_mfa_trusted_devices.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE mfa_trusted_devices",
+		"token_hash bytea PRIMARY KEY",
+		"REFERENCES mfa_totp_credentials(user_id) ON DELETE CASCADE",
+		"expires_at timestamptz NOT NULL",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("trusted MFA device migration does not contain %s", expected)
+		}
+	}
+}
+
 func TestAuthenticationContextMigration(t *testing.T) {
 	content, err := migrationFiles.ReadFile("migrations/012_authentication_context.sql")
 	if err != nil {

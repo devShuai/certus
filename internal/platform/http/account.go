@@ -207,11 +207,19 @@ func (s *server) changeAccountPassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.oauth.RevokeUserTokens(r.Context(), current.UserID, current.ID, s.now().UTC()); err != nil {
 		s.logger.Error("revoke other OAuth tokens after password change", "error", err)
 	}
+	trustedDevicesRevoked, trustedDeviceErr := s.mfa.RevokeTrustedDevices(r.Context(), current.UserID)
+	if trustedDeviceErr != nil {
+		s.logger.Error("revoke trusted devices after password change", "error", trustedDeviceErr)
+	}
+	s.clearTrustedDeviceCookie(w)
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(current.UserID),
 		EventType:   "password.changed",
 		Outcome:     audit.OutcomeSuccess,
-		Details:     map[string]any{"other_sessions_revoked": revoked},
+		Details: map[string]any{
+			"other_sessions_revoked":  revoked,
+			"trusted_devices_revoked": trustedDevicesRevoked,
+		},
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -284,13 +292,21 @@ func (s *server) resetAccountPassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.oauth.RevokeUserTokens(r.Context(), userID, "", s.now().UTC()); err != nil {
 		s.logger.Error("revoke OAuth tokens after password reset", "error", err)
 	}
+	trustedDevicesRevoked, trustedDeviceErr := s.mfa.RevokeTrustedDevices(r.Context(), userID)
+	if trustedDeviceErr != nil {
+		s.logger.Error("revoke trusted devices after password reset", "error", trustedDeviceErr)
+	}
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(userID),
 		EventType:   "password.reset",
 		Outcome:     audit.OutcomeSuccess,
-		Details:     map[string]any{"sessions_revoked": revoked},
+		Details: map[string]any{
+			"sessions_revoked":        revoked,
+			"trusted_devices_revoked": trustedDevicesRevoked,
+		},
 	})
 	s.clearSessionCookie(w)
+	s.clearTrustedDeviceCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 

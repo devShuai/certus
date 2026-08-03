@@ -197,6 +197,74 @@ func TestRewrapLegacySecretRequiresLegacyKey(t *testing.T) {
 	}
 }
 
+func TestTrustedDeviceRotationBindingExpiryAndRevocation(t *testing.T) {
+	ctx := context.Background()
+	repository := NewMemoryRepository()
+	now := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
+	if err := repository.ReplacePending(ctx, Credential{UserID: "user-1", CreatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Enable(ctx, "user-1", 1, now); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(repository, nil, "Certus")
+	service.now = func() time.Time { return now }
+
+	remembered, err := service.RememberDevice(ctx, "user-1", "Browser/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remembered.Token == "" || !remembered.ExpiresAt.Equal(now.Add(30*24*time.Hour)) {
+		t.Fatalf("unexpected trusted device token: %#v", remembered)
+	}
+	if _, trusted, err := service.UseTrustedDevice(ctx, "user-1", remembered.Token, "Other Browser"); err != nil || trusted {
+		t.Fatalf("trusted device accepted for another browser: trusted=%v err=%v", trusted, err)
+	}
+
+	rotated, trusted, err := service.UseTrustedDevice(ctx, "user-1", remembered.Token, "Browser/1")
+	if err != nil || !trusted {
+		t.Fatalf("use trusted device: trusted=%v err=%v", trusted, err)
+	}
+	if rotated.Token == remembered.Token || !rotated.ExpiresAt.Equal(remembered.ExpiresAt) {
+		t.Fatalf("trusted device was not safely rotated: %#v", rotated)
+	}
+	if _, trusted, err := service.UseTrustedDevice(ctx, "user-1", remembered.Token, "Browser/1"); err != nil || trusted {
+		t.Fatalf("old trusted device token survived rotation: trusted=%v err=%v", trusted, err)
+	}
+	status, err := service.Status(ctx, "user-1")
+	if err != nil || status.TrustedDevices != 1 {
+		t.Fatalf("unexpected trusted device status: %#v err=%v", status, err)
+	}
+
+	if count, err := service.RevokeTrustedDevices(ctx, "user-1"); err != nil || count != 1 {
+		t.Fatalf("revoke trusted devices: count=%d err=%v", count, err)
+	}
+	if _, trusted, err := service.UseTrustedDevice(ctx, "user-1", rotated.Token, "Browser/1"); err != nil || trusted {
+		t.Fatalf("revoked trusted device remained usable: trusted=%v err=%v", trusted, err)
+	}
+
+	var latest TrustedDeviceToken
+	for index := 0; index < trustedDeviceMax+1; index++ {
+		latest, err = service.RememberDevice(ctx, "user-1", "Browser/1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Second)
+	}
+	status, err = service.Status(ctx, "user-1")
+	if err != nil || status.TrustedDevices != trustedDeviceMax {
+		t.Fatalf("trusted device limit was not enforced: %#v err=%v", status, err)
+	}
+	now = latest.ExpiresAt.Add(time.Second)
+	if _, trusted, err := service.UseTrustedDevice(ctx, "user-1", latest.Token, "Browser/1"); err != nil || trusted {
+		t.Fatalf("expired trusted device remained usable: trusted=%v err=%v", trusted, err)
+	}
+	status, err = service.Status(ctx, "user-1")
+	if err != nil || status.TrustedDevices != 0 {
+		t.Fatalf("expired trusted devices remained active: %#v err=%v", status, err)
+	}
+}
+
 func base32NoPaddingDecode(value string) ([]byte, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(value)
 }

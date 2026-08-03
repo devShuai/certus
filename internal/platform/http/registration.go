@@ -132,7 +132,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		ClientID:    auditClient(clientID),
 		Outcome:     audit.OutcomeSuccess,
 	})
-	s.createLoginSession(w, r, user, returnTo, "registration", clientID, false)
+	s.createLoginSession(w, r, user, returnTo, "registration", clientID, "")
 }
 
 func (s *server) newRegistrationPageData(

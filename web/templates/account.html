@@ -31,7 +31,7 @@
   <div class="account-grid">
     <section class="panel">
       <div class="section-heading"><div><p class="eyebrow">凭据安全</p><h2>修改密码</h2></div></div>
-      <p class="muted">新密码至少 12 个字符。修改成功后，除当前设备外的其他会话会立即退出。</p>
+      <p class="muted">新密码至少 12 个字符。修改成功后，除当前设备外的其他会话会立即退出，所有受信任设备也会失效。</p>
       <form id="password-form" class="stack">
         <label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label>
         <label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="12" required></label>
@@ -75,6 +75,10 @@
         <div class="section-heading"><strong>新恢复码</strong><button id="copy-rotated-recovery-codes" class="secondary" type="button">复制恢复码</button></div>
         <div id="rotated-recovery-codes" class="recovery-codes"></div>
       </div>
+      <form id="mfa-trusted-devices-form" class="stack hidden">
+        <p id="mfa-trusted-devices-summary" class="muted"></p>
+        <button class="secondary" type="submit">移除所有受信任设备</button>
+      </form>
       <form id="mfa-disable-form" class="stack hidden">
         <label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label>
         <label>动态口令或恢复码<input name="code" autocomplete="one-time-code" required></label>

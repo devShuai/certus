@@ -18,6 +18,7 @@ type MFARepository struct {
 }
 
 var _ mfa.SecretRepository = (*MFARepository)(nil)
+var _ mfa.Repository = (*MFARepository)(nil)
 
 func NewMFARepository(pool *pgxpool.Pool) *MFARepository {
 	return &MFARepository{pool: pool}
@@ -84,6 +85,9 @@ func (r *MFARepository) ReplacePending(ctx context.Context, credential mfa.Crede
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM mfa_recovery_codes WHERE user_id = $1`, credential.UserID); err != nil {
 		return fmt.Errorf("replace MFA recovery codes: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM mfa_trusted_devices WHERE user_id = $1`, credential.UserID); err != nil {
+		return fmt.Errorf("delete trusted devices during MFA replacement: %w", err)
 	}
 	for _, hash := range recoveryCodes {
 		if _, err := tx.Exec(ctx, `
@@ -263,6 +267,103 @@ func (r *MFARepository) RecordFailure(ctx context.Context, userID string, attemp
 		return mfa.ErrNotFound
 	}
 	return nil
+}
+
+func (r *MFARepository) StoreTrustedDevice(ctx context.Context, device mfa.TrustedDevice, maxDevices int) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin trusted device creation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM mfa_trusted_devices
+		WHERE user_id = $1 AND expires_at <= $2`,
+		device.UserID, device.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("delete expired trusted devices: %w", err)
+	}
+	command, err := tx.Exec(ctx, `
+		INSERT INTO mfa_trusted_devices (
+			token_hash, user_id, user_agent_hash, created_at, last_used_at, expires_at
+		)
+		SELECT $2, c.user_id, $3, $4, $5, $6
+		FROM mfa_totp_credentials c
+		WHERE c.user_id = $1 AND c.enabled = true`,
+		device.UserID, device.TokenHash, device.UserAgentHash,
+		device.CreatedAt, device.LastUsedAt, device.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store trusted device: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return mfa.ErrNotEnabled
+	}
+	if maxDevices > 0 {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM mfa_trusted_devices
+			WHERE token_hash IN (
+				SELECT token_hash
+				FROM mfa_trusted_devices
+				WHERE user_id = $1
+				ORDER BY last_used_at DESC, created_at DESC
+				OFFSET $2
+			)`,
+			device.UserID, maxDevices,
+		); err != nil {
+			return fmt.Errorf("prune trusted devices: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit trusted device creation: %w", err)
+	}
+	return nil
+}
+
+func (r *MFARepository) RotateTrustedDevice(
+	ctx context.Context,
+	userID string,
+	currentHash, replacementHash, userAgentHash []byte,
+	now time.Time,
+) (time.Time, error) {
+	var expiresAt time.Time
+	err := r.pool.QueryRow(ctx, `
+		UPDATE mfa_trusted_devices
+		SET token_hash = $3, last_used_at = $5
+		WHERE token_hash = $1
+		  AND user_id = $2
+		  AND user_agent_hash = $4
+		  AND expires_at > $5
+		RETURNING expires_at`,
+		currentHash, userID, replacementHash, userAgentHash, now,
+	).Scan(&expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, mfa.ErrTrustedDeviceNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("rotate trusted device: %w", err)
+	}
+	return expiresAt, nil
+}
+
+func (r *MFARepository) CountTrustedDevices(ctx context.Context, userID string, now time.Time) (int, error) {
+	var count int
+	if err := r.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM mfa_trusted_devices
+		WHERE user_id = $1 AND expires_at > $2`,
+		userID, now,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count trusted devices: %w", err)
+	}
+	return count, nil
+}
+
+func (r *MFARepository) DeleteTrustedDevices(ctx context.Context, userID string) (int, error) {
+	command, err := r.pool.Exec(ctx, `DELETE FROM mfa_trusted_devices WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete trusted devices: %w", err)
+	}
+	return int(command.RowsAffected()), nil
 }
 
 func (r *MFARepository) Delete(ctx context.Context, userID string) error {

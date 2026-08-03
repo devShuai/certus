@@ -347,6 +347,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("POST /api/v1/account/mfa/totp/enable", s.enableAccountMFA)
 	mux.HandleFunc("POST /api/v1/account/mfa/recovery-codes", s.regenerateAccountMFARecoveryCodes)
 	mux.HandleFunc("DELETE /api/v1/account/mfa/totp", s.disableAccountMFA)
+	mux.HandleFunc("DELETE /api/v1/account/mfa/trusted-devices", s.revokeAccountMFATrustedDevices)
 	mux.HandleFunc("GET /oauth2/authorize", s.authorize)
 	mux.HandleFunc("POST /oauth2/authorize/consent", s.oauthConsentDecision)
 	mux.HandleFunc("POST /oauth2/token", s.token)

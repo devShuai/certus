@@ -134,6 +134,7 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 		"csrf_token="+csrf+"&continue=%2Fportal&username=alice&password=initial-password-123",
 	))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", "trusted-browser")
 	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -151,9 +152,10 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/login/mfa", strings.NewReader(
-		"csrf_token="+csrf+"&code="+regenerated.RecoveryCodes[0],
+		"csrf_token="+csrf+"&code="+regenerated.RecoveryCodes[0]+"&remember_device=on",
 	))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", "trusted-browser")
 	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
 	request.AddCookie(transaction)
 	response = httptest.NewRecorder()
@@ -162,14 +164,74 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 		response.Header().Get("Location") != loginSuccessURL("/portal") {
 		t.Fatalf("MFA login failed: %d %s %s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
-	foundSession := false
+	var trustedDeviceCookie *http.Cookie
+	var mfaSessionToken string
 	for _, cookie := range response.Result().Cookies() {
 		if cookie.Name == sessionCookieName && cookie.Value != "" {
-			foundSession = true
+			mfaSessionToken = cookie.Value
+		}
+		if cookie.Name == trustedDeviceCookieName && cookie.Value != "" {
+			trustedDeviceCookie = cookie
 		}
 	}
-	if !foundSession {
+	if mfaSessionToken == "" {
 		t.Fatal("MFA completion did not create a session")
+	}
+	if trustedDeviceCookie == nil || trustedDeviceCookie.MaxAge <= 0 || trustedDeviceCookie.Path != "/" || !trustedDeviceCookie.HttpOnly {
+		t.Fatalf("MFA completion did not remember the device securely: %#v", trustedDeviceCookie)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(
+		"csrf_token="+csrf+"&continue=%2Fportal&username=alice&password=initial-password-123",
+	))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", "trusted-browser")
+	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
+	request.AddCookie(trustedDeviceCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != loginSuccessURL("/portal") {
+		t.Fatalf("trusted device did not skip MFA: %d %s %s", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	var rotatedTrustedDeviceCookie *http.Cookie
+	var trustedSessionToken string
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == trustedDeviceCookieName && cookie.Value != "" {
+			rotatedTrustedDeviceCookie = cookie
+		}
+		if cookie.Name == sessionCookieName && cookie.Value != "" {
+			trustedSessionToken = cookie.Value
+		}
+	}
+	if rotatedTrustedDeviceCookie == nil || rotatedTrustedDeviceCookie.Value == trustedDeviceCookie.Value {
+		t.Fatalf("trusted device cookie was not rotated: %#v", rotatedTrustedDeviceCookie)
+	}
+	trustedSession, err := sessionService.Find(ctx, trustedSessionToken)
+	if err != nil || trustedSession.AssuranceLevel != "urn:certus:aal:2" || !containsString(trustedSession.AuthMethods, "trusted_device") {
+		t.Fatalf("unexpected trusted device session: %#v err=%v", trustedSession, err)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/account/mfa/trusted-devices", nil)
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: accountToken})
+	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("revoke trusted devices: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(
+		"csrf_token="+csrf+"&continue=%2Fportal&username=alice&password=initial-password-123",
+	))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("User-Agent", "trusted-browser")
+	request.AddCookie(&http.Cookie{Name: csrfCookieName, Value: csrf})
+	request.AddCookie(rotatedTrustedDeviceCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login/mfa" {
+		t.Fatalf("revoked trusted device still skipped MFA: %d %s %s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	if page, err := audits.List(ctx, audit.Filter{EventType: "login.mfa", Limit: 20}); err != nil ||
 		page.Total != 1 || page.Items[0].Outcome != audit.OutcomeSuccess {
@@ -179,6 +241,19 @@ func TestTOTPEnrollmentAndLoginChallenge(t *testing.T) {
 		page.Total != 1 || page.Items[0].Outcome != audit.OutcomeSuccess {
 		t.Fatalf("missing recovery code regeneration audit: %#v %v", page, err)
 	}
+	if page, err := audits.List(ctx, audit.Filter{EventType: "login.mfa_trusted_device", Limit: 20}); err != nil ||
+		page.Total != 1 || page.Items[0].Outcome != audit.OutcomeSuccess {
+		t.Fatalf("missing trusted device login audit: %#v %v", page, err)
+	}
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func testTOTP(t *testing.T, encodedSecret string, now time.Time) string {

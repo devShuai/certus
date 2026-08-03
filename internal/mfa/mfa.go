@@ -20,16 +20,18 @@ import (
 	"time"
 
 	"certus/internal/secrets"
+	"certus/internal/security"
 )
 
 var (
-	ErrNotFound       = errors.New("MFA credential not found")
-	ErrUnavailable    = errors.New("MFA encryption key is unavailable")
-	ErrInvalidCode    = errors.New("invalid MFA code")
-	ErrLocked         = errors.New("MFA verification is temporarily locked")
-	ErrReplay         = errors.New("MFA code has already been used")
-	ErrAlreadyEnabled = errors.New("MFA is already enabled")
-	ErrNotEnabled     = errors.New("MFA is not enabled")
+	ErrNotFound              = errors.New("MFA credential not found")
+	ErrUnavailable           = errors.New("MFA encryption key is unavailable")
+	ErrInvalidCode           = errors.New("invalid MFA code")
+	ErrLocked                = errors.New("MFA verification is temporarily locked")
+	ErrReplay                = errors.New("MFA code has already been used")
+	ErrAlreadyEnabled        = errors.New("MFA is already enabled")
+	ErrNotEnabled            = errors.New("MFA is not enabled")
+	ErrTrustedDeviceNotFound = errors.New("trusted MFA device not found")
 )
 
 const (
@@ -37,6 +39,8 @@ const (
 	totpDigits        = 6
 	recoveryCodeCount = 10
 	totpSecretPurpose = "mfa-totp-secret"
+	trustedDeviceTTL  = 30 * 24 * time.Hour
+	trustedDeviceMax  = 10
 )
 
 var totpCodePattern = regexp.MustCompile(`^[0-9]{6}$`)
@@ -53,12 +57,27 @@ type Credential struct {
 	RecoveryCodes  int
 }
 
+type TrustedDevice struct {
+	UserID        string
+	TokenHash     []byte
+	UserAgentHash []byte
+	CreatedAt     time.Time
+	LastUsedAt    time.Time
+	ExpiresAt     time.Time
+}
+
+type TrustedDeviceToken struct {
+	Token     string
+	ExpiresAt time.Time
+}
+
 type Status struct {
-	Available     bool       `json:"available"`
-	Enabled       bool       `json:"enabled"`
-	Pending       bool       `json:"pending"`
-	VerifiedAt    *time.Time `json:"verified_at,omitempty"`
-	RecoveryCodes int        `json:"recovery_codes"`
+	Available      bool       `json:"available"`
+	Enabled        bool       `json:"enabled"`
+	Pending        bool       `json:"pending"`
+	VerifiedAt     *time.Time `json:"verified_at,omitempty"`
+	RecoveryCodes  int        `json:"recovery_codes"`
+	TrustedDevices int        `json:"trusted_devices"`
 }
 
 type Setup struct {
@@ -75,6 +94,10 @@ type Repository interface {
 	UseTOTP(context.Context, string, int64, time.Time) error
 	UseRecoveryCode(context.Context, string, []byte, time.Time) error
 	RecordFailure(context.Context, string, int, *time.Time) error
+	StoreTrustedDevice(context.Context, TrustedDevice, int) error
+	RotateTrustedDevice(context.Context, string, []byte, []byte, []byte, time.Time) (time.Time, error)
+	CountTrustedDevices(context.Context, string, time.Time) (int, error)
+	DeleteTrustedDevices(context.Context, string) (int, error)
 	Delete(context.Context, string) error
 }
 
@@ -123,12 +146,20 @@ func (s *Service) Status(ctx context.Context, userID string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	trustedDevices := 0
+	if credential.Enabled {
+		trustedDevices, err = s.repository.CountTrustedDevices(ctx, userID, s.now().UTC())
+		if err != nil {
+			return Status{}, err
+		}
+	}
 	return Status{
-		Available:     s.available(),
-		Enabled:       credential.Enabled,
-		Pending:       !credential.Enabled,
-		VerifiedAt:    credential.VerifiedAt,
-		RecoveryCodes: credential.RecoveryCodes,
+		Available:      s.available(),
+		Enabled:        credential.Enabled,
+		Pending:        !credential.Enabled,
+		VerifiedAt:     credential.VerifiedAt,
+		RecoveryCodes:  credential.RecoveryCodes,
+		TrustedDevices: trustedDevices,
 	}, nil
 }
 
@@ -261,6 +292,59 @@ func (s *Service) Verify(ctx context.Context, userID, code string) error {
 
 func (s *Service) Disable(ctx context.Context, userID string) error {
 	return s.repository.Delete(ctx, userID)
+}
+
+func (s *Service) RememberDevice(ctx context.Context, userID, userAgent string) (TrustedDeviceToken, error) {
+	token, err := security.RandomToken(32)
+	if err != nil {
+		return TrustedDeviceToken{}, err
+	}
+	now := s.now().UTC()
+	expiresAt := now.Add(trustedDeviceTTL)
+	err = s.repository.StoreTrustedDevice(ctx, TrustedDevice{
+		UserID:        userID,
+		TokenHash:     security.HashToken(token),
+		UserAgentHash: security.HashToken(strings.TrimSpace(userAgent)),
+		CreatedAt:     now,
+		LastUsedAt:    now,
+		ExpiresAt:     expiresAt,
+	}, trustedDeviceMax)
+	if err != nil {
+		return TrustedDeviceToken{}, err
+	}
+	return TrustedDeviceToken{Token: token, ExpiresAt: expiresAt}, nil
+}
+
+func (s *Service) UseTrustedDevice(
+	ctx context.Context,
+	userID, token, userAgent string,
+) (TrustedDeviceToken, bool, error) {
+	if len(token) < 32 || len(token) > 256 {
+		return TrustedDeviceToken{}, false, nil
+	}
+	replacement, err := security.RandomToken(32)
+	if err != nil {
+		return TrustedDeviceToken{}, false, err
+	}
+	expiresAt, err := s.repository.RotateTrustedDevice(
+		ctx,
+		userID,
+		security.HashToken(token),
+		security.HashToken(replacement),
+		security.HashToken(strings.TrimSpace(userAgent)),
+		s.now().UTC(),
+	)
+	if errors.Is(err, ErrTrustedDeviceNotFound) {
+		return TrustedDeviceToken{}, false, nil
+	}
+	if err != nil {
+		return TrustedDeviceToken{}, false, err
+	}
+	return TrustedDeviceToken{Token: replacement, ExpiresAt: expiresAt}, true, nil
+}
+
+func (s *Service) RevokeTrustedDevices(ctx context.Context, userID string) (int, error) {
+	return s.repository.DeleteTrustedDevices(ctx, userID)
 }
 
 func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID string) ([]string, error) {
