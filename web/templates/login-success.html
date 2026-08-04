@@ -19,12 +19,13 @@
       <span class="success-orbit"></span>
       <span class="success-orbit success-orbit-secondary"></span>
       <span class="success-icon-wrap">
+        <svg class="success-logo-mark" viewBox="0 0 64 64" focusable="false">
+          <path class="success-logo-left" d="M28 14 H11 A5 5 0 0 0 6 19 V45 A5 5 0 0 0 11 50 H26 L32 38 L22 26 Z" fill="none" stroke="#14161F" stroke-width="4.5" stroke-linejoin="round"></path>
+          <path class="success-logo-right" d="M36 14 H49 A5 5 0 0 1 54 19 V45 A5 5 0 0 1 49 50 H34 L40 38 L30 26 Z" fill="none" stroke="#C98A1E" stroke-width="4.5" stroke-linejoin="round"></path>
+        </svg>
         {{if .Client.FaviconURL}}
-        <img class="success-client-icon" src="{{.Client.FaviconURL}}" alt="" width="72" height="72" referrerpolicy="no-referrer">
-        {{else}}
-        <span class="success-client-fallback">✓</span>
+        <img class="success-client-badge" src="{{.Client.FaviconURL}}" alt="" width="38" height="38" referrerpolicy="no-referrer">
         {{end}}
-        <span class="success-check">✓</span>
       </span>
     </div>
     <p class="eyebrow success-eyebrow">身份验证成功</p>
