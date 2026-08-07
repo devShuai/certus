@@ -11,6 +11,8 @@ import (
 	"certus/internal/federation"
 )
 
+var errInvalidIntrospectionPermission = errors.New("invalid client introspection permission")
+
 type clientRegistrationResponse struct {
 	Client      client.Client         `json:"client"`
 	Integration integrationParameters `json:"integration"`
@@ -100,6 +102,10 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 		writeClientIdentitySourceError(w, err)
 		return
 	}
+	if err := s.validateClientIntrospectionPermissions(r.Context(), item); err != nil {
+		writeClientIntrospectionPermissionError(w, err)
+		return
+	}
 	item, err = s.clients.Create(r.Context(), item)
 	if errors.Is(err, client.ErrConflict) {
 		writeProblem(w, http.StatusConflict, "client_conflict", "client_id 已存在")
@@ -144,6 +150,10 @@ func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.validateClientIdentitySources(r.Context(), item); err != nil {
 		writeClientIdentitySourceError(w, err)
+		return
+	}
+	if err := s.validateClientIntrospectionPermissions(r.Context(), item); err != nil {
+		writeClientIntrospectionPermissionError(w, err)
 		return
 	}
 	item, err = s.clients.Replace(r.Context(), item)
@@ -214,6 +224,40 @@ func writeClientIdentitySourceError(w http.ResponseWriter, err error) {
 	default:
 		writeProblem(w, http.StatusInternalServerError, "server_error", "校验客户端身份源失败")
 	}
+}
+
+func (s *server) validateClientIntrospectionPermissions(ctx context.Context, item client.Client) error {
+	for _, introspectorID := range item.IntrospectableBy {
+		introspector, err := s.clients.Find(ctx, introspectorID)
+		if errors.Is(err, client.ErrNotFound) {
+			return fmt.Errorf("%w: client %q does not exist", errInvalidIntrospectionPermission, introspectorID)
+		}
+		if err != nil {
+			return fmt.Errorf("find introspection client %q: %w", introspectorID, err)
+		}
+		if introspector.ArchivedAt != nil {
+			return fmt.Errorf("%w: client %q is archived", errInvalidIntrospectionPermission, introspectorID)
+		}
+		if !introspector.Enabled {
+			return fmt.Errorf("%w: client %q is disabled", errInvalidIntrospectionPermission, introspectorID)
+		}
+		if introspector.ApplicationType != client.ApplicationConfidential || !introspector.SupportsOAuth() {
+			return fmt.Errorf(
+				"%w: client %q must be an enabled confidential OAuth client",
+				errInvalidIntrospectionPermission,
+				introspectorID,
+			)
+		}
+	}
+	return nil
+}
+
+func writeClientIntrospectionPermissionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errInvalidIntrospectionPermission) {
+		writeProblem(w, http.StatusBadRequest, "invalid_introspection_client", err.Error())
+		return
+	}
+	writeProblem(w, http.StatusInternalServerError, "server_error", "校验令牌内省客户端失败")
 }
 
 func (s *server) rotateClientSecret(w http.ResponseWriter, r *http.Request) {

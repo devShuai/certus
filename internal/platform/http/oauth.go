@@ -696,7 +696,8 @@ func (s *server) introspect(w http.ResponseWriter, r *http.Request) {
 	now := s.now().UTC()
 	hint := r.Form.Get("token_type_hint")
 	if hint != "refresh_token" {
-		if token, err := s.oauth.FindAccessToken(r.Context(), hash, now); err == nil && token.ClientID == registered.ID {
+		if token, err := s.oauth.FindAccessToken(r.Context(), hash, now); err == nil &&
+			s.canIntrospectAccessToken(r.Context(), token.ClientID, registered.ID) {
 			s.writeAccessTokenIntrospection(w, r, token)
 			return
 		}
@@ -706,12 +707,31 @@ func (s *server) introspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hint == "refresh_token" {
-		if token, err := s.oauth.FindAccessToken(r.Context(), hash, now); err == nil && token.ClientID == registered.ID {
+		if token, err := s.oauth.FindAccessToken(r.Context(), hash, now); err == nil &&
+			s.canIntrospectAccessToken(r.Context(), token.ClientID, registered.ID) {
 			s.writeAccessTokenIntrospection(w, r, token)
 			return
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"active": false})
+}
+
+func (s *server) canIntrospectAccessToken(ctx context.Context, tokenClientID, introspectorClientID string) bool {
+	if tokenClientID == introspectorClientID {
+		return true
+	}
+	issuer, err := s.clients.Find(ctx, tokenClientID)
+	if err != nil {
+		if !errors.Is(err, client.ErrNotFound) {
+			s.logger.Error(
+				"read token client for introspection authorization",
+				"client_id", tokenClientID,
+				"error", err,
+			)
+		}
+		return false
+	}
+	return issuer.Enabled && issuer.ArchivedAt == nil && issuer.AllowsIntrospectionBy(introspectorClientID)
 }
 
 func (s *server) writeAccessTokenIntrospection(w http.ResponseWriter, r *http.Request, token oauth.AccessToken) {

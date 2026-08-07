@@ -15,6 +15,7 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 		PostLogoutRedirectURIs: []string{"https://specus.example.com/logout"},
 		LoginMethods:           []LoginMethod{LoginPassword},
 		IdentitySourceIDs:      []string{"workforce"},
+		IntrospectableBy:       []string{"resource-api"},
 		Enabled:                true,
 	})
 
@@ -26,6 +27,7 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 	first.PostLogoutRedirectURIs[0] = "https://attacker.example.com/logout"
 	first.LoginMethods[0] = LoginOIDC
 	first.IdentitySourceIDs[0] = "attacker"
+	first.IntrospectableBy[0] = "attacker"
 
 	second, err := repository.Find(context.Background(), "specus")
 	if err != nil {
@@ -34,7 +36,8 @@ func TestMemoryRepositoryReturnsCopies(t *testing.T) {
 	if second.RedirectURIs[0] != "https://specus.example.com/callback" ||
 		second.PostLogoutRedirectURIs[0] != "https://specus.example.com/logout" ||
 		second.LoginMethods[0] != LoginPassword ||
-		second.IdentitySourceIDs[0] != "workforce" {
+		second.IdentitySourceIDs[0] != "workforce" ||
+		second.IntrospectableBy[0] != "resource-api" {
 		t.Fatal("repository state was mutated through returned client")
 	}
 }
@@ -199,6 +202,63 @@ func TestClientNormalizesAndValidatesIdentitySourceBindings(t *testing.T) {
 	} {
 		if _, _, err := New(input); err == nil {
 			t.Fatalf("invalid identity source binding was accepted: %#v", input)
+		}
+	}
+}
+
+func TestClientNormalizesAndValidatesIntrospectionPermissions(t *testing.T) {
+	item, _, err := New(CreateClient{
+		ID:               "collector-cli",
+		Name:             "Collector CLI",
+		ApplicationType:  ApplicationPublic,
+		Protocols:        []Protocol{ProtocolOAuth21},
+		GrantTypes:       []GrantType{GrantDeviceCode},
+		LoginMethods:     []LoginMethod{LoginPassword},
+		IntrospectableBy: []string{" Resource-API ", "resource-api", "reporting-api"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.IntrospectableBy) != 2 ||
+		item.IntrospectableBy[0] != "resource-api" ||
+		item.IntrospectableBy[1] != "reporting-api" {
+		t.Fatalf("introspection permissions were not normalized: %#v", item.IntrospectableBy)
+	}
+	if !item.AllowsIntrospectionBy("collector-cli") ||
+		!item.AllowsIntrospectionBy("resource-api") ||
+		item.AllowsIntrospectionBy("other-api") {
+		t.Fatalf("unexpected introspection authorization: %#v", item.IntrospectableBy)
+	}
+
+	for _, input := range []CreateClient{
+		{
+			ID:               "invalid-target",
+			Name:             "Invalid Target",
+			Protocols:        []Protocol{ProtocolOAuth21},
+			GrantTypes:       []GrantType{GrantDeviceCode},
+			LoginMethods:     []LoginMethod{LoginPassword},
+			IntrospectableBy: []string{"invalid target"},
+		},
+		{
+			ID:               "self-target",
+			Name:             "Self Target",
+			Protocols:        []Protocol{ProtocolOAuth21},
+			GrantTypes:       []GrantType{GrantDeviceCode},
+			LoginMethods:     []LoginMethod{LoginPassword},
+			IntrospectableBy: []string{"self-target"},
+		},
+		{
+			ID:               "cas-only",
+			Name:             "CAS Only",
+			Protocols:        []Protocol{ProtocolCAS},
+			LoginMethods:     []LoginMethod{LoginPassword},
+			IntrospectableBy: []string{"resource-api"},
+			CASVersion:       CASVersion3,
+			CASServiceURLs:   []string{"https://legacy.example.com/login/cas"},
+		},
+	} {
+		if _, _, err := New(input); err == nil {
+			t.Fatalf("invalid introspection permission was accepted: %#v", input)
 		}
 	}
 }

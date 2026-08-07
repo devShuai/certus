@@ -168,6 +168,18 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 			return client.Client{}, fmt.Errorf("insert replacement identity source: %w", err)
 		}
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_client_introspection_permissions WHERE token_client_id = $1`, item.ID); err != nil {
+		return client.Client{}, fmt.Errorf("replace client introspection permissions: %w", err)
+	}
+	for position, introspectorID := range item.IntrospectableBy {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_introspection_permissions (
+				token_client_id, introspector_client_id, position
+			)
+			VALUES ($1, $2, $3)`, item.ID, introspectorID, position); err != nil {
+			return client.Client{}, fmt.Errorf("insert replacement client introspection permission: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return client.Client{}, fmt.Errorf("commit client replacement: %w", err)
 	}
@@ -279,6 +291,15 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 			INSERT INTO oauth_client_identity_sources (client_id, source_id, position)
 			VALUES ($1, $2, $3)`, item.ID, sourceID, position); err != nil {
 			return client.Client{}, fmt.Errorf("insert client identity source: %w", err)
+		}
+	}
+	for position, introspectorID := range item.IntrospectableBy {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO oauth_client_introspection_permissions (
+				token_client_id, introspector_client_id, position
+			)
+			VALUES ($1, $2, $3)`, item.ID, introspectorID, position); err != nil {
+			return client.Client{}, fmt.Errorf("insert client introspection permission: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -419,16 +440,40 @@ func (r *ClientRepository) loadRelations(ctx context.Context, item *client.Clien
 	if err != nil {
 		return fmt.Errorf("list client identity sources: %w", err)
 	}
-	defer sourceRows.Close()
 	for sourceRows.Next() {
 		var sourceID string
 		if err := sourceRows.Scan(&sourceID); err != nil {
+			sourceRows.Close()
 			return fmt.Errorf("scan client identity source: %w", err)
 		}
 		item.IdentitySourceIDs = append(item.IdentitySourceIDs, sourceID)
 	}
-	if err := sourceRows.Err(); err != nil {
+	err = sourceRows.Err()
+	sourceRows.Close()
+	if err != nil {
 		return fmt.Errorf("iterate client identity sources: %w", err)
+	}
+
+	introspectionRows, err := r.pool.Query(ctx, `
+		SELECT introspector_client_id
+		FROM oauth_client_introspection_permissions
+		WHERE token_client_id = $1
+		ORDER BY position, introspector_client_id`, item.ID)
+	if err != nil {
+		return fmt.Errorf("list client introspection permissions: %w", err)
+	}
+	for introspectionRows.Next() {
+		var introspectorID string
+		if err := introspectionRows.Scan(&introspectorID); err != nil {
+			introspectionRows.Close()
+			return fmt.Errorf("scan client introspection permission: %w", err)
+		}
+		item.IntrospectableBy = append(item.IntrospectableBy, introspectorID)
+	}
+	err = introspectionRows.Err()
+	introspectionRows.Close()
+	if err != nil {
+		return fmt.Errorf("iterate client introspection permissions: %w", err)
 	}
 	return nil
 }

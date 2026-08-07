@@ -87,6 +87,7 @@ type Client struct {
 	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
 	LoginMethods                     []LoginMethod           `json:"login_methods"`
 	IdentitySourceIDs                []string                `json:"identity_source_ids,omitempty"`
+	IntrospectableBy                 []string                `json:"introspectable_by,omitempty"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
 	CASVersion                       CASVersion              `json:"cas_version,omitempty"`
 	CASServiceURLs                   []string                `json:"cas_service_urls,omitempty"`
@@ -115,6 +116,7 @@ type CreateClient struct {
 	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
 	LoginMethods                     []LoginMethod           `json:"login_methods"`
 	IdentitySourceIDs                []string                `json:"identity_source_ids"`
+	IntrospectableBy                 []string                `json:"introspectable_by"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
 	CASVersion                       CASVersion              `json:"cas_version"`
 	CASServiceURLs                   []string                `json:"cas_service_urls"`
@@ -139,6 +141,7 @@ type ReplaceClient struct {
 	BackchannelLogoutSessionRequired bool                    `json:"backchannel_logout_session_required"`
 	LoginMethods                     []LoginMethod           `json:"login_methods"`
 	IdentitySourceIDs                []string                `json:"identity_source_ids"`
+	IntrospectableBy                 []string                `json:"introspectable_by"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
 	CASVersion                       CASVersion              `json:"cas_version"`
 	CASServiceURLs                   []string                `json:"cas_service_urls"`
@@ -163,6 +166,10 @@ func (c Client) AllowsPostLogoutRedirectURI(candidate string) bool {
 		return false
 	}
 	return slices.Contains(c.PostLogoutRedirectURIs, candidate)
+}
+
+func (c Client) AllowsIntrospectionBy(candidate string) bool {
+	return c.ID == candidate || slices.Contains(c.IntrospectableBy, candidate)
 }
 
 type Repository interface {
@@ -270,6 +277,7 @@ func clone(item Client) Client {
 	item.PostLogoutRedirectURIs = slices.Clone(item.PostLogoutRedirectURIs)
 	item.LoginMethods = slices.Clone(item.LoginMethods)
 	item.IdentitySourceIDs = slices.Clone(item.IdentitySourceIDs)
+	item.IntrospectableBy = slices.Clone(item.IntrospectableBy)
 	item.AllowedScopes = slices.Clone(item.AllowedScopes)
 	item.Protocols = slices.Clone(item.Protocols)
 	item.GrantTypes = slices.Clone(item.GrantTypes)
@@ -302,6 +310,7 @@ func New(input CreateClient) (Client, string, error) {
 		BackchannelLogoutSessionRequired: input.BackchannelLogoutSessionRequired,
 		LoginMethods:                     uniqueMethods(input.LoginMethods),
 		IdentitySourceIDs:                uniqueSourceIDs(input.IdentitySourceIDs),
+		IntrospectableBy:                 uniqueClientIDs(input.IntrospectableBy),
 		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
 		CASVersion:                       input.CASVersion,
 		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
@@ -370,6 +379,7 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 		BackchannelLogoutSessionRequired: input.BackchannelLogoutSessionRequired,
 		LoginMethods:                     uniqueMethods(input.LoginMethods),
 		IdentitySourceIDs:                uniqueSourceIDs(input.IdentitySourceIDs),
+		IntrospectableBy:                 uniqueClientIDs(input.IntrospectableBy),
 		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
 		CASVersion:                       input.CASVersion,
 		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
@@ -524,6 +534,20 @@ func (c Client) Validate() error {
 			return fmt.Errorf("%w: invalid identity_source_id %q", ErrInvalid, sourceID)
 		}
 	}
+	if len(c.IntrospectableBy) > 20 {
+		return fmt.Errorf("%w: introspectable_by supports at most 20 entries", ErrInvalid)
+	}
+	if len(c.IntrospectableBy) > 0 && !c.SupportsOAuth() {
+		return fmt.Errorf("%w: introspectable_by requires OAuth/OIDC", ErrInvalid)
+	}
+	for _, introspectorID := range c.IntrospectableBy {
+		if !clientIDPattern.MatchString(introspectorID) {
+			return fmt.Errorf("%w: invalid introspectable_by client id %q", ErrInvalid, introspectorID)
+		}
+		if introspectorID == c.ID {
+			return fmt.Errorf("%w: introspectable_by must not contain the issuing client", ErrInvalid)
+		}
+	}
 	for _, scope := range c.AllowedScopes {
 		if !scopePattern.MatchString(scope) {
 			return fmt.Errorf("%w: invalid scope %q", ErrInvalid, scope)
@@ -635,6 +659,10 @@ func uniqueSourceIDs(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func uniqueClientIDs(values []string) []string {
+	return uniqueSourceIDs(values)
 }
 
 func uniqueProtocols(values []Protocol) []Protocol {

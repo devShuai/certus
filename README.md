@@ -337,6 +337,9 @@ GET  /api/v1/admin/clients/{client_id}/integration
   "identity_source_ids": [
     "workforce"
   ],
+  "introspectable_by": [
+    "resource-api"
+  ],
   "allowed_scopes": [
     "openid",
     "profile",
@@ -425,6 +428,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
 
 `identity_source_ids` 中的身份源必须存在、启用、未归档，且类型必须与 `login_methods` 中的 `ldap` / `oidc` 对应。配置显式绑定后，登录页和协议回调都只接受这些来源，不能通过构造请求绕过客户端限制。
 
+`introspectable_by` 由令牌签发客户端配置，成员必须是存在、启用、未归档的 `confidential` OAuth 客户端。默认空数组会拒绝所有跨客户端内省；配置后仅允许列出的资源服务器内省该客户端签发的 Access Token，并继续按原客户端校验用户、会话、授权同意、Scope、角色与权限。Refresh Token 始终只允许签发它的机密客户端内省，不通过该白名单开放。白名单使用完整 `client_id` 精确匹配，不支持通配符或前缀。
+
 `PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可停止新登录，并立即撤销该客户端的授权码、访问令牌、刷新令牌和待处理设备授权。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端；历史令牌和授权记录不会物理删除，但令牌会被标记为已撤销，审计引用得以保留。
 
 ## 角色与权限下发
@@ -476,7 +481,7 @@ GET /api/v1/access/users/{user_id}
 - OAuth 2.0：授权码 + PKCE、刷新令牌、客户端凭据、设备码
 - OAuth 2.1：授权码 + PKCE、刷新令牌、客户端凭据、设备码
 - OAuth 客户端认证：`none`、`client_secret_basic`、`client_secret_post`
-- OAuth 令牌管理：受客户端认证保护的 Introspection 与幂等 Revocation
+- OAuth 令牌管理：受客户端认证保护、支持显式资源服务器白名单的 Introspection 与幂等 Revocation
 - OpenID Connect：通过 `openid` scope 为 OAuth 登录提供用户身份
 - CAS 1.0、2.0、3.0：Service Ticket 校验参数
 - CAS 2.0/3.0：代理认证
@@ -489,6 +494,8 @@ OIDC 授权请求支持 `prompt=none`、`prompt=login`、`prompt=consent` 与非
 授予 `email` scope 且用户存在邮箱时，ID Token 与 UserInfo 会同时返回 `email` 和布尔型 `email_verified`。本地注册、管理员录入、密码导入及 LDAP 邮箱默认未验证；仅当上游 OIDC 明确声明 `email_verified=true` 且邮箱与当前用户邮箱一致时继承验证状态，邮箱变更会自动重置该状态。
 
 刷新令牌支持可选 `scope` 缩减，不允许恢复已经缩减或原始授权未包含的范围。每次刷新、UserInfo 与 Introspection 都重新检查用户状态、登录会话和当前授权；用户退出、会话撤销、用户禁用、密码重置、管理员 MFA 重置或应用授权撤销后，不再签发或接受关联令牌。
+
+资源服务器使用自己的机密客户端凭据调用 Introspection。令牌签发客户端可通过 `introspectable_by` 显式授权资源服务器读取 Access Token 状态；未授权、目标已停用或令牌不可用时统一返回 `{"active":false}`，不泄露令牌是否存在及拒绝原因。该配置的管理 API 变更由统一后台审计记录。
 
 OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oauth2/logout`。Certus 验证签名、发行者、受众及当前用户后撤销对应统一会话和 OAuth 令牌；仅当 `post_logout_redirect_uri` 与客户端独立登记的退出回调完全一致时才携带可选 `state` 跳回业务系统。
 

@@ -528,6 +528,7 @@ func (s *server) getClient(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not_found", "客户端不存在")
 		return
 	}
+	item.IntrospectableBy = nil
 	writeJSON(w, http.StatusOK, item)
 }
 
@@ -535,6 +536,7 @@ func activeClients(items []client.Client) []client.Client {
 	result := make([]client.Client, 0, len(items))
 	for _, item := range items {
 		if item.Enabled && item.ArchivedAt == nil {
+			item.IntrospectableBy = nil
 			result = append(result, item)
 		}
 	}

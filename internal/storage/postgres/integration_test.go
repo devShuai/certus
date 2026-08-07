@@ -94,6 +94,21 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		t.Fatal(err)
 	}
 	clientRepository := NewClientRepository(pool)
+	introspector, _, err := client.New(client.CreateClient{
+		ID:              "integration-resource",
+		Name:            "Integration Resource",
+		ApplicationType: client.ApplicationConfidential,
+		Protocols:       []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:      []client.GrantType{client.GrantClientCredentials},
+		AllowedScopes:   []string{"roles"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientRepository.Create(ctx, introspector); err != nil {
+		t.Fatal(err)
+	}
+	registered.IntrospectableBy = []string{introspector.ID}
 	if _, err := clientRepository.Create(ctx, registered); err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +119,8 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		!storedClient.BackchannelLogoutSessionRequired ||
 		storedClient.FaviconURL != "https://app.example.com/favicon.svg" ||
 		storedClient.LaunchURI != "https://app.example.com/?login=oidc" ||
+		len(storedClient.IntrospectableBy) != 1 ||
+		storedClient.IntrospectableBy[0] != introspector.ID ||
 		storedClient.TokenEndpointAuthMethod != client.TokenEndpointAuthSecretPost {
 		t.Fatalf("client configuration round trip failed: %#v %v", storedClient, err)
 	}

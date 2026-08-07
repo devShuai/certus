@@ -85,6 +85,85 @@ func TestCreateClientReturnsIntegrationParameters(t *testing.T) {
 	}
 }
 
+func TestAdminClientIntrospectionPermissions(t *testing.T) {
+	handler := New(config.Config{
+		Issuer:     "https://auth.example.com",
+		AdminToken: "test-admin-token",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	resource := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", `{
+		"id":"resource-api",
+		"name":"Resource API",
+		"application_type":"confidential",
+		"protocols":["oauth2.1"],
+		"grant_types":["client_credentials"],
+		"allowed_scopes":["api.read"]
+	}`)
+	if resource.Code != http.StatusCreated {
+		t.Fatalf("create introspection resource client: %d %s", resource.Code, resource.Body.String())
+	}
+	disabled := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", `{
+		"id":"disabled-api",
+		"name":"Disabled API",
+		"application_type":"confidential",
+		"protocols":["oauth2.1"],
+		"grant_types":["client_credentials"],
+		"allowed_scopes":["api.read"],
+		"enabled":false
+	}`)
+	if disabled.Code != http.StatusCreated {
+		t.Fatalf("create disabled introspection client: %d %s", disabled.Code, disabled.Body.String())
+	}
+
+	issuer := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", `{
+		"id":"collector-cli",
+		"name":"Collector CLI",
+		"application_type":"public",
+		"protocols":["oauth2.1"],
+		"grant_types":["urn:ietf:params:oauth:grant-type:device_code"],
+		"login_methods":["password"],
+		"allowed_scopes":["openid","api.write"],
+		"introspectable_by":["resource-api"]
+	}`)
+	if issuer.Code != http.StatusCreated ||
+		!strings.Contains(issuer.Body.String(), `"introspectable_by":["resource-api"]`) {
+		t.Fatalf("create client introspection permission: %d %s", issuer.Code, issuer.Body.String())
+	}
+	publicIssuer := httptest.NewRecorder()
+	handler.ServeHTTP(
+		publicIssuer,
+		httptest.NewRequest(http.MethodGet, "/api/v1/clients/collector-cli", nil),
+	)
+	if publicIssuer.Code != http.StatusOK || strings.Contains(publicIssuer.Body.String(), "introspectable_by") {
+		t.Fatalf("public client metadata exposed introspection permissions: %d %s", publicIssuer.Code, publicIssuer.Body.String())
+	}
+
+	for _, test := range []struct {
+		name   string
+		target string
+	}{
+		{name: "missing", target: "missing-api"},
+		{name: "public", target: "specus"},
+		{name: "disabled", target: "disabled-api"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", `{
+				"id":"invalid-`+test.name+`",
+				"name":"Invalid Introspection Client",
+				"application_type":"public",
+				"protocols":["oauth2.1"],
+				"grant_types":["urn:ietf:params:oauth:grant-type:device_code"],
+				"login_methods":["password"],
+				"introspectable_by":["`+test.target+`"]
+			}`)
+			if response.Code != http.StatusBadRequest ||
+				!strings.Contains(response.Body.String(), `"invalid_introspection_client"`) {
+				t.Fatalf("invalid introspection client was accepted: %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestAdminClientsPage(t *testing.T) {
 	handler := New(config.Config{Issuer: "https://auth.example.com"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for _, path := range []string{"/admin", "/admin/clients"} {

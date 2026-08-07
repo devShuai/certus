@@ -922,6 +922,50 @@ function renderClientIdentitySourceOptions(selectedValues) {
   }
 }
 
+function renderClientIntrospectionOptions(selectedValues) {
+  const target = document.querySelector("#client-introspection-options");
+  let selected;
+  if (selectedValues !== undefined) {
+    selected = new Set(selectedValues || []);
+  } else {
+    selected = new Set(checkedValues(clientForm, "introspectable_by"));
+    if (!selected.size && clientForm.elements.id.value) {
+      const current = state.clients.find((item) => item.id === clientForm.elements.id.value);
+      selected = new Set(current?.introspectable_by || []);
+    }
+  }
+  const currentID = clientForm.elements.id.value.trim().toLowerCase();
+  const candidates = state.clients.filter((item) => (
+    item.id !== currentID
+      && item.application_type === "confidential"
+      && (item.protocols || []).some((protocol) => protocol === "oauth2.0" || protocol === "oauth2.1")
+  ));
+  target.replaceChildren();
+  if (!candidates.length) {
+    target.append(element("p", { className: "empty", text: "尚无可用的机密 OAuth 客户端" }));
+    return;
+  }
+  const readOnly = !can("admin.clients.write");
+  for (const candidate of candidates) {
+    const input = element("input", {
+      type: "checkbox",
+      name: "introspectable_by",
+      value: candidate.id,
+    });
+    input.checked = selected.has(candidate.id);
+    const unavailable = Boolean(candidate.archived_at) || !candidate.enabled;
+    input.disabled = readOnly || (unavailable && !input.checked);
+    const status = candidate.archived_at ? "已归档" : candidate.enabled ? "可用" : "已停用";
+    target.append(element("label", { className: "check" }, [
+      input,
+      element("span", {}, [
+        element("strong", { text: candidate.name }),
+        element("small", { text: `${candidate.id} · ${status}` }),
+      ]),
+    ]));
+  }
+}
+
 document.querySelector("#client-identity-source-options").addEventListener("change", (event) => {
   const input = event.target.closest("input[name='identity_source_ids']");
   if (!input?.checked) return;
@@ -961,6 +1005,7 @@ function resetClientForm() {
   setCheckedValues(clientForm, "grant_types", ["authorization_code", "refresh_token"]);
   setCheckedValues(clientForm, "login_methods", ["password"]);
   renderClientIdentitySourceOptions([]);
+  renderClientIntrospectionOptions([]);
   syncClientAuthenticationMethod();
   document.querySelector("#client-editor-title").textContent = "配置跳转登录";
   document.querySelector("#rotate-client-secret").classList.add("hidden");
@@ -1002,6 +1047,7 @@ function openClient(client) {
   setCheckedValues(clientForm, "grant_types", client.grant_types);
   setCheckedValues(clientForm, "login_methods", client.login_methods);
   renderClientIdentitySourceOptions(client.identity_source_ids || []);
+  renderClientIntrospectionOptions(client.introspectable_by || []);
   const archived = Boolean(client.archived_at);
   for (const field of clientForm.elements) field.disabled = archived || !can("admin.clients.write");
   syncClientAuthenticationMethod(archived);
@@ -1021,6 +1067,7 @@ function openClient(client) {
 
 document.querySelector("#new-client").addEventListener("click", openNewClient);
 document.querySelector('[data-action="close-client"]').addEventListener("click", () => document.querySelector("#client-editor").classList.add("hidden"));
+clientForm.elements.id.addEventListener("input", () => renderClientIntrospectionOptions());
 clientForm.elements.application_type.addEventListener("change", () => syncClientAuthenticationMethod());
 clientForm.elements.favicon_url.addEventListener("input", renderClientFaviconPreview);
 for (const fieldName of ["launch_uri", "redirect_uris", "cas_service_urls"]) {
@@ -1053,6 +1100,7 @@ clientForm.addEventListener("submit", async (event) => {
     backchannel_logout_session_required: data.has("backchannel_logout_session_required"),
     login_methods: data.getAll("login_methods"),
     identity_source_ids: data.getAll("identity_source_ids"),
+    introspectable_by: data.getAll("introspectable_by"),
     allowed_scopes: words(data.get("allowed_scopes")),
     cas_version: data.get("cas_version"),
     cas_service_urls: lines(data.get("cas_service_urls")),

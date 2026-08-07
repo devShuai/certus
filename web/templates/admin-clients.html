@@ -164,6 +164,7 @@
           <label class="check full"><input type="checkbox" name="backchannel_logout_session_required">后端单点登出必须携带 sid 会话标识</label>
           <fieldset class="full"><legend>允许的登录方式</legend><label class="check"><input type="checkbox" name="login_methods" value="password" checked>账号密码</label><label class="check"><input type="checkbox" name="login_methods" value="ldap">企业 LDAP</label><label class="check"><input type="checkbox" name="login_methods" value="oidc">外部身份提供商</label></fieldset>
           <fieldset class="full"><legend>绑定身份源</legend><p class="muted">选中后，该系统只能使用这些具体身份源；未选择时继续使用兼容的全局环境变量身份源。</p><div id="client-identity-source-options" class="check-list"><p class="empty">尚未配置身份源</p></div></fieldset>
+          <fieldset class="full"><legend>Token Introspection 资源服务器</legend><p class="muted">允许选中的机密 OAuth 客户端内省本系统签发的 Access Token。默认拒绝跨客户端内省，不向资源服务器开放 Refresh Token。</p><div id="client-introspection-options" class="check-list"><p class="empty">尚无可用的机密 OAuth 客户端</p></div></fieldset>
           <label>CAS 版本<select name="cas_version"><option value="3.0">CAS 3.0</option><option value="2.0">CAS 2.0</option><option value="1.0">CAS 1.0</option></select></label>
           <label class="check toggle"><input type="checkbox" name="enabled" checked>允许登录</label>
           <label class="full">CAS Service URL，每行一个<textarea name="cas_service_urls" rows="3" placeholder="https://legacy.example.com/login/cas"></textarea></label>

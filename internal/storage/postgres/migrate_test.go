@@ -213,6 +213,23 @@ func TestClientLaunchURIMigration(t *testing.T) {
 	}
 }
 
+func TestClientIntrospectionPermissionsMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/030_client_introspection_permissions.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE oauth_client_introspection_permissions",
+		"token_client_id text NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE",
+		"introspector_client_id text NOT NULL REFERENCES oauth_clients(id) ON DELETE RESTRICT",
+		"CHECK (token_client_id <> introspector_client_id)",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("client introspection permission migration does not contain %s", expected)
+		}
+	}
+}
+
 func TestOAuthConsentMigration(t *testing.T) {
 	content, err := migrationFiles.ReadFile("migrations/015_oauth_consents.sql")
 	if err != nil {
