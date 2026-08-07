@@ -16,6 +16,7 @@ const state = {
   permissions: [],
   userRoleAssignments: [],
   userExternalIdentities: [],
+  selectedUser: null,
   userOffset: 0,
   userTotal: 0,
   auditOffset: 0,
@@ -149,6 +150,7 @@ function applyPermissions() {
   const visibility = [
     ["#new-user", "admin.users.write"],
     ["#user-form button[type='submit']", "admin.users.write"],
+    ["#verify-user-email", "admin.users.write"],
     ["#user-password-form", "admin.users.write"],
     ["#issue-reset", "admin.users.write"],
     ["#revoke-user-sessions", "admin.users.write"],
@@ -320,10 +322,16 @@ function renderUsers() {
       element("small", { text: `${user.username} · ${user.id}` }),
     ]);
     const label = user.status === "active" ? "正常" : user.status === "locked" ? "锁定" : "停用";
+    const email = element("div", { className: "user-email-cell" }, [
+      element("span", { text: user.email || "—" }),
+    ]);
+    if (user.email) {
+      email.append(statusBadge(user.email_verified ? "已验证" : "未验证", user.email_verified ? "success" : "locked"));
+    }
     const actions = element("div", { className: "row-actions" }, [button("管理", "edit-user", user.id)]);
     rows.append(element("tr", {}, [
       element("td", {}, [identity]),
-      element("td", { text: user.email || "—" }),
+      element("td", {}, [email]),
       element("td", {}, [statusBadge(label, user.status)]),
       element("td", { text: formatDate(user.updated_at) }),
       element("td", {}, [actions]),
@@ -391,6 +399,7 @@ document.querySelector("#users-next").addEventListener("click", async () => {
 });
 
 function openNewUser() {
+  state.selectedUser = null;
   userForm.reset();
   userForm.elements.user_id.value = "";
   userForm.elements.username.readOnly = false;
@@ -404,7 +413,34 @@ function openNewUser() {
   document.querySelector("#user-editor").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function renderUserEmailVerification(user) {
+  const badge = document.querySelector("#user-email-verification-badge");
+  const summary = document.querySelector("#user-email-verification-summary");
+  const action = document.querySelector("#verify-user-email");
+
+  if (!user?.email) {
+    badge.textContent = "未设置";
+    badge.className = "badge";
+    summary.textContent = "该用户尚未设置邮箱，请先保存邮箱地址。";
+    action.classList.add("hidden");
+    return;
+  }
+  if (user.email_verified) {
+    badge.textContent = "已验证";
+    badge.className = "badge success";
+    summary.textContent = `${user.email} 已通过邮箱归属验证。`;
+    action.classList.add("hidden");
+    return;
+  }
+
+  badge.textContent = "未验证";
+  badge.className = "badge locked";
+  summary.textContent = `${user.email} 尚未验证；请仅在确认邮箱归属后手动标记。`;
+  action.classList.toggle("hidden", !can("admin.users.write"));
+}
+
 function openUser(user) {
+  state.selectedUser = user;
   userForm.reset();
   document.querySelector("#user-admin-role-form").classList.add("hidden");
   userForm.elements.user_id.value = user.id;
@@ -413,6 +449,7 @@ function openUser(user) {
   userForm.elements.display_name.value = user.display_name;
   userForm.elements.email.value = user.email || "";
   userForm.elements.status.value = user.status;
+  renderUserEmailVerification(user);
   document.querySelector("#user-editor-title").textContent = `${user.display_name} · ${user.username}`;
   document.querySelector("#user-security").classList.remove("hidden");
   document.querySelector("#user-security-output").classList.add("hidden");
@@ -425,7 +462,10 @@ function openUser(user) {
 }
 
 document.querySelector("#new-user").addEventListener("click", openNewUser);
-document.querySelector('[data-action="close-user"]').addEventListener("click", () => document.querySelector("#user-editor").classList.add("hidden"));
+document.querySelector('[data-action="close-user"]').addEventListener("click", () => {
+  state.selectedUser = null;
+  document.querySelector("#user-editor").classList.add("hidden");
+});
 
 userForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -449,6 +489,25 @@ userForm.addEventListener("submit", async (event) => {
     openUser(user);
   } catch (error) {
     status.textContent = error.message;
+  }
+});
+
+document.querySelector("#verify-user-email").addEventListener("click", async (event) => {
+  const user = state.selectedUser;
+  if (!user?.email || user.email_verified || !can("admin.users.write")) return;
+  if (!window.confirm(`确定将 ${user.email} 手动标记为已验证吗？接入系统随后会信任该邮箱归属。`)) return;
+
+  const action = event.currentTarget;
+  action.disabled = true;
+  try {
+    const updated = await api(`/api/v1/admin/users/${user.id}/email-verification`, { method: "POST" });
+    await Promise.all([loadUsers(), loadAllUsers()]);
+    openUser(updated);
+    setStatus(`已将 ${updated.email} 标记为已验证。`, "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  } finally {
+    action.disabled = false;
   }
 });
 

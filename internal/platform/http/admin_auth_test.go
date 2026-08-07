@@ -98,6 +98,7 @@ func TestAdministratorSessionRBACMFAAndAuditActor(t *testing.T) {
 	if page.Code != http.StatusOK ||
 		!strings.Contains(page.Body.String(), "Identity Admin") ||
 		!strings.Contains(page.Body.String(), `href="#identity-sources"`) ||
+		!strings.Contains(page.Body.String(), `id="verify-user-email"`) ||
 		strings.Contains(page.Body.String(), "管理员令牌") {
 		t.Fatalf("administrator page did not use the authenticated identity: %d %s", page.Code, page.Body.String())
 	}
