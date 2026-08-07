@@ -40,7 +40,7 @@ func (r *UserRepository) List(ctx context.Context, filter identity.UserFilter) (
 	}
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT id::text, username, display_name, email, status, created_at, updated_at
+		SELECT id::text, username, display_name, email, email_verified, status, created_at, updated_at
 		FROM users
 		WHERE ($1 = '' OR username ILIKE '%' || $1 || '%' OR display_name ILIKE '%' || $1 || '%' OR coalesce(email, '') ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR status = $2)
@@ -74,7 +74,7 @@ func (r *UserRepository) List(ctx context.Context, filter identity.UserFilter) (
 
 func (r *UserRepository) Find(ctx context.Context, id string) (identity.User, error) {
 	user, err := scanUser(r.pool.QueryRow(ctx, `
-		SELECT id::text, username, display_name, email, status, created_at, updated_at
+		SELECT id::text, username, display_name, email, email_verified, status, created_at, updated_at
 		FROM users
 		WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -85,7 +85,7 @@ func (r *UserRepository) Find(ctx context.Context, id string) (identity.User, er
 
 func (r *UserRepository) FindByUsername(ctx context.Context, username string) (identity.User, error) {
 	user, err := scanUser(r.pool.QueryRow(ctx, `
-		SELECT id::text, username, display_name, email, status, created_at, updated_at
+		SELECT id::text, username, display_name, email, email_verified, status, created_at, updated_at
 		FROM users
 		WHERE lower(username) = lower($1)`, username))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -120,7 +120,8 @@ func (r *UserRepository) ResolveExternalIdentity(ctx context.Context, profile id
 	}
 
 	existing, err := scanUser(tx.QueryRow(ctx, `
-		SELECT u.id::text, u.username, u.display_name, u.email, u.status, u.created_at, u.updated_at
+		SELECT u.id::text, u.username, u.display_name, u.email, u.email_verified,
+		       u.status, u.created_at, u.updated_at
 		FROM external_identities e
 		JOIN users u ON u.id = e.user_id
 		WHERE e.provider_id = $1 AND e.provider_subject = $2`,
@@ -136,6 +137,10 @@ func (r *UserRepository) ResolveExternalIdentity(ctx context.Context, profile id
 		); err != nil {
 			return identity.User{}, fmt.Errorf("update external identity profile: %w", err)
 		}
+		existing, err = verifyExternalEmail(ctx, tx, existing, profile, now)
+		if err != nil {
+			return identity.User{}, err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return identity.User{}, fmt.Errorf("commit external identity resolution: %w", err)
 		}
@@ -147,13 +152,17 @@ func (r *UserRepository) ResolveExternalIdentity(ctx context.Context, profile id
 
 	if profile.EmailTrusted && profile.Email != nil {
 		existing, err = scanUser(tx.QueryRow(ctx, `
-			SELECT id::text, username, display_name, email, status, created_at, updated_at
+			SELECT id::text, username, display_name, email, email_verified, status, created_at, updated_at
 			FROM users
 			WHERE lower(email) = lower($1)
 			FOR UPDATE`,
 			*profile.Email,
 		))
 		if err == nil {
+			existing, err = verifyExternalEmail(ctx, tx, existing, profile, now)
+			if err != nil {
+				return identity.User{}, err
+			}
 			if err := insertExternalIdentity(ctx, tx, existing.ID, profile, profileJSON, now); err != nil {
 				return identity.User{}, err
 			}
@@ -196,12 +205,36 @@ func (r *UserRepository) ResolveExternalIdentity(ctx context.Context, profile id
 
 func insertExternalUser(ctx context.Context, tx pgx.Tx, user identity.User) (identity.User, error) {
 	return scanUser(tx.QueryRow(ctx, `
-		INSERT INTO users (id, username, display_name, email, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
+		INSERT INTO users (id, username, display_name, email, email_verified, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
 		ON CONFLICT DO NOTHING
-		RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
-		user.ID, user.Username, user.DisplayName, user.Email, user.Status, user.CreatedAt,
+		RETURNING id::text, username, display_name, email, email_verified, status, created_at, updated_at`,
+		user.ID, user.Username, user.DisplayName, user.Email, user.EmailVerified, user.Status, user.CreatedAt,
 	))
+}
+
+func verifyExternalEmail(
+	ctx context.Context,
+	tx pgx.Tx,
+	user identity.User,
+	profile identity.ExternalProfile,
+	now time.Time,
+) (identity.User, error) {
+	if !profile.EmailVerified || profile.Email == nil || user.Email == nil ||
+		!strings.EqualFold(*user.Email, *profile.Email) || user.EmailVerified {
+		return user, nil
+	}
+	updated, err := scanUser(tx.QueryRow(ctx, `
+		UPDATE users
+		SET email_verified = true, updated_at = $2
+		WHERE id = $1 AND lower(email) = lower($3)
+		RETURNING id::text, username, display_name, email, email_verified, status, created_at, updated_at`,
+		user.ID, now.UTC(), *profile.Email,
+	))
+	if err != nil {
+		return identity.User{}, fmt.Errorf("inherit verified external email: %w", err)
+	}
+	return updated, nil
 }
 
 func insertExternalIdentity(ctx context.Context, tx pgx.Tx, userID string, profile identity.ExternalProfile, encoded []byte, now time.Time) error {
@@ -259,6 +292,7 @@ func (r *UserRepository) ListExternalIdentities(
 		external.DisplayName = profile.DisplayName
 		external.Email = profile.Email
 		external.EmailTrusted = profile.EmailTrusted
+		external.EmailVerified = profile.EmailVerified
 		result = append(result, external)
 	}
 	if err := rows.Err(); err != nil {
@@ -341,10 +375,10 @@ func advisoryLockID(namespace string, values ...string) int64 {
 
 func (r *UserRepository) Create(ctx context.Context, user identity.User) (identity.User, error) {
 	created, err := scanUser(r.pool.QueryRow(ctx, `
-		INSERT INTO users (id, username, display_name, email, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
-		RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
-		user.ID, user.Username, user.DisplayName, user.Email, user.Status, user.CreatedAt,
+		INSERT INTO users (id, username, display_name, email, email_verified, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+		RETURNING id::text, username, display_name, email, email_verified, status, created_at, updated_at`,
+		user.ID, user.Username, user.DisplayName, user.Email, user.EmailVerified, user.Status, user.CreatedAt,
 	))
 	if isUniqueViolation(err) {
 		return identity.User{}, identity.ErrConflict
@@ -368,10 +402,10 @@ func (r *UserRepository) CreateWithPassword(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	created, err := scanUser(tx.QueryRow(ctx, `
-		INSERT INTO users (id, username, display_name, email, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $6)
-		RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
-		user.ID, user.Username, user.DisplayName, user.Email, user.Status, user.CreatedAt,
+		INSERT INTO users (id, username, display_name, email, email_verified, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+		RETURNING id::text, username, display_name, email, email_verified, status, created_at, updated_at`,
+		user.ID, user.Username, user.DisplayName, user.Email, user.EmailVerified, user.Status, user.CreatedAt,
 	))
 	if isUniqueViolation(err) {
 		return identity.User{}, identity.ErrConflict
@@ -408,13 +442,14 @@ func (r *UserRepository) CreateWithMigratedPasswords(
 	created := make([]identity.User, 0, len(records))
 	for _, record := range records {
 		user, err := scanUser(tx.QueryRow(ctx, `
-			INSERT INTO users (id, username, display_name, email, status, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $6)
-			RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
+			INSERT INTO users (id, username, display_name, email, email_verified, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+			RETURNING id::text, username, display_name, email, email_verified, status, created_at, updated_at`,
 			record.User.ID,
 			record.User.Username,
 			record.User.DisplayName,
 			record.User.Email,
+			record.User.EmailVerified,
 			record.User.Status,
 			record.User.CreatedAt,
 		))
@@ -446,10 +481,17 @@ func (r *UserRepository) CreateWithMigratedPasswords(
 func (r *UserRepository) Replace(ctx context.Context, user identity.User) (identity.User, error) {
 	updated, err := scanUser(r.pool.QueryRow(ctx, `
 		UPDATE users
-		SET display_name = $2, email = $3, status = $4, updated_at = $5
+		SET display_name = $2,
+		    email = $3,
+		    email_verified = CASE
+		        WHEN email IS NOT NULL AND $3::text IS NOT NULL AND lower(email) = lower($3::text) THEN $4
+		        ELSE false
+		    END,
+		    status = $5,
+		    updated_at = $6
 		WHERE id = $1
-		RETURNING id::text, username, display_name, email, status, created_at, updated_at`,
-		user.ID, user.DisplayName, user.Email, user.Status, user.UpdatedAt,
+		RETURNING id::text, username, display_name, email, email_verified, status, created_at, updated_at`,
+		user.ID, user.DisplayName, user.Email, user.EmailVerified, user.Status, user.UpdatedAt,
 	))
 	if isUniqueViolation(err) {
 		return identity.User{}, identity.ErrConflict
@@ -489,7 +531,8 @@ func (r *UserRepository) FindPasswordByUsername(ctx context.Context, username st
 	var email pgtype.Text
 	var lockedUntil pgtype.Timestamptz
 	err := r.pool.QueryRow(ctx, `
-		SELECT u.id::text, u.username, u.display_name, u.email, u.status, u.created_at, u.updated_at,
+		SELECT u.id::text, u.username, u.display_name, u.email, u.email_verified,
+		       u.status, u.created_at, u.updated_at,
 		       c.user_id::text, c.password_hash, c.failed_attempts, c.locked_until
 		FROM users u
 		JOIN user_password_credentials c ON c.user_id = u.id
@@ -500,6 +543,7 @@ func (r *UserRepository) FindPasswordByUsername(ctx context.Context, username st
 		&user.Username,
 		&user.DisplayName,
 		&email,
+		&user.EmailVerified,
 		&user.Status,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -618,6 +662,7 @@ func scanUser(scanner userScanner) (identity.User, error) {
 		&user.Username,
 		&user.DisplayName,
 		&email,
+		&user.EmailVerified,
 		&user.Status,
 		&user.CreatedAt,
 		&user.UpdatedAt,

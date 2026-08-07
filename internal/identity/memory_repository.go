@@ -73,13 +73,25 @@ func (r *MemoryUserRepository) ResolveExternalIdentity(_ context.Context, profil
 		external.DisplayName = strings.TrimSpace(profile.DisplayName)
 		external.Email = cloneEmail(profile.Email)
 		external.EmailTrusted = profile.EmailTrusted
+		external.EmailVerified = profile.EmailVerified
 		external.LastAuthenticatedAt = now.UTC()
 		r.external[key] = external
+		if profile.EmailVerified && profile.Email != nil && user.Email != nil &&
+			strings.EqualFold(*user.Email, *profile.Email) && !user.EmailVerified {
+			user.EmailVerified = true
+			user.UpdatedAt = now.UTC()
+			r.users[user.ID] = cloneUser(user)
+		}
 		return cloneUser(user), nil
 	}
 	if profile.EmailTrusted && profile.Email != nil {
 		for _, existing := range r.users {
 			if existing.Email != nil && strings.EqualFold(*existing.Email, *profile.Email) {
+				if profile.EmailVerified && !existing.EmailVerified {
+					existing.EmailVerified = true
+					existing.UpdatedAt = now.UTC()
+					r.users[existing.ID] = cloneUser(existing)
+				}
 				external, err := newExternalIdentity(existing.ID, profile, now)
 				if err != nil {
 					return User{}, err
@@ -320,8 +332,12 @@ func (r *MemoryUserRepository) CreateWithMigratedPasswords(
 func (r *MemoryUserRepository) Replace(_ context.Context, user User) (User, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.users[user.ID]; !ok {
+	current, ok := r.users[user.ID]
+	if !ok {
 		return User{}, ErrNotFound
+	}
+	if user.Email == nil || current.Email == nil || !strings.EqualFold(*current.Email, *user.Email) {
+		user.EmailVerified = false
 	}
 	for id, existing := range r.users {
 		if id != user.ID && existing.Email != nil && user.Email != nil && strings.EqualFold(*existing.Email, *user.Email) {
@@ -414,6 +430,7 @@ func newExternalIdentity(
 		DisplayName:         strings.TrimSpace(profile.DisplayName),
 		Email:               cloneEmail(profile.Email),
 		EmailTrusted:        profile.EmailTrusted,
+		EmailVerified:       profile.EmailVerified,
 		CreatedAt:           now,
 		LastAuthenticatedAt: now,
 	}, nil

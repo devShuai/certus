@@ -25,6 +25,9 @@ func TestNewUserNormalizesIdentity(t *testing.T) {
 	if user.Email == nil || *user.Email != "user@example.com" {
 		t.Fatalf("email was not normalized: %#v", user.Email)
 	}
+	if user.EmailVerified {
+		t.Fatal("new local user email was implicitly verified")
+	}
 	if user.Status != UserActive || !user.CreatedAt.Equal(now.UTC()) {
 		t.Fatalf("unexpected defaults: %#v", user)
 	}
@@ -57,5 +60,33 @@ func TestReplaceRequiresExplicitValidStatus(t *testing.T) {
 	current := User{ID: "id", Username: "alice", DisplayName: "Alice", Status: UserActive}
 	if _, err := Replace(current, ReplaceUser{DisplayName: "Alice"}, time.Now()); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected invalid status, got %v", err)
+	}
+}
+
+func TestReplacePreservesVerificationOnlyForSameEmail(t *testing.T) {
+	now := time.Now().UTC()
+	email := "alice@example.com"
+	current, err := NewUser(CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &email,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.EmailVerified = true
+
+	sameEmail := " Alice@Example.COM "
+	unchanged, err := Replace(current, ReplaceUser{
+		DisplayName: "Alice", Email: &sameEmail, Status: UserActive,
+	}, now.Add(time.Minute))
+	if err != nil || !unchanged.EmailVerified {
+		t.Fatalf("same email lost verification: %#v %v", unchanged, err)
+	}
+
+	changedEmail := "new@example.com"
+	changed, err := Replace(current, ReplaceUser{
+		DisplayName: "Alice", Email: &changedEmail, Status: UserActive,
+	}, now.Add(2*time.Minute))
+	if err != nil || changed.EmailVerified {
+		t.Fatalf("changed email retained verification: %#v %v", changed, err)
 	}
 }

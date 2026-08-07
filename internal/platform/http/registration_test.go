@@ -92,7 +92,7 @@ func TestRegistrationCreatesSessionAndPreservesOAuthFlow(t *testing.T) {
 		t.Fatalf("unexpected registration response: %d %s %s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	user, err := users.FindByUsername(context.Background(), "alice")
-	if err != nil || user.Email == nil || *user.Email != "alice@example.com" {
+	if err != nil || user.Email == nil || *user.Email != "alice@example.com" || user.EmailVerified {
 		t.Fatalf("registered user was not persisted: %#v %v", user, err)
 	}
 	if _, err := identity.NewPasswordService(users).Authenticate(

@@ -29,13 +29,14 @@ const (
 )
 
 type User struct {
-	ID          string     `json:"id"`
-	Username    string     `json:"username"`
-	DisplayName string     `json:"display_name"`
-	Email       *string    `json:"email"`
-	Status      UserStatus `json:"status"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID            string     `json:"id"`
+	Username      string     `json:"username"`
+	DisplayName   string     `json:"display_name"`
+	Email         *string    `json:"email"`
+	EmailVerified bool       `json:"email_verified"`
+	Status        UserStatus `json:"status"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type CreateUser struct {
@@ -74,13 +75,14 @@ type UserRepository interface {
 }
 
 type ExternalProfile struct {
-	ProviderID   string         `json:"provider_id"`
-	Subject      string         `json:"subject"`
-	Username     string         `json:"username"`
-	DisplayName  string         `json:"display_name"`
-	Email        *string        `json:"email,omitempty"`
-	EmailTrusted bool           `json:"email_trusted"`
-	Claims       map[string]any `json:"claims,omitempty"`
+	ProviderID    string         `json:"provider_id"`
+	Subject       string         `json:"subject"`
+	Username      string         `json:"username"`
+	DisplayName   string         `json:"display_name"`
+	Email         *string        `json:"email,omitempty"`
+	EmailTrusted  bool           `json:"email_trusted"`
+	EmailVerified bool           `json:"email_verified"`
+	Claims        map[string]any `json:"claims,omitempty"`
 }
 
 type ExternalIdentityRepository interface {
@@ -98,6 +100,7 @@ type ExternalIdentity struct {
 	DisplayName         string    `json:"display_name"`
 	Email               *string   `json:"email,omitempty"`
 	EmailTrusted        bool      `json:"email_trusted"`
+	EmailVerified       bool      `json:"email_verified"`
 	CreatedAt           time.Time `json:"created_at"`
 	LastAuthenticatedAt time.Time `json:"last_authenticated_at"`
 }
@@ -151,6 +154,9 @@ func Replace(current User, input ReplaceUser, now time.Time) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
+	if email == nil || current.Email == nil || !strings.EqualFold(*current.Email, *email) {
+		current.EmailVerified = false
+	}
 	if !input.Status.Valid() {
 		return User{}, fmt.Errorf("%w: unsupported status", ErrInvalid)
 	}
@@ -196,12 +202,17 @@ func NewExternalUser(profile ExternalProfile, disambiguate bool, now time.Time) 
 	if displayName == "" {
 		displayName = username
 	}
-	return NewUser(CreateUser{
+	user, err := NewUser(CreateUser{
 		Username:    username,
 		DisplayName: displayName,
 		Email:       profile.Email,
 		Status:      UserActive,
 	}, now)
+	if err != nil {
+		return User{}, err
+	}
+	user.EmailVerified = profile.EmailVerified && user.Email != nil
+	return user, nil
 }
 
 func normalizeEmail(value *string) (*string, error) {

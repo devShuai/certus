@@ -70,6 +70,41 @@ func TestResolveExternalIdentityLinksOnlyTrustedEmail(t *testing.T) {
 	}
 }
 
+func TestResolveExternalIdentityInheritsOnlyMatchingVerifiedEmail(t *testing.T) {
+	email := "alice@example.com"
+	existing, err := NewUser(CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &email,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := NewMemoryUserRepository(existing)
+	profile := ExternalProfile{
+		ProviderID:   "oidc:https://idp.example.com",
+		Subject:      "alice-subject",
+		Username:     "alice",
+		DisplayName:  "Alice",
+		Email:        &email,
+		EmailTrusted: true,
+	}
+	unverified, err := repository.ResolveExternalIdentity(context.Background(), profile, time.Now())
+	if err != nil || unverified.EmailVerified {
+		t.Fatalf("unverified external email became verified: %#v %v", unverified, err)
+	}
+	otherEmail := "other@example.com"
+	profile.Email = &otherEmail
+	profile.EmailVerified = true
+	mismatched, err := repository.ResolveExternalIdentity(context.Background(), profile, time.Now().Add(time.Minute))
+	if err != nil || mismatched.EmailVerified {
+		t.Fatalf("mismatched external email was inherited: %#v %v", mismatched, err)
+	}
+	profile.Email = &email
+	verified, err := repository.ResolveExternalIdentity(context.Background(), profile, time.Now().Add(time.Minute))
+	if err != nil || !verified.EmailVerified {
+		t.Fatalf("verified matching external email was not inherited: %#v %v", verified, err)
+	}
+}
+
 func TestExternalIdentityManagementProtectsLastAuthenticationMethod(t *testing.T) {
 	repository := NewMemoryUserRepository()
 	now := time.Now().UTC()

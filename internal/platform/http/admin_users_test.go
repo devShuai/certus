@@ -53,7 +53,9 @@ func TestAdminUserLifecycle(t *testing.T) {
 
 	handler.ServeHTTP(created, create)
 
-	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"username":"alice"`) {
+	if created.Code != http.StatusCreated ||
+		!strings.Contains(created.Body.String(), `"username":"alice"`) ||
+		!strings.Contains(created.Body.String(), `"email_verified":false`) {
 		t.Fatalf("unexpected create response: %d %s", created.Code, created.Body.String())
 	}
 
@@ -124,6 +126,7 @@ func TestAdminImportsSpecusPasswordsAndLoginUpgradesHash(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated ||
 		!strings.Contains(response.Body.String(), `"count":1`) ||
+		!strings.Contains(response.Body.String(), `"email_verified":false`) ||
 		strings.Contains(response.Body.String(), passwordHash) {
 		t.Fatalf("unexpected import response: %d %s", response.Code, response.Body.String())
 	}

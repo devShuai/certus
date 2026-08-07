@@ -236,18 +236,26 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if _, err := users.FindByUsername(ctx, "should-roll-back"); !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("PostgreSQL migration conflict left a partial user: %v", err)
 	}
+	externalEmail := "external-user@example.com"
 	externalUser, err := users.ResolveExternalIdentity(ctx, identity.ExternalProfile{
-		ProviderID:  "identity-source:workforce",
-		Subject:     "integration-external-user",
-		Username:    "external-user",
-		DisplayName: "External User",
+		ProviderID:    "identity-source:workforce",
+		Subject:       "integration-external-user",
+		Username:      "external-user",
+		DisplayName:   "External User",
+		Email:         &externalEmail,
+		EmailTrusted:  true,
+		EmailVerified: true,
 	}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !externalUser.EmailVerified {
+		t.Fatalf("verified external email was not persisted: %#v", externalUser)
+	}
 	externalIdentities, err := users.ListExternalIdentities(ctx, externalUser.ID)
 	if err != nil || len(externalIdentities) != 1 ||
-		externalIdentities[0].ProviderID != "identity-source:workforce" {
+		externalIdentities[0].ProviderID != "identity-source:workforce" ||
+		!externalIdentities[0].EmailVerified {
 		t.Fatalf("external identity round trip failed: %#v %v", externalIdentities, err)
 	}
 	if err := users.DeleteExternalIdentity(
