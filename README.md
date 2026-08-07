@@ -497,7 +497,7 @@ Authorization: Basic <client_id:client_secret>
 - **查询范围以授权关系为界**：仅当该用户对当前客户端存在有效 consent（授权同意，含设备码流程）时才返回 200；未授权、授权已撤销、用户不存在或 `user_id` 格式非法一律返回空 `404`，不区分具体原因，避免变成任意用户存在性探测接口
 - **最小披露**：只返回 `sub`、`status`（`active|locked|disabled`）、`email_verified` 与 `updated_at`，不包含用户名、邮箱等画像字段
 - **限流**：按客户端维度计数（`CERTUS_CLIENT_STATUS_RATE_LIMIT/WINDOW`，默认 600 次/分钟，与 OAuth 元数据端点同量级），纳入现有限流基础设施
-- **审计**：每次查询记录 `user.status_queried` 事件（含客户端、目标用户与成败），供追查谁在何时查询了谁
+- **审计**：已认证客户端的每次查询记录 `user.status_queried` 事件（含客户端、目标用户与结果），限流拒绝与后端异常同样记录（`rate_limited` / `consent_unavailable` / `storage_error`）；客户端认证失败单独记录为 `client.authentication_failed`，被冒用的 client ID 只作为声称身份出现在详情中，不会被记为已认证主体
 
 `status` 返回 `disabled`/`locked` 时，接入系统应暂停该用户的会话外任务（续费提醒、数据同步等）；用户仍可能有活跃令牌，应结合令牌生命周期或 Back-Channel Logout 决定是否撕毁已有会话。
 
