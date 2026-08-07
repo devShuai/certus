@@ -486,6 +486,8 @@ OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开�
 
 OIDC 授权请求支持 `prompt=none`、`prompt=login`、`prompt=consent` 与非负整数 `max_age`。首次授权、请求新增 Scope 或显式使用 `prompt=consent` 时，Certus 会展示客户端与权限范围并记录用户决定；已有授权覆盖全部 Scope 时可直接复用。静默认证无法完成时，Certus 会将 `login_required` 或 `consent_required` 和原始 `state` 返回到已登记的精确回调地址；强制重新认证与授权同意都使用 5 分钟有效、绑定完整授权请求且完成后即失效的签名事务。授权码签发记录认证时间，后续 ID Token 始终携带 `auth_time`。
 
+授予 `email` scope 且用户存在邮箱时，ID Token 与 UserInfo 会同时返回 `email` 和布尔型 `email_verified`。本地注册、管理员录入、密码导入及 LDAP 邮箱默认未验证；仅当上游 OIDC 明确声明 `email_verified=true` 且邮箱与当前用户邮箱一致时继承验证状态，邮箱变更会自动重置该状态。
+
 刷新令牌支持可选 `scope` 缩减，不允许恢复已经缩减或原始授权未包含的范围。每次刷新、UserInfo 与 Introspection 都重新检查用户状态、登录会话和当前授权；用户退出、会话撤销、用户禁用、密码重置、管理员 MFA 重置或应用授权撤销后，不再签发或接受关联令牌。
 
 OIDC 客户端可将 ID Token 作为 `id_token_hint` 请求 `GET` 或 `POST /oauth2/logout`。Certus 验证签名、发行者、受众及当前用户后撤销对应统一会话和 OAuth 令牌；仅当 `post_logout_redirect_uri` 与客户端独立登记的退出回调完全一致时才携带可选 `state` 跳回业务系统。

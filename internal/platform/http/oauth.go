@@ -495,8 +495,8 @@ func (s *server) issueUserTokens(
 			claims["name"] = user.DisplayName
 			claims["preferred_username"] = user.Username
 		}
-		if slices.Contains(scopes, "email") && user.Email != nil {
-			claims["email"] = *user.Email
+		if slices.Contains(scopes, "email") {
+			addEmailClaims(claims, user)
 		}
 		if err := s.addEntitlementClaims(r.Context(), claims, user.ID, registered.ID, scopes); err != nil {
 			return nil, err
@@ -847,8 +847,8 @@ func (s *server) userinfo(w http.ResponseWriter, r *http.Request) {
 		claims["name"] = user.DisplayName
 		claims["preferred_username"] = user.Username
 	}
-	if slices.Contains(token.Scope, "email") && user.Email != nil {
-		claims["email"] = *user.Email
+	if slices.Contains(token.Scope, "email") {
+		addEmailClaims(claims, user)
 	}
 	if err := s.addEntitlementClaims(r.Context(), claims, user.ID, token.ClientID, token.Scope); err != nil {
 		s.logger.Error("read user entitlements", "error", err)
@@ -856,6 +856,14 @@ func (s *server) userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, claims)
+}
+
+func addEmailClaims(claims map[string]any, user identity.User) {
+	if user.Email == nil {
+		return
+	}
+	claims["email"] = *user.Email
+	claims["email_verified"] = user.EmailVerified
 }
 
 func (s *server) addEntitlementClaims(ctx context.Context, claims map[string]any, userID, clientID string, scopes []string) error {
@@ -994,7 +1002,7 @@ func (s *server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"subject_types_supported":                       []string{"public"},
 		"id_token_signing_alg_values_supported":         []string{"RS256"},
 		"acr_values_supported":                          []string{"urn:certus:aal:1", "urn:certus:aal:2"},
-		"claims_supported":                              []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "sid", "nonce", "acr", "amr", "name", "preferred_username", "email", "roles", "permissions"},
+		"claims_supported":                              []string{"sub", "iss", "aud", "exp", "iat", "auth_time", "sid", "nonce", "acr", "amr", "name", "preferred_username", "email", "email_verified", "roles", "permissions"},
 		"backchannel_logout_supported":                  true,
 		"backchannel_logout_session_supported":          true,
 		"prompt_values_supported":                       []string{"none", "login", "consent"},

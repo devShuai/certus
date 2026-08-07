@@ -121,7 +121,9 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 		!strings.Contains(string(idTokenClaims), `"roles":["approver"]`) ||
 		!strings.Contains(string(idTokenClaims), `"permissions":["invoice.approve"]`) ||
 		!strings.Contains(string(idTokenClaims), `"amr":["pwd"]`) ||
-		!strings.Contains(string(idTokenClaims), `"acr":"urn:certus:aal:1"`) {
+		!strings.Contains(string(idTokenClaims), `"acr":"urn:certus:aal:1"`) ||
+		!strings.Contains(string(idTokenClaims), `"email":"alice@example.com"`) ||
+		!strings.Contains(string(idTokenClaims), `"email_verified":false`) {
 		t.Fatalf("ID Token missing access claims: %s %v", idTokenClaims, err)
 	}
 	userinfo := httptest.NewRequest(http.MethodGet, "/oauth2/userinfo", nil)
@@ -130,6 +132,8 @@ func TestAuthorizationCodeDeviceAndCASExecution(t *testing.T) {
 	handler.ServeHTTP(userinfoResponse, userinfo)
 	if userinfoResponse.Code != http.StatusOK ||
 		!strings.Contains(userinfoResponse.Body.String(), `"preferred_username":"alice"`) ||
+		!strings.Contains(userinfoResponse.Body.String(), `"email":"alice@example.com"`) ||
+		!strings.Contains(userinfoResponse.Body.String(), `"email_verified":false`) ||
 		!strings.Contains(userinfoResponse.Body.String(), `"roles":["approver"]`) ||
 		!strings.Contains(userinfoResponse.Body.String(), `"permissions":["invoice.approve"]`) {
 		t.Fatalf("userinfo: %d %s", userinfoResponse.Code, userinfoResponse.Body.String())

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -116,6 +117,7 @@ func TestTokenIntrospectionAndRevocation(t *testing.T) {
 		`"end_session_endpoint":"https://auth.example.com/oauth2/logout"`,
 		`"backchannel_logout_supported":true`,
 		`"backchannel_logout_session_supported":true`,
+		`"email_verified"`,
 		`"prompt_values_supported":["none","login","consent"]`,
 		`"token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"]`,
 		`"introspection_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post"]`,
@@ -124,6 +126,39 @@ func TestTokenIntrospectionAndRevocation(t *testing.T) {
 		if !strings.Contains(discovery.Body.String(), endpoint) {
 			t.Fatalf("discovery missing %s: %s", endpoint, discovery.Body.String())
 		}
+	}
+}
+
+func TestEmailClaimsReflectStoredVerificationState(t *testing.T) {
+	email := "alice@example.com"
+	for _, test := range []struct {
+		name     string
+		user     identity.User
+		expected map[string]any
+	}{
+		{
+			name:     "unverified",
+			user:     identity.User{Email: &email},
+			expected: map[string]any{"email": email, "email_verified": false},
+		},
+		{
+			name:     "verified",
+			user:     identity.User{Email: &email, EmailVerified: true},
+			expected: map[string]any{"email": email, "email_verified": true},
+		},
+		{
+			name:     "missing email",
+			user:     identity.User{EmailVerified: true},
+			expected: map[string]any{},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			claims := map[string]any{}
+			addEmailClaims(claims, test.user)
+			if !reflect.DeepEqual(claims, test.expected) {
+				t.Fatalf("unexpected email claims: %#v", claims)
+			}
+		})
 	}
 }
 
