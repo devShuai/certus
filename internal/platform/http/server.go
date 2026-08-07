@@ -42,6 +42,7 @@ type server struct {
 	passwords         *identity.PasswordService
 	registrations     *identity.RegistrationService
 	passwordMigration *identity.PasswordMigrationService
+	verifications     *identity.EmailVerificationService
 	mailer            mailer.Sender
 	sessions          *session.Service
 	oauth             oauth.Repository
@@ -236,6 +237,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 		passwords:         identity.NewPasswordService(dependencies.Passwords),
 		registrations:     registrations,
 		passwordMigration: identity.NewPasswordMigrationService(passwordMigrationRepository),
+		verifications:     identity.NewEmailVerificationService(dependencies.Users),
 		mailer:            emailSender,
 		sessions:          session.NewService(dependencies.Sessions, 12*time.Hour),
 		oauth:             dependencies.OAuth,
@@ -293,6 +295,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("PUT /api/v1/admin/users/{userID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.replaceUser)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}/password", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.setUserPassword)))
 	mux.Handle("POST /api/v1/admin/users/{userID}/password-reset", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.issueUserPasswordReset)))
+	mux.Handle("POST /api/v1/admin/users/{userID}/email-verification", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.verifyAdminUserEmail)))
 	mux.Handle("GET /api/v1/admin/users/{userID}/external-identities", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.listUserExternalIdentities)))
 	mux.Handle("DELETE /api/v1/admin/users/{userID}/external-identities/{externalIdentityID}", s.requireAdmin(administration.PermissionUsersWrite, http.HandlerFunc(s.deleteUserExternalIdentity)))
 	mux.Handle("GET /api/v1/admin/users/{userID}/sessions", s.requireAdmin(administration.PermissionUsersRead, http.HandlerFunc(s.listAdminUserSessions)))
@@ -342,6 +345,9 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("DELETE /api/v1/account/consents/{clientID}", s.revokeAccountConsent)
 	mux.HandleFunc("PUT /api/v1/account/password", s.changeAccountPassword)
 	mux.HandleFunc("POST /api/v1/account/password/reset", s.resetAccountPassword)
+	mux.HandleFunc("POST /api/v1/account/email/verification", s.issueAccountEmailVerification)
+	mux.HandleFunc("POST /api/v1/account/email/verify", s.verifyAccountEmail)
+	mux.HandleFunc("GET /account/verify-email", s.verifyEmailPage)
 	mux.HandleFunc("GET /api/v1/account/mfa", s.getAccountMFA)
 	mux.HandleFunc("POST /api/v1/account/mfa/totp/setup", s.setupAccountMFA)
 	mux.HandleFunc("POST /api/v1/account/mfa/totp/enable", s.enableAccountMFA)

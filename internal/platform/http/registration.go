@@ -132,6 +132,9 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		ClientID:    auditClient(clientID),
 		Outcome:     audit.OutcomeSuccess,
 	})
+	if err := s.sendEmailVerification(r.Context(), user); err != nil {
+		s.logger.Warn("send registration verification email", "user_id", user.ID, "error", err)
+	}
 	s.createLoginSession(w, r, user, returnTo, "registration", clientID, "")
 }
 

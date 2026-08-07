@@ -120,6 +120,23 @@ func TestPasswordResetMigration(t *testing.T) {
 	}
 }
 
+func TestEmailVerificationMigration(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/029_email_verification_tokens.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE email_verification_tokens",
+		"token_hash bytea PRIMARY KEY",
+		"REFERENCES users(id) ON DELETE CASCADE",
+		"expires_at timestamptz NOT NULL",
+	} {
+		if !strings.Contains(string(content), expected) {
+			t.Fatalf("email verification migration does not contain %s", expected)
+		}
+	}
+}
+
 func TestTOTPMFAMigration(t *testing.T) {
 	content, err := migrationFiles.ReadFile("migrations/011_totp_mfa.sql")
 	if err != nil {

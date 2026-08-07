@@ -1,0 +1,30 @@
+{{define "verify-email.html"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="/static/favicon.svg">
+  <link rel="icon" type="image/svg+xml" sizes="32x32" href="/static/favicon-32.svg">
+  <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/verify-email.js" defer></script>
+</head>
+<body class="account-body">
+<main class="account-shell">
+  <header class="account-header">
+    <a href="/portal"><img class="app-logo" src="/static/logo-animated.svg" alt="certus 统一认证中心" width="240" height="55"></a>
+    <div class="actions">
+      <a class="button secondary" href="/account">返回账户安全中心</a>
+    </div>
+  </header>
+  <div id="verify-status" class="console-status" role="status" aria-live="polite">正在验证邮箱…</div>
+  <section class="panel">
+    <div class="section-heading"><div><p class="eyebrow">邮箱验证</p><h2 id="verify-title">验证你的邮箱地址</h2></div></div>
+    <p id="verify-summary" class="muted">正在提交验证凭据，请稍候…</p>
+    <p class="muted">验证成功后，接入系统将认为此邮箱地址属于你，并向其投递通知邮件。</p>
+  </section>
+  <input type="hidden" id="verify-csrf" value="{{.CSRFToken}}">
+</main>
+</body>
+</html>{{end}}

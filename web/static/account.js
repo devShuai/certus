@@ -71,7 +71,8 @@ async function loadAccount() {
     accountState.csrfToken = profile.csrf_token;
     renderProfile(profile);
     await Promise.all([loadSessions(), loadMFA(), loadConsents()]);
-    setAccountStatus("账户安全状态已更新。", "success");
+    const verified = new URLSearchParams(window.location.search).get("verified");
+    setAccountStatus(verified === "1" ? "邮箱验证完成。账户安全状态已更新。" : "账户安全状态已更新。", "success");
   } catch (error) {
     setAccountStatus(error.message, "error");
   }
@@ -85,7 +86,47 @@ function renderProfile(profile) {
   const badge = document.querySelector("#profile-status");
   badge.textContent = user.status === "active" ? "正常" : user.status === "locked" ? "锁定" : "停用";
   badge.className = `badge ${user.status}`;
+  renderEmailVerification(user);
 }
+
+function renderEmailVerification(user) {
+  const badge = document.querySelector("#email-verified-badge");
+  const summary = document.querySelector("#email-verified-summary");
+  const form = document.querySelector("#email-verification-form");
+  form.classList.remove("hidden");
+  if (!user.email) {
+    badge.textContent = "未设置";
+    badge.className = "badge disabled";
+    summary.textContent = "当前账号没有邮箱地址，请联系管理员补充后再验证。";
+    form.classList.add("hidden");
+    return;
+  }
+  if (user.email_verified) {
+    badge.textContent = "已验证";
+    badge.className = "badge active";
+    summary.textContent = `邮箱 ${user.email} 的所有权已验证。`;
+    form.classList.add("hidden");
+    return;
+  }
+  badge.textContent = "未验证";
+  badge.className = "badge locked";
+  summary.textContent = `邮箱 ${user.email} 尚未验证。点击下方按钮，我们会向该地址发送一封一次性验证邮件。`;
+}
+
+document.querySelector("#email-verification-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector("button[type='submit']");
+  submit.disabled = true;
+  try {
+    await accountAPI("/api/v1/account/email/verification", { method: "POST" });
+    setAccountStatus("验证邮件已发送，请查收邮箱并点击邮件中的验证链接。", "success");
+  } catch (error) {
+    setAccountStatus(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+});
 
 async function loadSessions() {
   const value = await accountAPI("/api/v1/account/sessions");

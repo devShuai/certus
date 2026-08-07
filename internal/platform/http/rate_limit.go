@@ -97,6 +97,25 @@ func (s *server) allowDeviceLookup(w http.ResponseWriter, r *http.Request) bool 
 	)
 }
 
+func (s *server) allowEmailVerificationAttempt(w http.ResponseWriter, r *http.Request, userID string) bool {
+	if !s.allowRateLimitedRequest(
+		w, r,
+		"email.verification.source",
+		s.requestIPAddress(r),
+		s.cfg.RateLimits.EmailVerification,
+		false,
+	) {
+		return false
+	}
+	return s.allowRateLimitedRequest(
+		w, r,
+		"email.verification.identity",
+		userID,
+		s.cfg.RateLimits.EmailVerification,
+		false,
+	)
+}
+
 func (s *server) allowRateLimitedRequest(
 	w http.ResponseWriter,
 	r *http.Request,

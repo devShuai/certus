@@ -72,6 +72,7 @@ type UserRepository interface {
 	FindByUsername(context.Context, string) (User, error)
 	Create(context.Context, User) (User, error)
 	Replace(context.Context, User) (User, error)
+	SetEmailVerified(context.Context, string, time.Time) (User, error)
 }
 
 type ExternalProfile struct {

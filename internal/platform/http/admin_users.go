@@ -86,6 +86,9 @@ func (s *server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Location", "/api/v1/admin/users/"+user.ID)
+	if err := s.sendEmailVerification(r.Context(), user); err != nil {
+		s.logger.Warn("send verification email for created user", "user_id", user.ID, "error", err)
+	}
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -175,6 +178,11 @@ func (s *server) replaceUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.oauth.RevokeUserTokens(r.Context(), user.ID, "", s.now().UTC()); err != nil {
 			s.logger.Error("revoke OAuth tokens for inactive user", "user_id", user.ID, "error", err)
+		}
+	}
+	if user.Email != nil && (current.Email == nil || !strings.EqualFold(*current.Email, *user.Email)) {
+		if err := s.sendEmailVerification(r.Context(), user); err != nil {
+			s.logger.Warn("send verification email after email change", "user_id", user.ID, "error", err)
 		}
 	}
 	writeJSON(w, http.StatusOK, user)

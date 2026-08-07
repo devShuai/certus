@@ -650,6 +650,69 @@ func (r *UserRepository) ConsumePasswordReset(ctx context.Context, hash []byte, 
 	return userID, nil
 }
 
+func (r *UserRepository) SetEmailVerified(ctx context.Context, userID string, now time.Time) (identity.User, error) {
+	updated, err := scanUser(r.pool.QueryRow(ctx, `
+		UPDATE users
+		SET email_verified = true, updated_at = $2
+		WHERE id = $1 AND email IS NOT NULL
+		RETURNING id::text, username, display_name, email, email_verified, status, created_at, updated_at`,
+		userID, now.UTC(),
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identity.User{}, identity.ErrNotFound
+	}
+	if err != nil {
+		return identity.User{}, fmt.Errorf("set email verified: %w", err)
+	}
+	return updated, nil
+}
+
+func (r *UserRepository) SaveEmailVerification(ctx context.Context, token identity.EmailVerificationToken) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin email verification creation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM email_verification_tokens WHERE user_id = $1`, token.UserID); err != nil {
+		return fmt.Errorf("invalidate email verification tokens: %w", err)
+	}
+	command, err := tx.Exec(ctx, `
+		INSERT INTO email_verification_tokens (token_hash, user_id, email, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		token.Hash, token.UserID, token.Email, token.CreatedAt, token.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("save email verification token: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return identity.ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit email verification creation: %w", err)
+	}
+	return nil
+}
+
+func (r *UserRepository) ConsumeEmailVerification(ctx context.Context, hash []byte, now time.Time) (string, string, error) {
+	var userID, email string
+	err := r.pool.QueryRow(ctx, `
+		UPDATE email_verification_tokens
+		SET consumed_at = $2
+		WHERE token_hash = $1
+		  AND consumed_at IS NULL
+		  AND expires_at > $2
+		RETURNING user_id::text, email`,
+		hash, now,
+	).Scan(&userID, &email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", identity.ErrInvalidVerificationToken
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("consume email verification token: %w", err)
+	}
+	return userID, email, nil
+}
+
 type userScanner interface {
 	Scan(...any) error
 }

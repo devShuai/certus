@@ -491,7 +491,7 @@ OAuth 2.1 当前仍是 IETF Internet-Draft。出于安全原因，Certus 不开�
 
 OIDC 授权请求支持 `prompt=none`、`prompt=login`、`prompt=consent` 与非负整数 `max_age`。首次授权、请求新增 Scope 或显式使用 `prompt=consent` 时，Certus 会展示客户端与权限范围并记录用户决定；已有授权覆盖全部 Scope 时可直接复用。静默认证无法完成时，Certus 会将 `login_required` 或 `consent_required` 和原始 `state` 返回到已登记的精确回调地址；强制重新认证与授权同意都使用 5 分钟有效、绑定完整授权请求且完成后即失效的签名事务。授权码签发记录认证时间，后续 ID Token 始终携带 `auth_time`。
 
-授予 `email` scope 且用户存在邮箱时，ID Token 与 UserInfo 会同时返回 `email` 和布尔型 `email_verified`。本地注册、管理员录入、密码导入及 LDAP 邮箱默认未验证；仅当上游 OIDC 明确声明 `email_verified=true` 且邮箱与当前用户邮箱一致时继承验证状态，邮箱变更会自动重置该状态。
+授予 `email` scope 且用户存在邮箱时，ID Token 与 UserInfo 会同时返回 `email` 和布尔型 `email_verified`。本地注册、管理员录入、密码导入及 LDAP 邮箱默认未验证，可通过一次性验证链接变为已验证；仅当上游 OIDC 明确声明 `email_verified=true` 且邮箱与当前用户邮箱一致时继承验证状态，邮箱变更会自动重置该状态。
 
 刷新令牌支持可选 `scope` 缩减，不允许恢复已经缩减或原始授权未包含的范围。每次刷新、UserInfo 与 Introspection 都重新检查用户状态、登录会话和当前授权；用户退出、会话撤销、用户禁用、密码重置、管理员 MFA 重置或应用授权撤销后，不再签发或接受关联令牌。
 
@@ -510,7 +510,7 @@ $env:CERTUS_REGISTRATION_ENABLED='true'
 $env:CERTUS_REGISTRATION_REQUIRE_EMAIL='true'
 ```
 
-邮箱默认必填并执行格式及唯一性校验；设为 `false` 可允许不填写邮箱。当前阶段创建的账号会立即激活，尚未验证邮箱所有权，也没有自动授予任何接入系统角色。公网开放前应结合后续邮箱验证码和人机校验能力；需要访问 Specus 的新用户仍需由管理员授予对应的客户端角色。
+邮箱默认必填并执行格式及唯一性校验；设为 `false` 可允许不填写邮箱。注册成功且配置了 SMTP 时，Certus 会向该邮箱发送一次性验证链接，验证成功后将 `email_verified` 置为 `true`；发送失败不影响注册完成，用户可在账户安全中心随时重发。新账号不会自动授予任何接入系统角色。需要访问 Specus 的新用户仍需由管理员授予对应的客户端角色。
 
 生产环境启用注册时，`CERTUS_ISSUER` 必须使用 HTTPS。注册表单使用同源 CSRF 防护，只接受内部允许列表中的继续地址，并默认按来源地址限制每小时 5 次：
 
@@ -545,11 +545,28 @@ Content-Type: application/json
 {"to":"operator@example.com"}
 ```
 
-接口不允许调用方自定义主题或正文，避免被滥用为任意邮件转发器。当前 SMTP 层用于连接、认证、标准 MIME 消息构造和测试发送；注册邮箱验证码将在后续注册验证状态机中接入。
+接口不允许调用方自定义主题或正文，避免被滥用为任意邮件转发器。SMTP 层同时用于邮箱验证通知：注册成功、管理员建号、管理员变更用户邮箱后，以及用户通过账户安全中心主动重发时，Certus 会向目标邮箱发送一次性验证链接。
+
+## 邮箱验证
+
+`email_verified` 是 OIDC 语义下"能否向该地址发信"的依据。Certus 本地用户的验证状态机如下：
+
+- **触发发送**：用户自助注册成功、管理员创建用户、管理员变更用户邮箱（邮箱变更会同步重置 `email_verified`）、用户通过 `POST /api/v1/account/email/verification` 主动重发。
+- **验证凭据**：单次使用、只存 SHA-256 哈希，有效期通过 `CERTUS_EMAIL_VERIFICATION_TTL` 配置（默认 30 分钟，同密码重置凭据约定）。新链接生成后旧链接立即失效。
+- **验证动作**：登录状态下打开邮件中的链接（`/account/verify-email?token=…`），页面自动提交 `POST /api/v1/account/email/verify`；凭据与当前邮箱必须一致，验证成功写入 `email_verified=true`。未验证不阻止登录。
+- **状态展示**：账户安全中心 `/account` 展示当前验证状态与重发入口；管理员可在用户详情通过 `POST /api/v1/admin/users/{userID}/email-verification` 手动标记已验证（用于内部导入场景），该操作计入审计。
+
+```powershell
+$env:CERTUS_EMAIL_VERIFICATION_TTL='30m'
+$env:CERTUS_EMAIL_VERIFICATION_RATE_LIMIT='5'
+$env:CERTUS_EMAIL_VERIFICATION_RATE_WINDOW='10m'
+```
+
+发送与验证均按来源地址和用户双重限流；SMTP 未配置时验证邮件不会发出，但账号创建与登录流程不受影响。
 
 ## 请求来源与认证限流
 
-Certus 对注册、密码/LDAP 登录、MFA、OAuth 令牌及元数据端点和设备码查询执行固定窗口限流。登录同时按来源地址和规范化账号计数，MFA 同时按来源地址和用户计数；PostgreSQL 模式使用原子更新在多个实例间共享状态，数据库仅保存主体的 SHA-256，不保存用户名或 IP 明文。限流仓储不可用时认证请求会拒绝继续，避免无保护降级。
+Certus 对注册、密码/LDAP 登录、MFA、OAuth 令牌及元数据端点、设备码查询和邮箱验证执行固定窗口限流。登录同时按来源地址和规范化账号计数，MFA 与邮箱验证同时按来源地址和用户计数；PostgreSQL 模式使用原子更新在多个实例间共享状态，数据库仅保存主体的 SHA-256，不保存用户名或 IP 明文。限流仓储不可用时认证请求会拒绝继续，避免无保护降级。
 
 ```powershell
 $env:CERTUS_LOGIN_SOURCE_RATE_LIMIT='30'
@@ -564,6 +581,8 @@ $env:CERTUS_OAUTH_RATE_LIMIT='600'
 $env:CERTUS_OAUTH_RATE_WINDOW='1m'
 $env:CERTUS_DEVICE_RATE_LIMIT='20'
 $env:CERTUS_DEVICE_RATE_WINDOW='1m'
+$env:CERTUS_EMAIL_VERIFICATION_RATE_LIMIT='5'
+$env:CERTUS_EMAIL_VERIFICATION_RATE_WINDOW='10m'
 ```
 
 将对应的 `*_RATE_LIMIT` 设为 `0` 可单独关闭一类限制。每个窗口必须在 1 秒到 24 小时之间；被限制的响应返回 `429`、`Retry-After` 和 `X-RateLimit-*` 元数据。

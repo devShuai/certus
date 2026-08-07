@@ -16,6 +16,7 @@ type MemoryUserRepository struct {
 	credentials    map[string]PasswordCredential
 	external       map[string]ExternalIdentity
 	passwordResets map[string]PasswordResetToken
+	emailVerifies  map[string]EmailVerificationToken
 }
 
 func NewMemoryUserRepository(users ...User) *MemoryUserRepository {
@@ -24,6 +25,7 @@ func NewMemoryUserRepository(users ...User) *MemoryUserRepository {
 		credentials:    make(map[string]PasswordCredential),
 		external:       make(map[string]ExternalIdentity),
 		passwordResets: make(map[string]PasswordResetToken),
+		emailVerifies:  make(map[string]EmailVerificationToken),
 	}
 	for _, user := range users {
 		repository.users[user.ID] = cloneUser(user)
@@ -57,6 +59,34 @@ func (r *MemoryUserRepository) ConsumePasswordReset(_ context.Context, hash []by
 		}
 	}
 	return "", ErrInvalidResetToken
+}
+
+func (r *MemoryUserRepository) SaveEmailVerification(_ context.Context, token EmailVerificationToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.users[token.UserID]; !ok {
+		return ErrNotFound
+	}
+	for key, current := range r.emailVerifies {
+		if current.UserID == token.UserID {
+			delete(r.emailVerifies, key)
+		}
+	}
+	token.Hash = append([]byte(nil), token.Hash...)
+	r.emailVerifies[string(token.Hash)] = token
+	return nil
+}
+
+func (r *MemoryUserRepository) ConsumeEmailVerification(_ context.Context, hash []byte, now time.Time) (string, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, token := range r.emailVerifies {
+		if bytes.Equal(token.Hash, hash) && token.ExpiresAt.After(now) {
+			delete(r.emailVerifies, key)
+			return token.UserID, token.Email, nil
+		}
+	}
+	return "", "", ErrInvalidVerificationToken
 }
 
 func (r *MemoryUserRepository) ResolveExternalIdentity(_ context.Context, profile ExternalProfile, now time.Time) (User, error) {
@@ -345,6 +375,19 @@ func (r *MemoryUserRepository) Replace(_ context.Context, user User) (User, erro
 		}
 	}
 	r.users[user.ID] = cloneUser(user)
+	return cloneUser(user), nil
+}
+
+func (r *MemoryUserRepository) SetEmailVerified(_ context.Context, userID string, now time.Time) (User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	user, ok := r.users[userID]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	user.EmailVerified = true
+	user.UpdatedAt = now.UTC()
+	r.users[userID] = cloneUser(user)
 	return cloneUser(user), nil
 }
 

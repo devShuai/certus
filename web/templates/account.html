@@ -88,6 +88,15 @@
   </div>
 
   <section class="panel sessions-panel">
+    <div class="section-heading"><div><p class="eyebrow">联系邮箱</p><h2>邮箱验证</h2></div><span id="email-verified-badge" class="badge">读取中</span></div>
+    <p id="email-verified-summary" class="muted">正在读取邮箱验证状态…</p>
+    <p class="muted">已验证的邮箱会被接入系统视为可投递通知的地址；邮箱变更后需要重新验证。</p>
+    <form id="email-verification-form" class="stack">
+      <button type="submit">发送验证邮件</button>
+    </form>
+  </section>
+
+  <section class="panel sessions-panel">
     <div class="section-heading"><div><p class="eyebrow">登录活动</p><h2>活跃会话</h2></div><button id="refresh-sessions" class="secondary" type="button">刷新</button></div>
     <p class="muted">检查登录位置与浏览器，发现异常时立即撤销对应会话。</p>
     <div id="session-list" class="session-list"><p class="empty">正在加载…</p></div>

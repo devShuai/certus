@@ -38,15 +38,17 @@ type Config struct {
 	AuditRetention       time.Duration
 	SigningKeyRetention  time.Duration
 	SigningKeyRotation   time.Duration
+	EmailVerificationTTL time.Duration
 }
 
 type RateLimitConfig struct {
-	LoginSource   ratelimit.Policy
-	LoginIdentity ratelimit.Policy
-	Registration  ratelimit.Policy
-	MFA           ratelimit.Policy
-	OAuth         ratelimit.Policy
-	Device        ratelimit.Policy
+	LoginSource       ratelimit.Policy
+	LoginIdentity     ratelimit.Policy
+	Registration      ratelimit.Policy
+	MFA               ratelimit.Policy
+	OAuth             ratelimit.Policy
+	Device            ratelimit.Policy
+	EmailVerification ratelimit.Policy
 }
 
 type RegistrationConfig struct {
@@ -202,6 +204,17 @@ func Load() (Config, error) {
 	)
 	if err != nil {
 		return Config{}, err
+	}
+	cfg.RateLimits.EmailVerification, err = rateLimitPolicy(
+		"CERTUS_EMAIL_VERIFICATION_RATE_LIMIT", "CERTUS_EMAIL_VERIFICATION_RATE_WINDOW",
+		5, 10*time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.EmailVerificationTTL, err = duration("CERTUS_EMAIL_VERIFICATION_TTL", 30*time.Minute)
+	if err != nil || cfg.EmailVerificationTTL <= 0 {
+		return Config{}, fmt.Errorf("CERTUS_EMAIL_VERIFICATION_TTL must be a positive duration")
 	}
 	if strings.EqualFold(cfg.Environment, "production") &&
 		cfg.DatabaseURL != "" &&
