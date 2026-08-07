@@ -114,7 +114,8 @@ func TestOIDCAuthenticatorUsesPKCEAndValidatesNonce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Subject != "subject-123" || profile.Email == nil || !profile.EmailTrusted {
+	if profile.Subject != "subject-123" || profile.Email == nil ||
+		!profile.EmailTrusted || !profile.EmailVerified {
 		t.Fatalf("unexpected external profile: %#v", profile)
 	}
 

@@ -220,6 +220,10 @@ func TestClientBoundDynamicOIDCLoginRoundTrip(t *testing.T) {
 	if !foundSession {
 		t.Fatal("dynamic OIDC login did not establish a Certus session")
 	}
+	federatedUser, err := users.FindByUsername(context.Background(), "alice")
+	if err != nil || !federatedUser.EmailVerified {
+		t.Fatalf("verified upstream email was not inherited: %#v %v", federatedUser, err)
+	}
 
 	unboundRequest := httptest.NewRequest(
 		http.MethodGet,

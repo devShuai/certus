@@ -100,12 +100,13 @@ func (a *OIDCAuthenticator) Exchange(ctx context.Context, code, nonce, verifier 
 		providerID = "oidc:" + a.config.Issuer
 	}
 	return identity.ExternalProfile{
-		ProviderID:   providerID,
-		Subject:      claims.Subject,
-		Username:     username,
-		DisplayName:  claims.Name,
-		Email:        email,
-		EmailTrusted: claims.EmailVerified,
+		ProviderID:    providerID,
+		Subject:       claims.Subject,
+		Username:      username,
+		DisplayName:   claims.Name,
+		Email:         email,
+		EmailTrusted:  claims.EmailVerified,
+		EmailVerified: claims.EmailVerified,
 		Claims: map[string]any{
 			"issuer": a.config.Issuer,
 		},
