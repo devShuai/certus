@@ -116,6 +116,16 @@ func (s *server) allowEmailVerificationAttempt(w http.ResponseWriter, r *http.Re
 	)
 }
 
+func (s *server) allowClientStatusLookup(w http.ResponseWriter, r *http.Request, clientID string) bool {
+	return s.allowRateLimitedRequest(
+		w, r,
+		"client.status",
+		clientID,
+		s.cfg.RateLimits.ClientStatus,
+		true,
+	)
+}
+
 func (s *server) allowRateLimitedRequest(
 	w http.ResponseWriter,
 	r *http.Request,

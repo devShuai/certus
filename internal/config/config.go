@@ -49,6 +49,7 @@ type RateLimitConfig struct {
 	OAuth             ratelimit.Policy
 	Device            ratelimit.Policy
 	EmailVerification ratelimit.Policy
+	ClientStatus      ratelimit.Policy
 }
 
 type RegistrationConfig struct {
@@ -208,6 +209,13 @@ func Load() (Config, error) {
 	cfg.RateLimits.EmailVerification, err = rateLimitPolicy(
 		"CERTUS_EMAIL_VERIFICATION_RATE_LIMIT", "CERTUS_EMAIL_VERIFICATION_RATE_WINDOW",
 		5, 10*time.Minute,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RateLimits.ClientStatus, err = rateLimitPolicy(
+		"CERTUS_CLIENT_STATUS_RATE_LIMIT", "CERTUS_CLIENT_STATUS_RATE_WINDOW",
+		600, time.Minute,
 	)
 	if err != nil {
 		return Config{}, err

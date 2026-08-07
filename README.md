@@ -476,6 +476,31 @@ GET /api/v1/access/users/{user_id}
 
 令牌中的授权声明是签发时快照；高敏感操作可使用实时查询或 Introspection 缩短权限撤销的生效时延。
 
+### 用户状态查询
+
+接入系统需要确认「用户在 certus 侧是否已被停用」时（如后台任务投递前检查），可使用专用只读端点。它以机密客户端 Basic 认证，**不要求 `roles` scope**，也**不以令牌存在为前提**：
+
+```text
+GET /api/v1/clients/me/users/{user_id}/status
+Authorization: Basic <client_id:client_secret>
+```
+
+```json
+{
+  "sub": "用户 UUID",
+  "status": "active",
+  "email_verified": true,
+  "updated_at": "2026-08-07T10:00:00Z"
+}
+```
+
+- **查询范围以授权关系为界**：仅当该用户对当前客户端存在有效 consent（授权同意，含设备码流程）时才返回 200；未授权、授权已撤销、用户不存在或 `user_id` 格式非法一律返回空 `404`，不区分具体原因，避免变成任意用户存在性探测接口
+- **最小披露**：只返回 `sub`、`status`（`active|locked|disabled`）、`email_verified` 与 `updated_at`，不包含用户名、邮箱等画像字段
+- **限流**：按客户端维度计数（`CERTUS_CLIENT_STATUS_RATE_LIMIT/WINDOW`，默认 600 次/分钟，与 OAuth 元数据端点同量级），纳入现有限流基础设施
+- **审计**：每次查询记录 `user.status_queried` 事件（含客户端、目标用户与成败），供追查谁在何时查询了谁
+
+`status` 返回 `disabled`/`locked` 时，接入系统应暂停该用户的会话外任务（续费提醒、数据同步等）；用户仍可能有活跃令牌，应结合令牌生命周期或 Back-Channel Logout 决定是否撕毁已有会话。
+
 ### 支持方式
 
 - OAuth 2.0：授权码 + PKCE、刷新令牌、客户端凭据、设备码
@@ -566,7 +591,7 @@ $env:CERTUS_EMAIL_VERIFICATION_RATE_WINDOW='10m'
 
 ## 请求来源与认证限流
 
-Certus 对注册、密码/LDAP 登录、MFA、OAuth 令牌及元数据端点、设备码查询和邮箱验证执行固定窗口限流。登录同时按来源地址和规范化账号计数，MFA 与邮箱验证同时按来源地址和用户计数；PostgreSQL 模式使用原子更新在多个实例间共享状态，数据库仅保存主体的 SHA-256，不保存用户名或 IP 明文。限流仓储不可用时认证请求会拒绝继续，避免无保护降级。
+Certus 对注册、密码/LDAP 登录、MFA、OAuth 令牌及元数据端点、设备码查询、邮箱验证和客户端用户状态查询执行固定窗口限流。登录同时按来源地址和规范化账号计数，MFA 与邮箱验证同时按来源地址和用户计数，客户端状态查询按客户端计数；PostgreSQL 模式使用原子更新在多个实例间共享状态，数据库仅保存主体的 SHA-256，不保存用户名或 IP 明文。限流仓储不可用时认证请求会拒绝继续，避免无保护降级。
 
 ```powershell
 $env:CERTUS_LOGIN_SOURCE_RATE_LIMIT='30'
@@ -583,6 +608,8 @@ $env:CERTUS_DEVICE_RATE_LIMIT='20'
 $env:CERTUS_DEVICE_RATE_WINDOW='1m'
 $env:CERTUS_EMAIL_VERIFICATION_RATE_LIMIT='5'
 $env:CERTUS_EMAIL_VERIFICATION_RATE_WINDOW='10m'
+$env:CERTUS_CLIENT_STATUS_RATE_LIMIT='600'
+$env:CERTUS_CLIENT_STATUS_RATE_WINDOW='1m'
 ```
 
 将对应的 `*_RATE_LIMIT` 设为 `0` 可单独关闭一类限制。每个窗口必须在 1 秒到 24 小时之间；被限制的响应返回 `429`、`Retry-After` 和 `X-RateLimit-*` 元数据。
