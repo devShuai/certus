@@ -6,6 +6,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"certus/internal/audit"
@@ -97,6 +98,95 @@ func (s *server) verifyAccountEmail(w http.ResponseWriter, r *http.Request) {
 	s.recordAudit(r, audit.Event{
 		ActorUserID: auditActor(userID),
 		EventType:   "email.verified",
+		Outcome:     audit.OutcomeSuccess,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) changeAccountEmail(w http.ResponseWriter, r *http.Request) {
+	current, ok := s.requireCurrentSession(w, r)
+	if !ok || !s.requireAccountCSRF(w, r) {
+		return
+	}
+	if !s.allowEmailVerificationAttempt(w, r, current.UserID) {
+		return
+	}
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	email := strings.TrimSpace(input.Email)
+	if email == "" {
+		writeProblem(w, http.StatusBadRequest, "invalid_email", "邮箱地址不能为空")
+		return
+	}
+	user, err := s.users.Find(r.Context(), current.UserID)
+	if err != nil {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized", "登录会话无效")
+		return
+	}
+	if user.Email != nil && strings.EqualFold(*user.Email, email) {
+		if user.EmailVerified {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		s.sendChangedEmailVerification(w, r, user)
+		return
+	}
+	updated, err := identity.Replace(user, identity.ReplaceUser{
+		DisplayName: user.DisplayName,
+		Email:       &email,
+		Status:      user.Status,
+	}, s.now().UTC())
+	if errors.Is(err, identity.ErrInvalid) {
+		writeProblem(w, http.StatusBadRequest, "invalid_email", "邮箱地址格式不正确")
+		return
+	}
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_email", err.Error())
+		return
+	}
+	updated, err = s.users.Replace(r.Context(), updated)
+	if errors.Is(err, identity.ErrConflict) {
+		writeProblem(w, http.StatusConflict, "email_conflict", "邮箱已被其他用户使用")
+		return
+	}
+	if errors.Is(err, identity.ErrNotFound) {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized", "登录会话无效")
+		return
+	}
+	if err != nil {
+		s.logger.Error("change account email", "user_id", user.ID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "更新邮箱失败")
+		return
+	}
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(user.ID),
+		EventType:   "email.changed",
+		Outcome:     audit.OutcomeSuccess,
+		Details:     map[string]any{"email": email},
+	})
+	s.sendChangedEmailVerification(w, r, updated)
+}
+
+func (s *server) sendChangedEmailVerification(w http.ResponseWriter, r *http.Request, user identity.User) {
+	if err := s.sendEmailVerification(r.Context(), user); err != nil {
+		s.recordAudit(r, audit.Event{
+			ActorUserID: auditActor(user.ID),
+			EventType:   "email.verification_sent",
+			Outcome:     audit.OutcomeFailure,
+			Details:     map[string]any{"reason": "send_failed"},
+		})
+		s.logger.Warn("send verification email after email change", "user_id", user.ID, "error", err)
+		writeProblem(w, http.StatusBadGateway, "smtp_send_failed", "验证邮件发送失败")
+		return
+	}
+	s.recordAudit(r, audit.Event{
+		ActorUserID: auditActor(user.ID),
+		EventType:   "email.verification_sent",
 		Outcome:     audit.OutcomeSuccess,
 	})
 	w.WriteHeader(http.StatusNoContent)

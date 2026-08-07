@@ -32,11 +32,22 @@ func newEmailVerificationHandler(
 	configure func(*config.Config),
 ) (http.Handler, string, *identity.MemoryUserRepository, *audit.MemoryRepository) {
 	t.Helper()
-	ctx := context.Background()
 	users := identity.NewMemoryUserRepository(user)
+	return newEmailVerificationHandlerWithUsers(t, users, user, sender, configure)
+}
+
+func newEmailVerificationHandlerWithUsers(
+	t *testing.T,
+	users *identity.MemoryUserRepository,
+	sessionUser identity.User,
+	sender mailer.Sender,
+	configure func(*config.Config),
+) (http.Handler, string, *identity.MemoryUserRepository, *audit.MemoryRepository) {
+	t.Helper()
+	ctx := context.Background()
 	sessionRepository := session.NewMemoryRepository()
 	sessionService := session.NewService(sessionRepository, time.Hour)
-	_, currentToken, err := sessionService.Create(ctx, user.ID, "192.0.2.10", "test-agent")
+	_, currentToken, err := sessionService.Create(ctx, sessionUser.ID, "192.0.2.10", "test-agent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +259,163 @@ func TestAccountEmailVerificationConflicts(t *testing.T) {
 	response := issueVerificationRequest(handler, credentials)
 	if response.Code != http.StatusConflict || len(recording.messages) != 0 {
 		t.Fatalf("verified user issue: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func changeEmailRequest(handler http.Handler, credentials accountCredentials, email string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/account/email",
+		bytes.NewBufferString(`{"email":"`+email+`"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	credentials.attach(request)
+	request.Header.Set("X-CSRF-Token", credentials.csrfToken)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func TestAccountChangesEmailAndReVerifies(t *testing.T) {
+	email := "alice@example.com"
+	user, err := identity.NewUser(identity.CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &email, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingMailer{}
+	handler, sessionToken, users, audits := newEmailVerificationHandler(t, user, recording, nil)
+	credentials := accountCSRF(t, handler, sessionToken)
+
+	if response := issueVerificationRequest(handler, credentials); response.Code != http.StatusNoContent {
+		t.Fatalf("issue before change: %d %s", response.Code, response.Body.String())
+	}
+	oldToken := verificationTokenFromMessage(t, recording.messages)
+
+	replacement := "alice+new@example.com"
+	response := changeEmailRequest(handler, credentials, replacement)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("change email: %d %s", response.Code, response.Body.String())
+	}
+	changed, err := users.Find(context.Background(), user.ID)
+	if err != nil || changed.Email == nil || *changed.Email != replacement {
+		t.Fatalf("email was not updated: %#v %v", changed, err)
+	}
+	if changed.EmailVerified {
+		t.Fatalf("email change did not reset verification: %#v", changed)
+	}
+	if len(recording.messages) != 2 || recording.messages[1].To != replacement {
+		t.Fatalf("verification email was not sent to the new address: %#v", recording.messages)
+	}
+	newToken := verificationTokenFromMessage(t, recording.messages[1:])
+
+	response = verifyRequest(handler, credentials, oldToken)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("old token still valid after email change: %d %s", response.Code, response.Body.String())
+	}
+	response = verifyRequest(handler, credentials, newToken)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("verify new address: %d %s", response.Code, response.Body.String())
+	}
+	final, err := users.Find(context.Background(), user.ID)
+	if err != nil || !final.EmailVerified {
+		t.Fatalf("new address was not verified: %#v %v", final, err)
+	}
+	eventTypes := map[string]bool{}
+	if events, err := audits.List(context.Background(), audit.Filter{Limit: 100}); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, event := range events.Items {
+			eventTypes[event.EventType] = true
+		}
+	}
+	if !eventTypes["email.changed"] || !eventTypes["email.verification_sent"] || !eventTypes["email.verified"] {
+		t.Fatalf("missing audit events: %#v", eventTypes)
+	}
+}
+
+func TestAccountEmailChangeRejectsConflict(t *testing.T) {
+	emailA := "alice@example.com"
+	userA, err := identity.NewUser(identity.CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &emailA, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	emailB := "bob@example.com"
+	userB, err := identity.NewUser(identity.CreateUser{
+		Username: "bob", DisplayName: "Bob", Email: &emailB, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := identity.NewMemoryUserRepository(userA, userB)
+	handler, sessionToken, _, _ := newEmailVerificationHandlerWithUsers(t, users, userB, &recordingMailer{}, nil)
+	credentials := accountCSRF(t, handler, sessionToken)
+	response := changeEmailRequest(handler, credentials, emailA)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflicting email change: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAccountEmailChangeRejectsInvalidEmail(t *testing.T) {
+	email := "alice@example.com"
+	user, err := identity.NewUser(identity.CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &email, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, sessionToken, _, _ := newEmailVerificationHandler(t, user, &recordingMailer{}, nil)
+	credentials := accountCSRF(t, handler, sessionToken)
+	for _, invalid := range []string{"", "not-an-email"} {
+		response := changeEmailRequest(handler, credentials, invalid)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid email %q: %d %s", invalid, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestAccountEmailChangeSameVerifiedEmailIsNoOp(t *testing.T) {
+	email := "alice@example.com"
+	user, err := identity.NewUser(identity.CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &email, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingMailer{}
+	handler, sessionToken, users, _ := newEmailVerificationHandler(t, user, recording, nil)
+	credentials := accountCSRF(t, handler, sessionToken)
+	if _, err := users.SetEmailVerified(context.Background(), user.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	response := changeEmailRequest(handler, credentials, email)
+	if response.Code != http.StatusNoContent || len(recording.messages) != 0 {
+		t.Fatalf("same verified email: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAccountEmailChangeRateLimited(t *testing.T) {
+	email := "alice@example.com"
+	user, err := identity.NewUser(identity.CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &email, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingMailer{}
+	handler, sessionToken, _, _ := newEmailVerificationHandler(t, user, recording, func(cfg *config.Config) {
+		cfg.RateLimits.EmailVerification = ratelimit.Policy{Limit: 1, Window: time.Minute}
+	})
+	credentials := accountCSRF(t, handler, sessionToken)
+	if response := changeEmailRequest(handler, credentials, "alice+new@example.com"); response.Code != http.StatusNoContent {
+		t.Fatalf("first change: %d %s", response.Code, response.Body.String())
+	}
+	response := changeEmailRequest(handler, credentials, "alice+other@example.com")
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate-limited change: %d %s", response.Code, response.Body.String())
 	}
 }
 

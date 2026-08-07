@@ -97,7 +97,7 @@ function renderEmailVerification(user) {
   if (!user.email) {
     badge.textContent = "未设置";
     badge.className = "badge disabled";
-    summary.textContent = "当前账号没有邮箱地址，请联系管理员补充后再验证。";
+    summary.textContent = "当前账号没有邮箱地址，请在下方的“修改为”中填写并验证。";
     form.classList.add("hidden");
     return;
   }
@@ -121,6 +121,33 @@ document.querySelector("#email-verification-form").addEventListener("submit", as
   try {
     await accountAPI("/api/v1/account/email/verification", { method: "POST" });
     setAccountStatus("验证邮件已发送，请查收邮箱并点击邮件中的验证链接。", "success");
+  } catch (error) {
+    setAccountStatus(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.querySelector("#email-change-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const email = String(data.get("email") || "").trim();
+  if (!email) {
+    setAccountStatus("请输入新的邮箱地址。", "error");
+    return;
+  }
+  if (!window.confirm(`确定将邮箱修改为 ${email} 吗？修改后需要重新验证邮箱所有权。`)) return;
+  const submit = form.querySelector("button[type='submit']");
+  submit.disabled = true;
+  try {
+    await accountAPI("/api/v1/account/email", {
+      method: "PUT",
+      body: JSON.stringify({ email }),
+    });
+    form.reset();
+    await loadAccount();
+    setAccountStatus("邮箱已更新，验证邮件已发送至新地址，请查收并点击验证链接。", "success");
   } catch (error) {
     setAccountStatus(error.message, "error");
   } finally {

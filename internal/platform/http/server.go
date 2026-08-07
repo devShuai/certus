@@ -345,6 +345,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.HandleFunc("GET /api/v1/account/consents", s.listAccountConsents)
 	mux.HandleFunc("DELETE /api/v1/account/consents/{clientID}", s.revokeAccountConsent)
 	mux.HandleFunc("PUT /api/v1/account/password", s.changeAccountPassword)
+	mux.HandleFunc("PUT /api/v1/account/email", s.changeAccountEmail)
 	mux.HandleFunc("POST /api/v1/account/password/reset", s.resetAccountPassword)
 	mux.HandleFunc("POST /api/v1/account/email/verification", s.issueAccountEmailVerification)
 	mux.HandleFunc("POST /api/v1/account/email/verify", s.verifyAccountEmail)

@@ -576,7 +576,8 @@ Content-Type: application/json
 
 `email_verified` 是 OIDC 语义下"能否向该地址发信"的依据。Certus 本地用户的验证状态机如下：
 
-- **触发发送**：用户自助注册成功、管理员创建用户、管理员变更用户邮箱（邮箱变更会同步重置 `email_verified`）、用户通过 `POST /api/v1/account/email/verification` 主动重发。
+- **触发发送**：用户自助注册成功、管理员创建用户、管理员变更用户邮箱、用户自助改邮箱（`PUT /api/v1/account/email`）、用户通过 `POST /api/v1/account/email/verification` 主动重发。
+- **自助改邮箱**：账户安全中心可自行更换邮箱（登录 + CSRF + 限流保护），修改后 `email_verified` 立即重置、旧验证令牌立即失效，并向新邮箱发送新的验证链接；邮箱唯一性与格式校验同注册，冲突返回 `409`。变更记录 `email.changed` 审计事件。
 - **验证凭据**：单次使用、只存 SHA-256 哈希，有效期通过 `CERTUS_EMAIL_VERIFICATION_TTL` 配置（默认 30 分钟，同密码重置凭据约定）。新链接生成后旧链接立即失效。
 - **验证动作**：登录状态下打开邮件中的链接（`/account/verify-email?token=…`），页面自动提交 `POST /api/v1/account/email/verify`；凭据与当前邮箱必须一致，验证成功写入 `email_verified=true`。未验证不阻止登录。
 - **状态展示**：账户安全中心 `/account` 展示当前验证状态与重发入口；管理员可在用户详情通过 `POST /api/v1/admin/users/{userID}/email-verification` 手动标记已验证（用于内部导入场景），该操作计入审计。
