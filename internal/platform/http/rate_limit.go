@@ -126,6 +126,16 @@ func (s *server) allowClientStatusLookup(w http.ResponseWriter, r *http.Request,
 	)
 }
 
+func (s *server) allowClientCapabilitiesLookup(w http.ResponseWriter, r *http.Request, clientID string) bool {
+	return s.allowRateLimitedRequest(
+		w, r,
+		"client.capabilities",
+		clientID,
+		s.cfg.RateLimits.ClientStatus,
+		true,
+	)
+}
+
 func (s *server) allowRateLimitedRequest(
 	w http.ResponseWriter,
 	r *http.Request,

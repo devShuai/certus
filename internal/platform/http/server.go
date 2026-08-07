@@ -338,6 +338,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/users/{userID}/roles", s.requireAdmin(administration.PermissionAccessRead, http.HandlerFunc(s.listUserRoles)))
 	mux.Handle("PUT /api/v1/admin/users/{userID}/roles", s.requireAdmin(administration.PermissionAccessWrite, http.HandlerFunc(s.replaceUserRoles)))
 	mux.HandleFunc("GET /api/v1/access/users/{userID}", s.getEffectiveAccess)
+	mux.HandleFunc("GET /api/v1/clients/me/capabilities", s.clientCapabilities)
 	mux.HandleFunc("GET /api/v1/clients/me/users/{userID}/status", s.clientUserStatus)
 	mux.HandleFunc("GET /api/v1/account/profile", s.getAccountProfile)
 	mux.HandleFunc("GET /api/v1/account/sessions", s.listAccountSessions)
