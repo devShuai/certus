@@ -693,9 +693,14 @@ func (r *UserRepository) SaveEmailVerification(ctx context.Context, token identi
 	return nil
 }
 
-func (r *UserRepository) ConsumeEmailVerification(ctx context.Context, hash []byte, userID string, now time.Time) (string, string, error) {
-	var verifiedUserID, email string
-	err := r.pool.QueryRow(ctx, `
+func (r *UserRepository) VerifyEmail(ctx context.Context, hash []byte, userID string, now time.Time) (string, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin email verification: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var tokenUserID, email string
+	err = tx.QueryRow(ctx, `
 		UPDATE email_verification_tokens
 		SET consumed_at = $2
 		WHERE token_hash = $1
@@ -704,14 +709,33 @@ func (r *UserRepository) ConsumeEmailVerification(ctx context.Context, hash []by
 		  AND expires_at > $2
 		RETURNING user_id::text, email`,
 		hash, now, userID,
-	).Scan(&verifiedUserID, &email)
+	).Scan(&tokenUserID, &email)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", identity.ErrInvalidVerificationToken
+		return "", identity.ErrInvalidVerificationToken
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("consume email verification token: %w", err)
+		return "", fmt.Errorf("consume email verification token: %w", err)
 	}
-	return verifiedUserID, email, nil
+	var verifiedUserID string
+	err = tx.QueryRow(ctx, `
+		UPDATE users
+		SET email_verified = true, updated_at = $3
+		WHERE id = $1 AND lower(email) = lower($2)
+		RETURNING id::text`,
+		tokenUserID, email, now.UTC(),
+	).Scan(&verifiedUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The address changed since issuance: roll back so the token is not
+		// left consumed without verifying the current address.
+		return "", identity.ErrInvalidVerificationToken
+	}
+	if err != nil {
+		return "", fmt.Errorf("verify user email: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit email verification: %w", err)
+	}
+	return verifiedUserID, nil
 }
 
 type userScanner interface {

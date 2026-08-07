@@ -77,16 +77,24 @@ func (r *MemoryUserRepository) SaveEmailVerification(_ context.Context, token Em
 	return nil
 }
 
-func (r *MemoryUserRepository) ConsumeEmailVerification(_ context.Context, hash []byte, userID string, now time.Time) (string, string, error) {
+func (r *MemoryUserRepository) VerifyEmail(_ context.Context, hash []byte, userID string, now time.Time) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for key, token := range r.emailVerifies {
-		if bytes.Equal(token.Hash, hash) && token.UserID == userID && token.ExpiresAt.After(now) {
-			delete(r.emailVerifies, key)
-			return token.UserID, token.Email, nil
+		if !bytes.Equal(token.Hash, hash) || token.UserID != userID || !token.ExpiresAt.After(now) {
+			continue
 		}
+		user, ok := r.users[userID]
+		if !ok || user.Email == nil || !strings.EqualFold(*user.Email, token.Email) {
+			return "", ErrInvalidVerificationToken
+		}
+		delete(r.emailVerifies, key)
+		user.EmailVerified = true
+		user.UpdatedAt = now.UTC()
+		r.users[userID] = cloneUser(user)
+		return userID, nil
 	}
-	return "", "", ErrInvalidVerificationToken
+	return "", ErrInvalidVerificationToken
 }
 
 func (r *MemoryUserRepository) ResolveExternalIdentity(_ context.Context, profile ExternalProfile, now time.Time) (User, error) {

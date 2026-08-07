@@ -25,7 +25,7 @@ type EmailVerificationToken struct {
 
 type EmailVerificationRepository interface {
 	SaveEmailVerification(context.Context, EmailVerificationToken) error
-	ConsumeEmailVerification(context.Context, []byte, string, time.Time) (string, string, error)
+	VerifyEmail(context.Context, []byte, string, time.Time) (string, error)
 }
 
 type EmailVerificationService struct {
@@ -77,29 +77,21 @@ func (s *EmailVerificationService) Issue(ctx context.Context, userID string, lif
 	return raw, nil
 }
 
-// Verify consumes a token on behalf of expectedUserID. The token is bound to
-// the account it was issued for: consuming it under any other user ID fails
-// without consuming the token, so a session can never verify another
-// account's email.
+// Verify consumes a token on behalf of expectedUserID in a single atomic
+// repository operation: the token must belong to that account and still
+// match the account's current email. The token is bound to the account it
+// was issued for, so consuming it under any other user ID fails without
+// consuming the token; if the address changed since issuance, the whole
+// operation is rolled back and the token remains unconsumed.
 func (s *EmailVerificationService) Verify(ctx context.Context, token, expectedUserID string) (string, error) {
 	if s.verifications == nil || strings.TrimSpace(token) == "" {
 		return "", ErrInvalidVerificationToken
 	}
-	userID, email, err := s.verifications.ConsumeEmailVerification(
+	userID, err := s.verifications.VerifyEmail(
 		ctx, security.HashToken(token), expectedUserID, s.now().UTC(),
 	)
 	if err != nil {
 		return "", ErrInvalidVerificationToken
-	}
-	user, err := s.repository.Find(ctx, userID)
-	if err != nil {
-		return "", err
-	}
-	if user.Email == nil || !strings.EqualFold(*user.Email, email) {
-		return "", ErrInvalidVerificationToken
-	}
-	if _, err := s.repository.SetEmailVerified(ctx, userID, s.now().UTC()); err != nil {
-		return "", err
 	}
 	return userID, nil
 }

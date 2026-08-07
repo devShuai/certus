@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -110,6 +111,95 @@ func TestEmailVerificationRejectsTokenAfterEmailChange(t *testing.T) {
 	}
 	if _, err := service.Verify(context.Background(), token, user.ID); !errors.Is(err, ErrInvalidVerificationToken) {
 		t.Fatalf("token for previous email returned %v", err)
+	}
+	verified, err := repository.Find(context.Background(), user.ID)
+	if err != nil || verified.EmailVerified {
+		t.Fatalf("changed email was marked verified: %#v %v", verified, err)
+	}
+}
+
+func TestEmailVerificationEmailMismatchDoesNotConsumeToken(t *testing.T) {
+	email := "alice@example.com"
+	user, err := NewUser(CreateUser{Username: "alice", DisplayName: "Alice", Email: &email}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := NewMemoryUserRepository(user)
+	service := NewEmailVerificationService(repository)
+
+	token, err := service.Issue(context.Background(), user.ID, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := "alice+new@example.com"
+	updated, err := Replace(user, ReplaceUser{DisplayName: "Alice", Email: &replacement, Status: UserActive}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Replace(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Verify(context.Background(), token, user.ID); !errors.Is(err, ErrInvalidVerificationToken) {
+		t.Fatalf("token for previous email returned %v", err)
+	}
+	restored, err := Replace(updated, ReplaceUser{DisplayName: "Alice", Email: &email, Status: UserActive}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Replace(context.Background(), restored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Verify(context.Background(), token, user.ID); err != nil {
+		t.Fatalf("token was consumed by the failed verification: %v", err)
+	}
+}
+
+func TestEmailVerificationConcurrentWithEmailChange(t *testing.T) {
+	for iteration := 0; iteration < 25; iteration++ {
+		email := "alice@example.com"
+		user, err := NewUser(CreateUser{Username: "alice", DisplayName: "Alice", Email: &email}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		repository := NewMemoryUserRepository(user)
+		service := NewEmailVerificationService(repository)
+		token, err := service.Issue(context.Background(), user.ID, 30*time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replacement := "alice+new@example.com"
+		ctx := context.Background()
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			updated, err := Replace(user, ReplaceUser{DisplayName: "Alice", Email: &replacement, Status: UserActive}, time.Now())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := repository.Replace(ctx, updated); err != nil {
+				t.Error(err)
+			}
+		}()
+		go func() {
+			defer wait.Done()
+			_, _ = service.Verify(ctx, token, user.ID)
+		}()
+		wait.Wait()
+		final, err := repository.Find(ctx, user.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Whatever interleaving happened, ownership of the *current* address
+		// must never be claimed: the change resets verification and the old
+		// token can never verify the new address.
+		if final.EmailVerified {
+			t.Fatalf("iteration %d: email ownership invariant broken: %#v", iteration, final)
+		}
+		if final.Email == nil || !strings.EqualFold(*final.Email, replacement) {
+			t.Fatalf("iteration %d: email change was lost: %#v", iteration, final)
+		}
 	}
 }
 
