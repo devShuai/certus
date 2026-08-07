@@ -2,6 +2,8 @@ package httpserver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -129,6 +131,80 @@ func TestTokenIntrospectionAndRevocation(t *testing.T) {
 			t.Fatalf("discovery missing %s: %s", endpoint, discovery.Body.String())
 		}
 	}
+}
+
+func TestOAuthClientBasicDecodesFormEncodedCredentials(t *testing.T) {
+	registered, _, err := client.New(client.CreateClient{
+		ID:              "encoded-basic-client",
+		Name:            "Encoded Basic Client",
+		ApplicationType: client.ApplicationConfidential,
+		Protocols:       []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:      []client.GrantType{client.GrantClientCredentials},
+		AllowedScopes:   []string{"api.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "secret-with_under.score"
+	hash := sha256.Sum256([]byte(secret))
+	registered.SecretHash = hash[:]
+	handler := NewWithClients(
+		config.Config{Issuer: "https://auth.example.com"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		client.NewMemoryRepository(registered),
+	)
+
+	form := url.Values{
+		"grant_type": {string(client.GrantClientCredentials)},
+		"scope":      {"api.read"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	encodedClientID := oauthBasicFormEncode(registered.ID)
+	encodedSecret := oauthBasicFormEncode(secret)
+	credentials := base64.StdEncoding.EncodeToString([]byte(encodedClientID + ":" + encodedSecret))
+	request.Header.Set("Authorization", "Basic "+credentials)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("form-encoded client_secret_basic was rejected: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestOAuthClientBasicRejectsInvalidPercentEncoding(t *testing.T) {
+	handler := New(
+		config.Config{Issuer: "https://auth.example.com"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	form := url.Values{"grant_type": {string(client.GrantClientCredentials)}}
+	request := httptest.NewRequest(http.MethodPost, "/oauth2/token", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	malformedSecret := "secret%ZZ"
+	credentials := base64.StdEncoding.EncodeToString([]byte("encoded-basic-client:" + malformedSecret))
+	request.Header.Set("Authorization", "Basic "+credentials)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid percent encoding returned %d, want %d: %s", response.Code, http.StatusUnauthorized, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"invalid_client"`) {
+		t.Fatalf("invalid percent encoding did not return invalid_client: %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), malformedSecret) {
+		t.Fatalf("invalid client response exposed the submitted credential: %s", response.Body.String())
+	}
+}
+
+func oauthBasicFormEncode(value string) string {
+	return strings.NewReplacer(
+		"-", "%2D",
+		"_", "%5F",
+		".", "%2E",
+		"~", "%7E",
+	).Replace(url.QueryEscape(value))
 }
 
 func TestCrossClientAccessTokenIntrospection(t *testing.T) {

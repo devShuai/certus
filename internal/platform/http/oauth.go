@@ -583,7 +583,11 @@ func (s *server) authenticateOAuthClient(w http.ResponseWriter, r *http.Request)
 		return client.Client{}, false
 	}
 	formClientID := strings.TrimSpace(r.PostForm.Get("client_id"))
-	basicID, basicSecret, usedBasic := r.BasicAuth()
+	basicID, basicSecret, usedBasic, basicErr := oauthClientBasicCredentials(r)
+	if basicErr != nil {
+		s.writeInvalidOAuthClient(w, client.TokenEndpointAuthSecretBasic)
+		return client.Client{}, false
+	}
 	usedPost := len(secrets) == 1
 	if usedBasic && usedPost {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "multiple client authentication methods are not allowed")
@@ -649,8 +653,8 @@ func (s *server) authenticateConfidentialOAuthClient(w http.ResponseWriter, r *h
 }
 
 func (s *server) authenticateConfidentialOAuthClientBasic(w http.ResponseWriter, r *http.Request) (client.Client, bool) {
-	clientID, secret, ok := r.BasicAuth()
-	if !ok {
+	clientID, secret, ok, err := oauthClientBasicCredentials(r)
+	if !ok || err != nil {
 		w.Header().Set("WWW-Authenticate", `Basic realm="certus-access"`)
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "confidential client authentication is required")
 		return client.Client{}, false
@@ -666,6 +670,22 @@ func (s *server) authenticateConfidentialOAuthClientBasic(w http.ResponseWriter,
 		return client.Client{}, false
 	}
 	return registered, true
+}
+
+func oauthClientBasicCredentials(r *http.Request) (clientID, secret string, used bool, err error) {
+	encodedClientID, encodedSecret, used := r.BasicAuth()
+	if !used {
+		return "", "", false, nil
+	}
+	clientID, err = url.QueryUnescape(encodedClientID)
+	if err != nil {
+		return "", "", true, err
+	}
+	secret, err = url.QueryUnescape(encodedSecret)
+	if err != nil {
+		return "", "", true, err
+	}
+	return clientID, secret, true, nil
 }
 
 func (s *server) introspect(w http.ResponseWriter, r *http.Request) {
