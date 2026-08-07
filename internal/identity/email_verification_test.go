@@ -24,7 +24,7 @@ func TestEmailVerificationIssuesAndVerifies(t *testing.T) {
 	if token == "" {
 		t.Fatal("expected a raw verification token")
 	}
-	userID, err := service.Verify(context.Background(), token)
+	userID, err := service.Verify(context.Background(), token, user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,10 +53,10 @@ func TestEmailVerificationTokenIsSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Verify(context.Background(), token); err != nil {
+	if _, err := service.Verify(context.Background(), token, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Verify(context.Background(), token); !errors.Is(err, ErrInvalidVerificationToken) {
+	if _, err := service.Verify(context.Background(), token, user.ID); !errors.Is(err, ErrInvalidVerificationToken) {
 		t.Fatalf("reused token returned %v", err)
 	}
 }
@@ -82,7 +82,7 @@ func TestEmailVerificationRejectsExpiredToken(t *testing.T) {
 		}
 	}
 	repository.mu.Unlock()
-	if _, err := service.Verify(context.Background(), token); !errors.Is(err, ErrInvalidVerificationToken) {
+	if _, err := service.Verify(context.Background(), token, user.ID); !errors.Is(err, ErrInvalidVerificationToken) {
 		t.Fatalf("expired token returned %v", err)
 	}
 }
@@ -108,7 +108,7 @@ func TestEmailVerificationRejectsTokenAfterEmailChange(t *testing.T) {
 	if _, err := repository.Replace(context.Background(), updated); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Verify(context.Background(), token); !errors.Is(err, ErrInvalidVerificationToken) {
+	if _, err := service.Verify(context.Background(), token, user.ID); !errors.Is(err, ErrInvalidVerificationToken) {
 		t.Fatalf("token for previous email returned %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func TestEmailVerificationRejectsAlreadyVerifiedUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Verify(context.Background(), token); err != nil {
+	if _, err := service.Verify(context.Background(), token, user.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Issue(context.Background(), user.ID, 30*time.Minute); !errors.Is(err, ErrEmailAlreadyVerified) {
@@ -167,11 +167,45 @@ func TestEmailVerificationReplacesActiveToken(t *testing.T) {
 	if first == second {
 		t.Fatal("expected distinct tokens")
 	}
-	if _, err := service.Verify(context.Background(), first); !errors.Is(err, ErrInvalidVerificationToken) {
+	if _, err := service.Verify(context.Background(), first, user.ID); !errors.Is(err, ErrInvalidVerificationToken) {
 		t.Fatalf("superseded token returned %v", err)
 	}
-	if _, err := service.Verify(context.Background(), second); err != nil {
+	if _, err := service.Verify(context.Background(), second, user.ID); err != nil {
 		t.Fatalf("latest token failed: %v", err)
+	}
+}
+
+func TestEmailVerificationRejectsOtherUsersToken(t *testing.T) {
+	emailA := "alice@example.com"
+	userA, err := NewUser(CreateUser{Username: "alice", DisplayName: "Alice", Email: &emailA}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	emailB := "bob@example.com"
+	userB, err := NewUser(CreateUser{Username: "bob", DisplayName: "Bob", Email: &emailB}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := NewMemoryUserRepository(userA, userB)
+	service := NewEmailVerificationService(repository)
+
+	token, err := service.Issue(context.Background(), userA.ID, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Verify(context.Background(), token, userB.ID); !errors.Is(err, ErrInvalidVerificationToken) {
+		t.Fatalf("cross-account verification returned %v", err)
+	}
+	userBVerified, err := repository.Find(context.Background(), userB.ID)
+	if err != nil || userBVerified.EmailVerified {
+		t.Fatalf("cross-account verification changed the session user: %#v", userBVerified)
+	}
+	userAVerified, err := repository.Find(context.Background(), userA.ID)
+	if err != nil || userAVerified.EmailVerified {
+		t.Fatalf("cross-account verification changed the token owner: %#v", userAVerified)
+	}
+	if _, err := service.Verify(context.Background(), token, userA.ID); err != nil {
+		t.Fatalf("token was consumed by the wrong account: %v", err)
 	}
 }
 
@@ -183,7 +217,7 @@ func TestEmailVerificationRejectsEmptyToken(t *testing.T) {
 	}
 	service := NewEmailVerificationService(NewMemoryUserRepository(user))
 	for _, token := range []string{"", "   ", "not-a-real-token"} {
-		if _, err := service.Verify(context.Background(), token); !errors.Is(err, ErrInvalidVerificationToken) {
+		if _, err := service.Verify(context.Background(), token, user.ID); !errors.Is(err, ErrInvalidVerificationToken) {
 			t.Fatalf("token %q returned %v", token, err)
 		}
 	}

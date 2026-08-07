@@ -693,24 +693,25 @@ func (r *UserRepository) SaveEmailVerification(ctx context.Context, token identi
 	return nil
 }
 
-func (r *UserRepository) ConsumeEmailVerification(ctx context.Context, hash []byte, now time.Time) (string, string, error) {
-	var userID, email string
+func (r *UserRepository) ConsumeEmailVerification(ctx context.Context, hash []byte, userID string, now time.Time) (string, string, error) {
+	var verifiedUserID, email string
 	err := r.pool.QueryRow(ctx, `
 		UPDATE email_verification_tokens
 		SET consumed_at = $2
 		WHERE token_hash = $1
+		  AND user_id = $3
 		  AND consumed_at IS NULL
 		  AND expires_at > $2
 		RETURNING user_id::text, email`,
-		hash, now,
-	).Scan(&userID, &email)
+		hash, now, userID,
+	).Scan(&verifiedUserID, &email)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", identity.ErrInvalidVerificationToken
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("consume email verification token: %w", err)
 	}
-	return userID, email, nil
+	return verifiedUserID, email, nil
 }
 
 type userScanner interface {

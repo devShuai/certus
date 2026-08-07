@@ -78,7 +78,7 @@ func (s *server) verifyAccountEmail(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	userID, err := s.verifications.Verify(r.Context(), input.Token)
+	userID, err := s.verifications.Verify(r.Context(), input.Token, current.UserID)
 	if errors.Is(err, identity.ErrInvalidVerificationToken) {
 		s.recordAudit(r, audit.Event{
 			ActorUserID: auditActor(current.UserID),

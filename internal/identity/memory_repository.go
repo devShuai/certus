@@ -77,11 +77,11 @@ func (r *MemoryUserRepository) SaveEmailVerification(_ context.Context, token Em
 	return nil
 }
 
-func (r *MemoryUserRepository) ConsumeEmailVerification(_ context.Context, hash []byte, now time.Time) (string, string, error) {
+func (r *MemoryUserRepository) ConsumeEmailVerification(_ context.Context, hash []byte, userID string, now time.Time) (string, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for key, token := range r.emailVerifies {
-		if bytes.Equal(token.Hash, hash) && token.ExpiresAt.After(now) {
+		if bytes.Equal(token.Hash, hash) && token.UserID == userID && token.ExpiresAt.After(now) {
 			delete(r.emailVerifies, key)
 			return token.UserID, token.Email, nil
 		}

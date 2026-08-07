@@ -25,7 +25,7 @@ type EmailVerificationToken struct {
 
 type EmailVerificationRepository interface {
 	SaveEmailVerification(context.Context, EmailVerificationToken) error
-	ConsumeEmailVerification(context.Context, []byte, time.Time) (string, string, error)
+	ConsumeEmailVerification(context.Context, []byte, string, time.Time) (string, string, error)
 }
 
 type EmailVerificationService struct {
@@ -77,11 +77,17 @@ func (s *EmailVerificationService) Issue(ctx context.Context, userID string, lif
 	return raw, nil
 }
 
-func (s *EmailVerificationService) Verify(ctx context.Context, token string) (string, error) {
+// Verify consumes a token on behalf of expectedUserID. The token is bound to
+// the account it was issued for: consuming it under any other user ID fails
+// without consuming the token, so a session can never verify another
+// account's email.
+func (s *EmailVerificationService) Verify(ctx context.Context, token, expectedUserID string) (string, error) {
 	if s.verifications == nil || strings.TrimSpace(token) == "" {
 		return "", ErrInvalidVerificationToken
 	}
-	userID, email, err := s.verifications.ConsumeEmailVerification(ctx, security.HashToken(token), s.now().UTC())
+	userID, email, err := s.verifications.ConsumeEmailVerification(
+		ctx, security.HashToken(token), expectedUserID, s.now().UTC(),
+	)
 	if err != nil {
 		return "", ErrInvalidVerificationToken
 	}

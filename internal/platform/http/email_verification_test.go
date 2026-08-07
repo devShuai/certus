@@ -322,6 +322,47 @@ func TestAccountEmailVerificationRateLimited(t *testing.T) {
 	}
 }
 
+func TestAccountEmailVerifyRejectsCrossAccountToken(t *testing.T) {
+	emailA := "alice@example.com"
+	userA, err := identity.NewUser(identity.CreateUser{
+		Username: "alice", DisplayName: "Alice", Email: &emailA, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	emailB := "bob@example.com"
+	userB, err := identity.NewUser(identity.CreateUser{
+		Username: "bob", DisplayName: "Bob", Email: &emailB, Status: identity.UserActive,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingMailer{}
+	handler, sessionTokenA, users, _ := newEmailVerificationHandler(t, userA, recording, nil)
+	handlerB, sessionTokenB, _, _ := newEmailVerificationHandler(t, userB, recording, nil)
+	csrfA := accountCSRF(t, handler, sessionTokenA)
+	csrfB := accountCSRF(t, handlerB, sessionTokenB)
+
+	if response := issueVerificationRequest(handler, csrfA); response.Code != http.StatusNoContent {
+		t.Fatalf("issue for alice: %d %s", response.Code, response.Body.String())
+	}
+	token := verificationTokenFromMessage(t, recording.messages)
+
+	response := verifyRequest(handlerB, csrfB, token)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("cross-account verify: %d %s", response.Code, response.Body.String())
+	}
+	alice, err := users.Find(context.Background(), userA.ID)
+	if err != nil || alice.EmailVerified {
+		t.Fatalf("cross-account verify changed alice: %#v %v", alice, err)
+	}
+
+	response = verifyRequest(handler, csrfA, token)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("token was consumed by the wrong session: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestAccountEmailVerificationRejectsInvalidToken(t *testing.T) {
 	email := "alice@example.com"
 	user, err := identity.NewUser(identity.CreateUser{
