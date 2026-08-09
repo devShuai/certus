@@ -3,6 +3,7 @@ package httpserver
 import (
 	"errors"
 	"net/http"
+	"slices"
 
 	"certus/internal/audit"
 	"certus/internal/identity"
@@ -67,12 +68,24 @@ func (s *server) clientUserStatus(w http.ResponseWriter, r *http.Request) {
 		Outcome:   audit.OutcomeSuccess,
 		Details:   map[string]any{"user_id": user.ID},
 	})
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"sub":            user.ID,
 		"status":         user.Status,
 		"email_verified": user.EmailVerified,
 		"updated_at":     user.UpdatedAt,
-	})
+	}
+	// #10: email_verified on its own is a boolean detached from the address it
+	// describes. A background job holding no ID Token cannot tell whether a
+	// `true` refers to the address it has on file or to a newer one the user
+	// switched to, so it either re-authorises mail to a stale address or (as
+	// conspectus does) falls back to an updated_at heuristic that misfires on
+	// every unrelated profile edit. Returning the pair lets the caller match
+	// them. Gated on the client's own email scope, matching what the ID Token
+	// and UserInfo already hand this same client.
+	if user.Email != nil && slices.Contains(registered.AllowedScopes, "email") {
+		body["email"] = *user.Email
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *server) recordClientStatusQuery(r *http.Request, clientID, userID, reason string) {

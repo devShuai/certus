@@ -138,6 +138,9 @@ func TestClientQueriesUserStatusWithConsent(t *testing.T) {
 		body.UpdatedAt.IsZero() {
 		t.Fatalf("unexpected status response: %#v", body)
 	}
+	// This user has no address at all, so no email field may appear regardless
+	// of scope; the scope-gated pairing itself is covered by the two tests
+	// below. username stays out of this endpoint unconditionally.
 	if strings.Contains(response.Body.String(), `"username"`) ||
 		strings.Contains(response.Body.String(), `"email"`) {
 		t.Fatalf("status response leaks profile fields: %s", response.Body.String())
@@ -154,6 +157,96 @@ func TestClientQueriesUserStatusWithConsent(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("missing user.status_queried audit event")
+	}
+}
+
+// verifiedUser builds a user whose address is already verified, the shape the
+// pairing in #10 is about.
+func verifiedUser(t *testing.T, address string) identity.User {
+	t.Helper()
+	user, err := identity.NewUser(identity.CreateUser{
+		Username: "alice", DisplayName: "Alice", Status: identity.UserActive, Email: &address,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.EmailVerified = true
+	return user
+}
+
+func statusBody(t *testing.T, response *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	if response.Code != http.StatusOK {
+		t.Fatalf("status query: %d %s", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// #10: a background job holds no ID Token, so email_verified is only usable if
+// it arrives together with the address it describes — otherwise the caller
+// cannot tell a `true` about its own stored address from a `true` about a newer
+// one the user switched to, and re-authorises mail to a stale address.
+func TestClientStatusPairsEmailWithVerification(t *testing.T) {
+	registered, secret, err := client.New(client.CreateClient{
+		ID:              "finance",
+		Name:            "Finance",
+		ApplicationType: client.ApplicationConfidential,
+		Protocols:       []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:      []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken},
+		LoginMethods:    []client.LoginMethod{client.LoginPassword},
+		RedirectURIs:    []string{"https://finance.example.com/callback"},
+		AllowedScopes:   []string{"openid", "profile", "email"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := verifiedUser(t, "alice@example.com")
+	handler, _, _, _ := newClientStatusHandler(t, registered, user, true, nil)
+
+	body := statusBody(t, statusRequest(handler, registered.ID, secret, user.ID))
+	if body["email"] != "alice@example.com" {
+		t.Fatalf("expected the address alongside its verification bit: %#v", body)
+	}
+	if body["email_verified"] != true {
+		t.Fatalf("expected email_verified to survive: %#v", body)
+	}
+	// The endpoint stays minimal otherwise.
+	if _, ok := body["username"]; ok {
+		t.Fatalf("status response leaks username: %#v", body)
+	}
+}
+
+// The address is gated on the client's own email scope, matching what the ID
+// Token and UserInfo already hand this same client — no wider disclosure.
+func TestClientStatusOmitsEmailWithoutEmailScope(t *testing.T) {
+	registered, secret, err := client.New(client.CreateClient{
+		ID:              "finance",
+		Name:            "Finance",
+		ApplicationType: client.ApplicationConfidential,
+		Protocols:       []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:      []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken},
+		LoginMethods:    []client.LoginMethod{client.LoginPassword},
+		RedirectURIs:    []string{"https://finance.example.com/callback"},
+		AllowedScopes:   []string{"openid", "profile"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := verifiedUser(t, "alice@example.com")
+	handler, _, _, _ := newClientStatusHandler(t, registered, user, true, nil)
+
+	body := statusBody(t, statusRequest(handler, registered.ID, secret, user.ID))
+	if _, ok := body["email"]; ok {
+		t.Fatalf("address returned to a client without the email scope: %#v", body)
+	}
+	// email_verified predates #10 and stays put; dropping it would break
+	// clients that only ever read the bit.
+	if body["email_verified"] != true {
+		t.Fatalf("expected email_verified to remain: %#v", body)
 	}
 }
 

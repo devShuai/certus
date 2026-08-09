@@ -489,13 +489,15 @@ Authorization: Basic <client_id:client_secret>
 {
   "sub": "用户 UUID",
   "status": "active",
+  "email": "alice@example.com",
   "email_verified": true,
   "updated_at": "2026-08-07T10:00:00Z"
 }
 ```
 
 - **查询范围以授权关系为界**：仅当该用户对当前客户端存在有效 consent（授权同意，含设备码流程）时才返回 200；未授权、授权已撤销、用户不存在或 `user_id` 格式非法一律返回空 `404`，不区分具体原因，避免变成任意用户存在性探测接口
-- **最小披露**：只返回 `sub`、`status`（`active|locked|disabled`）、`email_verified` 与 `updated_at`，不包含用户名、邮箱等画像字段
+- **最小披露**：只返回 `sub`、`status`（`active|locked|disabled`）、`email` / `email_verified` 与 `updated_at`，不包含用户名等其余画像字段
+- **`email` 与 `email_verified` 成对返回**：`email_verified` 单独出现时是一个脱离了所指地址的布尔值——后台任务手上没有 ID Token，无法判断这个 `true` 说的是自己本地留存的地址，还是用户改到的新地址，于是要么给旧地址重新授权发信，要么退回到 `updated_at` 启发式（任何一次无关的画像编辑都会误触发）。仅当客户端的 `allowed_scopes` 含 `email` 且用户确有地址时返回该字段，与 ID Token / UserInfo 下发同一地址的条件一致，不扩大披露面。接入方应「本地快照地址 == 响应地址 且 `email_verified=true`」才放行发信
 - **限流**：按客户端维度计数（`CERTUS_CLIENT_STATUS_RATE_LIMIT/WINDOW`，默认 600 次/分钟，与 OAuth 元数据端点同量级），纳入现有限流基础设施
 - **审计**：已认证客户端的每次查询记录 `user.status_queried` 事件（含客户端、目标用户与结果），限流拒绝与后端异常同样记录（`rate_limited` / `consent_unavailable` / `storage_error`）；客户端认证失败单独记录为 `client.authentication_failed`，被冒用的 client ID 只作为声称身份出现在详情中，不会被记为已认证主体
 
