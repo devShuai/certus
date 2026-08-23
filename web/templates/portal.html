@@ -9,11 +9,14 @@
   <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
-<main class="shell">
-  <section class="card wide">
+<body class="portal-body">
+<main class="portal-shell">
+  <section class="portal-card">
     <div class="portal-header">
-      <img class="app-logo" src="/static/logo-animated.svg" alt="certus 统一认证中心" width="280" height="64">
+      <picture class="portal-logo">
+        <source media="(prefers-color-scheme: dark)" srcset="/static/logo-dark.svg">
+        <img class="app-logo" src="/static/logo-animated.svg" alt="certus 统一认证中心" width="280" height="64">
+      </picture>
       {{if .User}}
       <div class="account-menu">
         <span><strong>{{.User.DisplayName}}</strong><small>{{.User.Username}}</small></span>
@@ -25,16 +28,52 @@
       <a class="button secondary" href="/login?continue=%2Fportal">登录</a>
       {{end}}
     </div>
-    <p class="eyebrow">可信身份 · 已接入系统</p>
-    <h1>中间落地页</h1>
-    <p class="muted">在这里选择已接入 Certus 的系统，并按其配置继续安全登录。</p>
-    {{range .Clients}}{{if .Enabled}}
-    <div class="system">
-      {{if .FaviconURL}}<img class="system-favicon" src="{{.FaviconURL}}" alt="" width="40" height="40" referrerpolicy="no-referrer">{{else}}<span class="system-icon">{{slice .Name 0 1}}</span>{{end}}
-      <span><strong>{{.Name}}</strong><small>{{.Description}}</small></span>
-      {{if .LaunchURI}}<a class="button" href="{{.LaunchURI}}">登录</a>{{else}}<span class="button secondary" aria-disabled="true">未配置入口</span>{{end}}
+    <div class="portal-hero">
+      <div>
+        <p class="eyebrow">可信身份 · 应用门户</p>
+        <h1>选择要进入的系统</h1>
+        <p class="muted">从统一入口安全访问已接入 Certus 的应用。</p>
+      </div>
+      <div class="portal-count" aria-label="接入系统数量">
+        <strong>{{len .Clients}}</strong>
+        <span>个接入系统</span>
+      </div>
     </div>
-    {{end}}{{else}}<p class="notice">暂未配置接入系统。</p>{{end}}
+    <div class="portal-system-grid">
+      {{range .Clients}}
+      {{if .LaunchURI}}
+      <a class="portal-system-card is-actionable" href="{{.LaunchURI}}" aria-label="进入 {{.Name}}">
+        <span class="portal-system-card-top">
+          {{if .FaviconURL}}<img class="portal-system-icon" src="{{.FaviconURL}}" alt="" width="56" height="56" referrerpolicy="no-referrer">{{else}}<span class="portal-system-fallback">{{.Initial}}</span>{{end}}
+          <span class="portal-system-arrow" aria-hidden="true">↗</span>
+        </span>
+        <span class="portal-system-details">
+          <strong>{{.Name}}</strong>
+          {{if .Description}}<small>{{.Description}}</small>{{else}}<small>已接入 Certus 统一认证</small>{{end}}
+        </span>
+        <span class="portal-system-footer"><span class="portal-system-status"><i></i>可安全访问</span><span>进入系统</span></span>
+      </a>
+      {{else}}
+      <article class="portal-system-card is-disabled" aria-disabled="true">
+        <span class="portal-system-card-top">
+          {{if .FaviconURL}}<img class="portal-system-icon" src="{{.FaviconURL}}" alt="" width="56" height="56" referrerpolicy="no-referrer">{{else}}<span class="portal-system-fallback">{{.Initial}}</span>{{end}}
+          <span class="portal-system-unavailable">未开放</span>
+        </span>
+        <span class="portal-system-details">
+          <strong>{{.Name}}</strong>
+          {{if .Description}}<small>{{.Description}}</small>{{else}}<small>已接入 Certus 统一认证</small>{{end}}
+        </span>
+        <span class="portal-system-footer"><span class="portal-system-status"><i></i>暂不可访问</span><span>未配置入口</span></span>
+      </article>
+      {{end}}
+      {{else}}
+      <div class="portal-empty">
+        <span class="portal-empty-icon" aria-hidden="true">＋</span>
+        <strong>暂未配置接入系统</strong>
+        <p>完成系统接入后，应用会显示在这里。</p>
+      </div>
+      {{end}}
+    </div>
   </section>
 </main>
 </body>

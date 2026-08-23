@@ -9,11 +9,14 @@
   <link rel="icon" type="image/svg+xml" sizes="16x16" href="/static/favicon-16.svg">
   <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body class="login-body">
 <main class="shell">
   <section class="card login-card">
     <header class="login-brand">
-      <img class="app-logo" src="/static/logo-animated.svg" alt="certus 统一认证中心" width="280" height="64">
+      <picture class="login-logo">
+        <source media="(prefers-color-scheme: dark)" srcset="/static/logo-dark.svg">
+        <img class="app-logo" src="/static/logo-animated.svg" alt="certus 统一认证中心" width="280" height="64">
+      </picture>
       <span>统一认证中心</span>
     </header>
     {{if .Client.Name}}

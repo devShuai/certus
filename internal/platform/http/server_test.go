@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"certus/internal/client"
 	"certus/internal/config"
 )
 
@@ -64,10 +65,20 @@ func TestPortal(t *testing.T) {
 
 	body := response.Body.String()
 	if response.Code != http.StatusOK ||
-		!strings.Contains(body, "中间落地页") ||
-		!strings.Contains(body, `href="http://localhost:3000/?login=oidc"`) ||
+		!strings.Contains(body, "选择要进入的系统") ||
+		!strings.Contains(body, `media="(prefers-color-scheme: dark)" srcset="/static/logo-dark.svg"`) ||
+		!strings.Contains(body, `class="portal-system-grid"`) ||
+		!strings.Contains(body, `class="portal-system-card is-actionable" href="http://localhost:3000/?login=oidc"`) ||
+		!strings.Contains(body, `aria-label="进入 Specus"`) ||
 		strings.Contains(body, `/login?client_id=specus`) {
 		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestPortalClientsUseUnicodeInitial(t *testing.T) {
+	items := portalClients([]client.Client{{Name: "财务系统"}, {Name: " Specus "}, {}})
+	if len(items) != 3 || items[0].Initial != "财" || items[1].Initial != "S" || items[2].Initial != "?" {
+		t.Fatalf("unexpected portal initials: %#v", items)
 	}
 }
 
@@ -102,6 +113,8 @@ func TestLoginPageHighlightsTargetSystem(t *testing.T) {
 
 	body := response.Body.String()
 	if response.Code != http.StatusOK ||
+		!strings.Contains(body, `class="login-body"`) ||
+		!strings.Contains(body, `media="(prefers-color-scheme: dark)" srcset="/static/logo-dark.svg"`) ||
 		!strings.Contains(body, `class="login-target"`) ||
 		!strings.Contains(body, "即将登录") ||
 		!strings.Contains(body, "登录 Specus") ||

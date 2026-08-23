@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"certus/internal/access"
@@ -427,6 +428,11 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/portal", http.StatusTemporaryRedirect)
 }
 
+type portalClient struct {
+	client.Client
+	Initial string
+}
+
 func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 	clients, err := s.clients.List(r.Context())
 	if err != nil {
@@ -447,17 +453,29 @@ func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, "portal.html", struct {
 		Title         string
-		Clients       []client.Client
+		Clients       []portalClient
 		User          *identity.User
 		Administrator bool
 		CSRFToken     string
 	}{
 		Title:         "Certus 统一认证中心",
-		Clients:       activeClients(clients),
+		Clients:       portalClients(activeClients(clients)),
 		User:          currentUser,
 		Administrator: administrator,
 		CSRFToken:     csrfToken,
 	})
+}
+
+func portalClients(items []client.Client) []portalClient {
+	result := make([]portalClient, 0, len(items))
+	for _, item := range items {
+		initial := "?"
+		if runes := []rune(strings.TrimSpace(item.Name)); len(runes) > 0 {
+			initial = string(runes[0])
+		}
+		result = append(result, portalClient{Client: item, Initial: initial})
+	}
+	return result
 }
 
 func (s *server) adminClientsPage(w http.ResponseWriter, r *http.Request) {
