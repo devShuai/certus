@@ -24,8 +24,6 @@ import (
 
 const (
 	authorizationCodeLifetime = 5 * time.Minute
-	accessTokenLifetime       = 15 * time.Minute
-	refreshTokenLifetime      = 30 * 24 * time.Hour
 	deviceCodeLifetime        = 15 * time.Minute
 	oidcLogoutHintMaxAge      = 24 * time.Hour
 )
@@ -353,7 +351,7 @@ func (s *server) refreshToken(w http.ResponseWriter, r *http.Request, registered
 		ClientID:  registered.ID,
 		Scope:     scopes,
 		IssuedAt:  now,
-		ExpiresAt: now.Add(refreshTokenLifetime),
+		ExpiresAt: now.Add(registered.RefreshTokenLifetime()),
 	}
 	current, err := s.oauth.RotateRefreshToken(r.Context(), security.HashToken(raw), replacement, now)
 	if errors.Is(err, oauth.ErrInvalidScope) {
@@ -375,7 +373,7 @@ func (s *server) refreshToken(w http.ResponseWriter, r *http.Request, registered
 		return
 	}
 	response, err := s.issueAccessToken(
-		r, registered.ID, current.UserID, current.SessionID, current.FamilyID, scopes,
+		r, registered, current.UserID, current.SessionID, current.FamilyID, scopes,
 	)
 	if err != nil {
 		_ = s.oauth.RevokeRefreshToken(r.Context(), security.HashToken(replacementRaw), registered.ID, s.now().UTC())
@@ -416,7 +414,7 @@ func (s *server) clientCredentialsToken(w http.ResponseWriter, r *http.Request, 
 		writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "roles is not valid with client_credentials")
 		return
 	}
-	response, err := s.issueAccessToken(r, registered.ID, "", "", "", scopes)
+	response, err := s.issueAccessToken(r, registered, "", "", "", scopes)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "token issuance failed")
 		return
@@ -453,7 +451,7 @@ func (s *server) issueUserTokens(
 			return nil, err
 		}
 	}
-	response, err := s.issueAccessToken(r, registered.ID, userID, sessionID, familyID, scopes)
+	response, err := s.issueAccessToken(r, registered, userID, sessionID, familyID, scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +465,7 @@ func (s *server) issueUserTokens(
 			SessionID: sessionID,
 			Scope:     scopes,
 			IssuedAt:  now,
-			ExpiresAt: now.Add(refreshTokenLifetime),
+			ExpiresAt: now.Add(registered.RefreshTokenLifetime()),
 		}); err != nil {
 			return nil, err
 		}
@@ -479,7 +477,7 @@ func (s *server) issueUserTokens(
 			"iss":       s.cfg.Issuer,
 			"sub":       user.ID,
 			"aud":       registered.ID,
-			"exp":       now.Add(accessTokenLifetime).Unix(),
+			"exp":       now.Add(registered.AccessTokenLifetime()).Unix(),
 			"iat":       now.Unix(),
 			"auth_time": authenticatedAt.Unix(),
 			"amr":       authMethods,
@@ -522,7 +520,8 @@ func (s *server) issueUserTokens(
 
 func (s *server) issueAccessToken(
 	r *http.Request,
-	clientID, userID, sessionID, familyID string,
+	registered client.Client,
+	userID, sessionID, familyID string,
 	scopes []string,
 ) (map[string]any, error) {
 	raw, err := security.RandomToken(48)
@@ -532,20 +531,20 @@ func (s *server) issueAccessToken(
 	now := s.now().UTC()
 	if err := s.oauth.SaveAccessToken(r.Context(), oauth.AccessToken{
 		Hash:      security.HashToken(raw),
-		ClientID:  clientID,
+		ClientID:  registered.ID,
 		UserID:    userID,
 		SessionID: sessionID,
 		FamilyID:  familyID,
 		Scope:     scopes,
 		IssuedAt:  now,
-		ExpiresAt: now.Add(accessTokenLifetime),
+		ExpiresAt: now.Add(registered.AccessTokenLifetime()),
 	}); err != nil {
 		return nil, err
 	}
 	return map[string]any{
 		"access_token": raw,
 		"token_type":   "Bearer",
-		"expires_in":   int(accessTokenLifetime / time.Second),
+		"expires_in":   int(registered.AccessTokenLifetime() / time.Second),
 		"scope":        strings.Join(scopes, " "),
 	}, nil
 }

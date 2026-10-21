@@ -28,6 +28,7 @@ func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 		       backchannel_logout_uri, backchannel_logout_session_required,
 		       token_endpoint_auth_method,
+		       access_token_lifetime_seconds, refresh_token_lifetime_seconds,
 		       archived_at
 		FROM oauth_clients
 		ORDER BY name, id`)
@@ -60,6 +61,7 @@ func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, 
 		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 		       backchannel_logout_uri, backchannel_logout_session_required,
 		       token_endpoint_auth_method,
+		       access_token_lifetime_seconds, refresh_token_lifetime_seconds,
 		       archived_at
 		FROM oauth_clients
 		WHERE id = $1`, id))
@@ -76,6 +78,8 @@ func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, 
 }
 
 func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (client.Client, error) {
+	item.AccessTokenLifetimeSeconds = int64(item.AccessTokenLifetime() / time.Second)
+	item.RefreshTokenLifetimeSeconds = int64(item.RefreshTokenLifetime() / time.Second)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return client.Client{}, fmt.Errorf("begin client replacement: %w", err)
@@ -101,6 +105,8 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 		    token_endpoint_auth_method = $16,
 		    favicon_url = $17,
 		    launch_uri = $18,
+		    access_token_lifetime_seconds = $19,
+		    refresh_token_lifetime_seconds = $20,
 		    updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		item.ID,
@@ -121,6 +127,8 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 		item.EffectiveTokenEndpointAuthMethod(),
 		item.FaviconURL,
 		item.LaunchURI,
+		item.AccessTokenLifetimeSeconds,
+		item.RefreshTokenLifetimeSeconds,
 	)
 	if err != nil {
 		return client.Client{}, fmt.Errorf("replace client: %w", err)
@@ -222,7 +230,45 @@ func (r *ClientRepository) Archive(ctx context.Context, id string, now time.Time
 	return nil
 }
 
+func (r *ClientRepository) DeleteArchived(ctx context.Context, id string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin archived client deletion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var archived bool
+	err = tx.QueryRow(ctx, `
+		SELECT archived_at IS NOT NULL
+		FROM oauth_clients
+		WHERE id = $1
+		FOR UPDATE`, id).Scan(&archived)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return client.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("find client for deletion: %w", err)
+	}
+	if !archived {
+		return client.ErrNotArchived
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM oauth_client_introspection_permissions
+		WHERE introspector_client_id = $1`, id); err != nil {
+		return fmt.Errorf("delete client introspection references: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_clients WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("delete archived client: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit archived client deletion: %w", err)
+	}
+	return nil
+}
+
 func (r *ClientRepository) Create(ctx context.Context, item client.Client) (client.Client, error) {
+	item.AccessTokenLifetimeSeconds = int64(item.AccessTokenLifetime() / time.Second)
+	item.RefreshTokenLifetimeSeconds = int64(item.RefreshTokenLifetime() / time.Second)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return client.Client{}, fmt.Errorf("begin client creation: %w", err)
@@ -235,9 +281,10 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 			allowed_scopes, enabled, client_secret_hash, cas_version,
 			cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 			backchannel_logout_uri, backchannel_logout_session_required,
-			token_endpoint_auth_method, favicon_url, launch_uri
+			token_endpoint_auth_method, favicon_url, launch_uri,
+			access_token_lifetime_seconds, refresh_token_lifetime_seconds
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
 		item.ID,
 		item.Name,
 		item.Description,
@@ -258,6 +305,8 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 		item.EffectiveTokenEndpointAuthMethod(),
 		item.FaviconURL,
 		item.LaunchURI,
+		item.AccessTokenLifetimeSeconds,
+		item.RefreshTokenLifetimeSeconds,
 	)
 	if isUniqueViolation(err) {
 		return client.Client{}, client.ErrConflict
@@ -334,6 +383,8 @@ func scanClient(scanner interface{ Scan(...any) error }) (client.Client, error) 
 		&item.BackchannelLogoutURI,
 		&item.BackchannelLogoutSessionRequired,
 		&item.TokenEndpointAuthMethod,
+		&item.AccessTokenLifetimeSeconds,
+		&item.RefreshTokenLifetimeSeconds,
 		&archivedAt,
 	)
 	if err != nil {

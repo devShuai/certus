@@ -89,6 +89,8 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		BackchannelLogoutSessionRequired: true,
 		LoginMethods:                     []client.LoginMethod{client.LoginPassword},
 		AllowedScopes:                    []string{"openid", "roles"},
+		AccessTokenLifetimeSeconds:       600,
+		RefreshTokenLifetimeSeconds:      7200,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +123,9 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		storedClient.LaunchURI != "https://app.example.com/?login=oidc" ||
 		len(storedClient.IntrospectableBy) != 1 ||
 		storedClient.IntrospectableBy[0] != introspector.ID ||
-		storedClient.TokenEndpointAuthMethod != client.TokenEndpointAuthSecretPost {
+		storedClient.TokenEndpointAuthMethod != client.TokenEndpointAuthSecretPost ||
+		storedClient.AccessTokenLifetime() != 10*time.Minute ||
+		storedClient.RefreshTokenLifetime() != 2*time.Hour {
 		t.Fatalf("client configuration round trip failed: %#v %v", storedClient, err)
 	}
 
@@ -175,6 +179,19 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if err != nil || len(storedClient.IdentitySourceIDs) != 1 ||
 		storedClient.IdentitySourceIDs[0] != createdSource.ID {
 		t.Fatalf("client identity source round trip failed: %#v %v", storedClient, err)
+	}
+	if err := clientRepository.DeleteArchived(ctx, introspector.ID); !errors.Is(err, client.ErrNotArchived) {
+		t.Fatalf("active PostgreSQL client was permanently deleted: %v", err)
+	}
+	if err := clientRepository.Archive(ctx, introspector.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := clientRepository.DeleteArchived(ctx, introspector.ID); err != nil {
+		t.Fatal(err)
+	}
+	storedClient, err = clientRepository.Find(ctx, registered.ID)
+	if err != nil || len(storedClient.IntrospectableBy) != 0 {
+		t.Fatalf("deleted introspector remained referenced: %#v %v", storedClient, err)
 	}
 
 	user, err := identity.NewUser(identity.CreateUser{

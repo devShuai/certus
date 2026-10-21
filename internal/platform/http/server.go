@@ -322,6 +322,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getAdminClient)))
 	mux.Handle("PUT /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.replaceClient)))
 	mux.Handle("DELETE /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.archiveClient)))
+	mux.Handle("DELETE /api/v1/admin/clients/{clientID}/permanent", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.deleteArchivedClient)))
 	mux.Handle("POST /api/v1/admin/clients/{clientID}/secret", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.rotateClientSecret)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}/integration", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getClientIntegration)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}/roles", s.requireAdmin(administration.PermissionAccessRead, http.HandlerFunc(s.listRoles)))

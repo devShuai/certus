@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	"certus/internal/client"
 	"certus/internal/federation"
@@ -42,6 +43,8 @@ type integrationParameters struct {
 	Scopes                           []string           `json:"scopes,omitempty"`
 	ResponseTypes                    []string           `json:"response_types,omitempty"`
 	GrantTypes                       []client.GrantType `json:"grant_types,omitempty"`
+	AccessTokenLifetimeSeconds       int64              `json:"access_token_lifetime_seconds,omitempty"`
+	RefreshTokenLifetimeSeconds      int64              `json:"refresh_token_lifetime_seconds,omitempty"`
 	PKCE                             map[string]any     `json:"pkce,omitempty"`
 	CAS                              *casIntegration    `json:"cas,omitempty"`
 }
@@ -313,6 +316,24 @@ func (s *server) archiveClient(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *server) deleteArchivedClient(w http.ResponseWriter, r *http.Request) {
+	clientID := r.PathValue("clientID")
+	err := s.clients.DeleteArchived(r.Context(), clientID)
+	switch {
+	case errors.Is(err, client.ErrNotFound):
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	case errors.Is(err, client.ErrNotArchived):
+		writeProblem(w, http.StatusConflict, "client_not_archived", "只能永久删除已归档的接入系统")
+		return
+	case err != nil:
+		s.logger.Error("delete archived client", "client_id", clientID, "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "删除已归档接入系统失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *server) getClientIntegration(w http.ResponseWriter, r *http.Request) {
 	item, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
 	if errors.Is(err, client.ErrNotFound) {
@@ -351,6 +372,8 @@ func (s *server) integrationParameters(item client.Client, secret string) integr
 		parameters.BackchannelLogoutSessionRequired = item.BackchannelLogoutSessionRequired
 		parameters.Scopes = item.AllowedScopes
 		parameters.GrantTypes = item.GrantTypes
+		parameters.AccessTokenLifetimeSeconds = int64(item.AccessTokenLifetime() / time.Second)
+		parameters.RefreshTokenLifetimeSeconds = int64(item.RefreshTokenLifetime() / time.Second)
 		parameters.ClientAuthenticationMethod = string(item.EffectiveTokenEndpointAuthMethod())
 		if item.SupportsGrant(client.GrantAuthorizationCode) {
 			parameters.ResponseTypes = []string{"code"}

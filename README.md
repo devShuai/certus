@@ -296,6 +296,7 @@ POST /api/v1/admin/clients
 GET  /api/v1/admin/clients/{client_id}
 PUT  /api/v1/admin/clients/{client_id}
 DELETE /api/v1/admin/clients/{client_id}
+DELETE /api/v1/admin/clients/{client_id}/permanent
 POST /api/v1/admin/clients/{client_id}/secret
 GET  /api/v1/admin/clients/{client_id}/integration
 ```
@@ -345,6 +346,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
     "profile",
     "email"
   ],
+  "access_token_lifetime_seconds": 900,
+  "refresh_token_lifetime_seconds": 2592000,
   "cas_version": "3.0",
   "cas_service_urls": [
     "https://finance.example.com/login/cas"
@@ -402,6 +405,8 @@ GET  /api/v1/admin/clients/{client_id}/integration
       "refresh_token",
       "client_credentials"
     ],
+    "access_token_lifetime_seconds": 900,
+    "refresh_token_lifetime_seconds": 2592000,
     "pkce": {
       "required": true,
       "challenge_method": "S256"
@@ -430,7 +435,9 @@ GET  /api/v1/admin/clients/{client_id}/integration
 
 `introspectable_by` 由令牌签发客户端配置，成员必须是存在、启用、未归档的 `confidential` OAuth 客户端。默认空数组会拒绝所有跨客户端内省；配置后仅允许列出的资源服务器内省该客户端签发的 Access Token，并继续按原客户端校验用户、会话、授权同意、Scope、角色与权限。Refresh Token 始终只允许签发它的机密客户端内省，不通过该白名单开放。白名单使用完整 `client_id` 精确匹配，不支持通配符或前缀。
 
-`PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可停止新登录，并立即撤销该客户端的授权码、访问令牌、刷新令牌和待处理设备授权。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE` 执行软归档并同时禁用客户端；历史令牌和授权记录不会物理删除，但令牌会被标记为已撤销，审计引用得以保留。
+`access_token_lifetime_seconds` 默认 900 秒，可配置 60–86400 秒；`refresh_token_lifetime_seconds` 默认 2592000 秒，可配置 3600–31536000 秒，且不能短于 Access Token。该配置同时作用于授权码、设备码、客户端凭据和刷新令牌流程；OIDC ID Token 与 Access Token 使用相同有效期。
+
+`PUT` 采用完整替换语义，但 `client_id` 和客户端类型保持不可变；通过 `enabled:false` 可停止新登录，并立即撤销该客户端的授权码、访问令牌、刷新令牌和待处理设备授权。`POST .../secret` 立即轮换机密客户端的密钥，新明文同样只显示一次。`DELETE /api/v1/admin/clients/{client_id}` 执行软归档并同时禁用客户端；历史令牌和授权记录不会物理删除，但令牌会被标记为已撤销，审计引用得以保留。只有已归档客户端才能通过 `DELETE .../{client_id}/permanent` 永久删除，管理后台会在归档详情中显示该高风险操作。
 
 ## 角色与权限下发
 

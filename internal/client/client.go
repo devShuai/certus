@@ -17,10 +17,20 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("client not found")
-	ErrConflict = errors.New("client already exists")
-	ErrInvalid  = errors.New("invalid client")
-	ErrArchived = errors.New("client is archived")
+	ErrNotFound    = errors.New("client not found")
+	ErrConflict    = errors.New("client already exists")
+	ErrInvalid     = errors.New("invalid client")
+	ErrArchived    = errors.New("client is archived")
+	ErrNotArchived = errors.New("client is not archived")
+)
+
+const (
+	DefaultAccessTokenLifetime  = 15 * time.Minute
+	MinAccessTokenLifetime      = time.Minute
+	MaxAccessTokenLifetime      = 24 * time.Hour
+	DefaultRefreshTokenLifetime = 30 * 24 * time.Hour
+	MinRefreshTokenLifetime     = time.Hour
+	MaxRefreshTokenLifetime     = 365 * 24 * time.Hour
 )
 
 type LoginMethod string
@@ -89,6 +99,8 @@ type Client struct {
 	IdentitySourceIDs                []string                `json:"identity_source_ids,omitempty"`
 	IntrospectableBy                 []string                `json:"introspectable_by,omitempty"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
+	AccessTokenLifetimeSeconds       int64                   `json:"access_token_lifetime_seconds,omitempty"`
+	RefreshTokenLifetimeSeconds      int64                   `json:"refresh_token_lifetime_seconds,omitempty"`
 	CASVersion                       CASVersion              `json:"cas_version,omitempty"`
 	CASServiceURLs                   []string                `json:"cas_service_urls,omitempty"`
 	CASProxy                         bool                    `json:"cas_proxy"`
@@ -118,6 +130,8 @@ type CreateClient struct {
 	IdentitySourceIDs                []string                `json:"identity_source_ids"`
 	IntrospectableBy                 []string                `json:"introspectable_by"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
+	AccessTokenLifetimeSeconds       int64                   `json:"access_token_lifetime_seconds"`
+	RefreshTokenLifetimeSeconds      int64                   `json:"refresh_token_lifetime_seconds"`
 	CASVersion                       CASVersion              `json:"cas_version"`
 	CASServiceURLs                   []string                `json:"cas_service_urls"`
 	CASProxy                         bool                    `json:"cas_proxy"`
@@ -143,6 +157,8 @@ type ReplaceClient struct {
 	IdentitySourceIDs                []string                `json:"identity_source_ids"`
 	IntrospectableBy                 []string                `json:"introspectable_by"`
 	AllowedScopes                    []string                `json:"allowed_scopes"`
+	AccessTokenLifetimeSeconds       int64                   `json:"access_token_lifetime_seconds"`
+	RefreshTokenLifetimeSeconds      int64                   `json:"refresh_token_lifetime_seconds"`
 	CASVersion                       CASVersion              `json:"cas_version"`
 	CASServiceURLs                   []string                `json:"cas_service_urls"`
 	CASProxy                         bool                    `json:"cas_proxy"`
@@ -172,6 +188,14 @@ func (c Client) AllowsIntrospectionBy(candidate string) bool {
 	return c.ID == candidate || slices.Contains(c.IntrospectableBy, candidate)
 }
 
+func (c Client) AccessTokenLifetime() time.Duration {
+	return effectiveTokenLifetime(c.AccessTokenLifetimeSeconds, DefaultAccessTokenLifetime)
+}
+
+func (c Client) RefreshTokenLifetime() time.Duration {
+	return effectiveTokenLifetime(c.RefreshTokenLifetimeSeconds, DefaultRefreshTokenLifetime)
+}
+
 type Repository interface {
 	List(context.Context) ([]Client, error)
 	Find(context.Context, string) (Client, error)
@@ -179,6 +203,7 @@ type Repository interface {
 	Replace(context.Context, Client) (Client, error)
 	RotateSecret(context.Context, string, []byte) (Client, error)
 	Archive(context.Context, string, time.Time) error
+	DeleteArchived(context.Context, string) error
 }
 
 type MemoryRepository struct {
@@ -190,6 +215,7 @@ type MemoryRepository struct {
 func NewMemoryRepository(clients ...Client) *MemoryRepository {
 	repository := &MemoryRepository{clients: make(map[string]Client), order: make([]string, 0, len(clients))}
 	for _, item := range clients {
+		item = withDefaultTokenLifetimes(item)
 		repository.clients[item.ID] = clone(item)
 		repository.order = append(repository.order, item.ID)
 	}
@@ -219,6 +245,7 @@ func (r *MemoryRepository) Find(_ context.Context, id string) (Client, error) {
 func (r *MemoryRepository) Create(_ context.Context, item Client) (Client, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	item = withDefaultTokenLifetimes(item)
 	if _, exists := r.clients[item.ID]; exists {
 		return Client{}, ErrConflict
 	}
@@ -230,6 +257,7 @@ func (r *MemoryRepository) Create(_ context.Context, item Client) (Client, error
 func (r *MemoryRepository) Replace(_ context.Context, item Client) (Client, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	item = withDefaultTokenLifetimes(item)
 	current, exists := r.clients[item.ID]
 	if !exists {
 		return Client{}, ErrNotFound
@@ -268,6 +296,30 @@ func (r *MemoryRepository) Archive(_ context.Context, id string, now time.Time) 
 		item.ArchivedAt = &value
 		item.Enabled = false
 		r.clients[id] = item
+	}
+	return nil
+}
+
+func (r *MemoryRepository) DeleteArchived(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, exists := r.clients[id]
+	if !exists {
+		return ErrNotFound
+	}
+	if item.ArchivedAt == nil {
+		return ErrNotArchived
+	}
+	delete(r.clients, id)
+	r.order = slices.DeleteFunc(r.order, func(candidate string) bool { return candidate == id })
+	for otherID, other := range r.clients {
+		if slices.Contains(other.IntrospectableBy, id) {
+			other.IntrospectableBy = slices.DeleteFunc(
+				other.IntrospectableBy,
+				func(candidate string) bool { return candidate == id },
+			)
+			r.clients[otherID] = other
+		}
 	}
 	return nil
 }
@@ -312,6 +364,8 @@ func New(input CreateClient) (Client, string, error) {
 		IdentitySourceIDs:                uniqueSourceIDs(input.IdentitySourceIDs),
 		IntrospectableBy:                 uniqueClientIDs(input.IntrospectableBy),
 		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
+		AccessTokenLifetimeSeconds:       normalizedTokenLifetimeSeconds(input.AccessTokenLifetimeSeconds, DefaultAccessTokenLifetime),
+		RefreshTokenLifetimeSeconds:      normalizedTokenLifetimeSeconds(input.RefreshTokenLifetimeSeconds, DefaultRefreshTokenLifetime),
 		CASVersion:                       input.CASVersion,
 		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
 		CASProxy:                         input.CASProxy,
@@ -363,6 +417,20 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
+	accessTokenLifetimeSeconds := input.AccessTokenLifetimeSeconds
+	if accessTokenLifetimeSeconds == 0 {
+		accessTokenLifetimeSeconds = normalizedTokenLifetimeSeconds(
+			current.AccessTokenLifetimeSeconds,
+			DefaultAccessTokenLifetime,
+		)
+	}
+	refreshTokenLifetimeSeconds := input.RefreshTokenLifetimeSeconds
+	if refreshTokenLifetimeSeconds == 0 {
+		refreshTokenLifetimeSeconds = normalizedTokenLifetimeSeconds(
+			current.RefreshTokenLifetimeSeconds,
+			DefaultRefreshTokenLifetime,
+		)
+	}
 	item := Client{
 		ID:                               current.ID,
 		Name:                             strings.TrimSpace(input.Name),
@@ -381,6 +449,8 @@ func Replace(current Client, input ReplaceClient) (Client, error) {
 		IdentitySourceIDs:                uniqueSourceIDs(input.IdentitySourceIDs),
 		IntrospectableBy:                 uniqueClientIDs(input.IntrospectableBy),
 		AllowedScopes:                    uniqueStrings(input.AllowedScopes),
+		AccessTokenLifetimeSeconds:       accessTokenLifetimeSeconds,
+		RefreshTokenLifetimeSeconds:      refreshTokenLifetimeSeconds,
 		CASVersion:                       input.CASVersion,
 		CASServiceURLs:                   uniqueStrings(input.CASServiceURLs),
 		CASProxy:                         input.CASProxy,
@@ -553,6 +623,25 @@ func (c Client) Validate() error {
 			return fmt.Errorf("%w: invalid scope %q", ErrInvalid, scope)
 		}
 	}
+	if err := validateTokenLifetime(
+		"access_token_lifetime_seconds",
+		c.AccessTokenLifetimeSeconds,
+		MinAccessTokenLifetime,
+		MaxAccessTokenLifetime,
+	); err != nil {
+		return err
+	}
+	if err := validateTokenLifetime(
+		"refresh_token_lifetime_seconds",
+		c.RefreshTokenLifetimeSeconds,
+		MinRefreshTokenLifetime,
+		MaxRefreshTokenLifetime,
+	); err != nil {
+		return err
+	}
+	if c.RefreshTokenLifetime() < c.AccessTokenLifetime() {
+		return fmt.Errorf("%w: refresh_token_lifetime_seconds must not be shorter than access_token_lifetime_seconds", ErrInvalid)
+	}
 	if c.SupportsProtocol(ProtocolCAS) {
 		if c.CASVersion != CASVersion1 && c.CASVersion != CASVersion2 && c.CASVersion != CASVersion3 {
 			return fmt.Errorf("%w: unsupported cas_version", ErrInvalid)
@@ -596,6 +685,50 @@ func defaultTokenEndpointAuthMethod(applicationType ApplicationType) TokenEndpoi
 		return TokenEndpointAuthSecretBasic
 	}
 	return TokenEndpointAuthNone
+}
+
+func normalizedTokenLifetimeSeconds(value int64, fallback time.Duration) int64 {
+	if value == 0 {
+		return int64(fallback / time.Second)
+	}
+	return value
+}
+
+func withDefaultTokenLifetimes(item Client) Client {
+	item.AccessTokenLifetimeSeconds = normalizedTokenLifetimeSeconds(
+		item.AccessTokenLifetimeSeconds,
+		DefaultAccessTokenLifetime,
+	)
+	item.RefreshTokenLifetimeSeconds = normalizedTokenLifetimeSeconds(
+		item.RefreshTokenLifetimeSeconds,
+		DefaultRefreshTokenLifetime,
+	)
+	return item
+}
+
+func effectiveTokenLifetime(value int64, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return time.Duration(value) * time.Second
+}
+
+func validateTokenLifetime(name string, value int64, minimum, maximum time.Duration) error {
+	if value == 0 {
+		return nil
+	}
+	minimumSeconds := int64(minimum / time.Second)
+	maximumSeconds := int64(maximum / time.Second)
+	if value < minimumSeconds || value > maximumSeconds {
+		return fmt.Errorf(
+			"%w: %s must be between %d and %d seconds",
+			ErrInvalid,
+			name,
+			minimumSeconds,
+			maximumSeconds,
+		)
+	}
+	return nil
 }
 
 func validEndpointURL(value string) bool {

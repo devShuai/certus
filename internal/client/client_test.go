@@ -423,6 +423,91 @@ func TestClientReplacementSecretRotationAndArchive(t *testing.T) {
 	}
 }
 
+func TestClientTokenLifetimesAndArchivedDeletion(t *testing.T) {
+	defaults, _, err := New(CreateClient{
+		ID:              "default-lifetime",
+		Name:            "Default Lifetime",
+		ApplicationType: ApplicationConfidential,
+		GrantTypes:      []GrantType{GrantClientCredentials},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.AccessTokenLifetime() != DefaultAccessTokenLifetime ||
+		defaults.RefreshTokenLifetime() != DefaultRefreshTokenLifetime {
+		t.Fatalf("unexpected default token lifetimes: %#v", defaults)
+	}
+
+	configured, _, err := New(CreateClient{
+		ID:                          "token-service",
+		Name:                        "Token Service",
+		ApplicationType:             ApplicationConfidential,
+		Protocols:                   []Protocol{ProtocolOAuth21},
+		GrantTypes:                  []GrantType{GrantClientCredentials},
+		AllowedScopes:               []string{"api.read"},
+		AccessTokenLifetimeSeconds:  600,
+		RefreshTokenLifetimeSeconds: 7200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.AccessTokenLifetime() != 10*time.Minute ||
+		configured.RefreshTokenLifetime() != 2*time.Hour {
+		t.Fatalf("unexpected token lifetimes: %#v", configured)
+	}
+
+	replaced, err := Replace(configured, ReplaceClient{
+		Name:          "Token Service v2",
+		Protocols:     []Protocol{ProtocolOAuth21},
+		GrantTypes:    []GrantType{GrantClientCredentials},
+		AllowedScopes: []string{"api.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.AccessTokenLifetimeSeconds != 600 || replaced.RefreshTokenLifetimeSeconds != 7200 {
+		t.Fatalf("replacement did not preserve token lifetimes: %#v", replaced)
+	}
+
+	invalid := CreateClient{
+		ID:                          "invalid-lifetime",
+		Name:                        "Invalid Lifetime",
+		ApplicationType:             ApplicationConfidential,
+		Protocols:                   []Protocol{ProtocolOAuth21},
+		GrantTypes:                  []GrantType{GrantClientCredentials},
+		AllowedScopes:               []string{"api.read"},
+		AccessTokenLifetimeSeconds:  59,
+		RefreshTokenLifetimeSeconds: 7200,
+	}
+	if _, _, err := New(invalid); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("short access token lifetime was accepted: %v", err)
+	}
+	invalid.AccessTokenLifetimeSeconds = 7200
+	invalid.RefreshTokenLifetimeSeconds = 3600
+	if _, _, err := New(invalid); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("refresh token lifetime shorter than access token was accepted: %v", err)
+	}
+
+	consumer := Client{ID: "consumer", IntrospectableBy: []string{configured.ID}}
+	repository := NewMemoryRepository(configured, consumer)
+	if err := repository.DeleteArchived(context.Background(), configured.ID); !errors.Is(err, ErrNotArchived) {
+		t.Fatalf("active client was permanently deleted: %v", err)
+	}
+	if err := repository.Archive(context.Background(), configured.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.DeleteArchived(context.Background(), configured.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Find(context.Background(), configured.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted client remained available: %v", err)
+	}
+	remaining, err := repository.Find(context.Background(), consumer.ID)
+	if err != nil || len(remaining.IntrospectableBy) != 0 {
+		t.Fatalf("deleted client remained in introspection permissions: %#v %v", remaining, err)
+	}
+}
+
 func bytesEqual(left, right []byte) bool {
 	return string(left) == string(right)
 }

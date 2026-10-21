@@ -1057,6 +1057,8 @@ function resetClientForm() {
   clientForm.elements.application_type.disabled = !can("admin.clients.write");
   clientForm.elements.token_endpoint_auth_method.value = "client_secret_basic";
   clientForm.elements.allowed_scopes.value = "openid profile email";
+  clientForm.elements.access_token_lifetime_minutes.value = "15";
+  clientForm.elements.refresh_token_lifetime_hours.value = "720";
   clientForm.elements.favicon_url.value = "";
   clientForm.elements.launch_uri.value = "";
   clientForm.elements.enabled.checked = true;
@@ -1069,6 +1071,7 @@ function resetClientForm() {
   document.querySelector("#client-editor-title").textContent = "配置跳转登录";
   document.querySelector("#rotate-client-secret").classList.add("hidden");
   document.querySelector("#archive-client").classList.add("hidden");
+  document.querySelector("#delete-client").classList.add("hidden");
   document.querySelector("#client-form-status").textContent = "";
   renderClientFaviconPreview();
 }
@@ -1091,6 +1094,8 @@ function openClient(client) {
   clientForm.elements.application_type.disabled = true;
   clientForm.elements.token_endpoint_auth_method.value = client.token_endpoint_auth_method || (client.application_type === "confidential" ? "client_secret_basic" : "none");
   clientForm.elements.allowed_scopes.value = (client.allowed_scopes || []).join(" ");
+  clientForm.elements.access_token_lifetime_minutes.value = String((client.access_token_lifetime_seconds || 900) / 60);
+  clientForm.elements.refresh_token_lifetime_hours.value = String((client.refresh_token_lifetime_seconds || 2592000) / 3600);
   clientForm.elements.redirect_uris.value = (client.redirect_uris || []).join("\n");
   clientForm.elements.post_logout_redirect_uris.value = (client.post_logout_redirect_uris || []).join("\n");
   clientForm.elements.backchannel_logout_uri.value = client.backchannel_logout_uri || "";
@@ -1119,6 +1124,9 @@ function openClient(client) {
     "hidden",
     archived || !can("admin.clients.write"),
   );
+  const deleteClient = document.querySelector("#delete-client");
+  deleteClient.disabled = !archived || !can("admin.clients.write");
+  deleteClient.classList.toggle("hidden", !archived || !can("admin.clients.write"));
   document.querySelector("#client-editor").classList.remove("hidden");
   renderClientFaviconPreview();
   document.querySelector("#client-editor").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1161,6 +1169,8 @@ clientForm.addEventListener("submit", async (event) => {
     identity_source_ids: data.getAll("identity_source_ids"),
     introspectable_by: data.getAll("introspectable_by"),
     allowed_scopes: words(data.get("allowed_scopes")),
+    access_token_lifetime_seconds: Math.round(Number(data.get("access_token_lifetime_minutes")) * 60),
+    refresh_token_lifetime_seconds: Math.round(Number(data.get("refresh_token_lifetime_hours")) * 3600),
     cas_version: data.get("cas_version"),
     cas_service_urls: lines(data.get("cas_service_urls")),
     cas_proxy: data.has("cas_proxy"),
@@ -1271,6 +1281,20 @@ document.querySelector("#archive-client").addEventListener("click", async () => 
     document.querySelector("#client-editor").classList.add("hidden");
     await loadClients();
     setStatus("接入系统已归档。", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});
+
+document.querySelector("#delete-client").addEventListener("click", async () => {
+  const clientID = clientForm.elements.id.value;
+  if (!window.confirm(`永久删除 ${clientID} 后，其接入配置、角色和权限将无法恢复，确定继续吗？`)) return;
+  try {
+    await api(`/api/v1/admin/clients/${clientID}/permanent`, { method: "DELETE" });
+    document.querySelector("#client-editor").classList.add("hidden");
+    integrationCard.classList.add("hidden");
+    await loadClients();
+    setStatus("已永久删除归档的接入系统。", "success");
   } catch (error) {
     setStatus(error.message, "error");
   }

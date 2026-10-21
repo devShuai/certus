@@ -21,8 +21,88 @@ import (
 	"certus/internal/identity"
 	"certus/internal/oauth"
 	"certus/internal/oidc"
+	"certus/internal/security"
 	"certus/internal/session"
 )
+
+func TestConfiguredAccessAndRefreshTokenLifetimes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	user, err := identity.NewUser(identity.CreateUser{
+		Username:    "lifetime-user",
+		DisplayName: "Lifetime User",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := identity.NewMemoryUserRepository(user)
+	oauthRepository := oauth.NewMemoryRepository()
+	if _, err := oauthRepository.GrantConsent(
+		ctx,
+		user.ID,
+		"lifetime-client",
+		[]string{"openid"},
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := oidc.NewSigner(ctx, &oidc.MemoryKeyRepository{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &server{
+		cfg:    config.Config{Issuer: "https://auth.example.com"},
+		users:  users,
+		oauth:  oauthRepository,
+		signer: signer,
+		now:    func() time.Time { return now },
+	}
+	registered := client.Client{
+		ID:                          "lifetime-client",
+		Name:                        "Lifetime Client",
+		ApplicationType:             client.ApplicationPublic,
+		Protocols:                   []client.Protocol{client.ProtocolOAuth21},
+		GrantTypes:                  []client.GrantType{client.GrantAuthorizationCode, client.GrantRefreshToken},
+		AllowedScopes:               []string{"openid"},
+		AccessTokenLifetimeSeconds:  600,
+		RefreshTokenLifetimeSeconds: 7200,
+		Enabled:                     true,
+	}
+	response, err := s.issueUserTokens(
+		httptest.NewRequest(http.MethodPost, "/oauth2/token", nil),
+		registered,
+		user.ID,
+		"",
+		[]string{"openid"},
+		"",
+		now,
+		[]string{"pwd"},
+		"urn:certus:aal:1",
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response["expires_in"] != 600 {
+		t.Fatalf("unexpected access token response lifetime: %#v", response)
+	}
+	accessToken, err := oauthRepository.FindAccessToken(
+		ctx,
+		security.HashToken(response["access_token"].(string)),
+		now,
+	)
+	if err != nil || !accessToken.ExpiresAt.Equal(now.Add(10*time.Minute)) {
+		t.Fatalf("unexpected access token expiry: %#v %v", accessToken, err)
+	}
+	refreshToken, err := oauthRepository.FindRefreshToken(
+		ctx,
+		security.HashToken(response["refresh_token"].(string)),
+		now,
+	)
+	if err != nil || !refreshToken.ExpiresAt.Equal(now.Add(2*time.Hour)) {
+		t.Fatalf("unexpected refresh token expiry: %#v %v", refreshToken, err)
+	}
+}
 
 func TestLoginSuccessPageShowsTargetAndAnimation(t *testing.T) {
 	handler := newProtocolTestHandler(t, "https://service.example.com")

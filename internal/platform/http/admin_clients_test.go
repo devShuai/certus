@@ -195,11 +195,17 @@ func TestClientLifecycleAPIs(t *testing.T) {
 		"protocols":["oauth2.1"],
 		"grant_types":["client_credentials","urn:ietf:params:oauth:grant-type:device_code"],
 		"login_methods":["password"],
-		"allowed_scopes":["openid","api.read"]
+		"allowed_scopes":["openid","api.read"],
+		"access_token_lifetime_seconds":600,
+		"refresh_token_lifetime_seconds":7200
 	}`
 	created := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", createBody)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create client: %d %s", created.Code, created.Body.String())
+	}
+	if !strings.Contains(created.Body.String(), `"access_token_lifetime_seconds":600`) ||
+		!strings.Contains(created.Body.String(), `"refresh_token_lifetime_seconds":7200`) {
+		t.Fatalf("configured token lifetimes were not returned: %s", created.Body.String())
 	}
 	var creation clientRegistrationResponse
 	if err := json.Unmarshal(created.Body.Bytes(), &creation); err != nil {
@@ -236,6 +242,9 @@ func TestClientLifecycleAPIs(t *testing.T) {
 	var issued map[string]any
 	if err := json.Unmarshal(newToken.Body.Bytes(), &issued); err != nil {
 		t.Fatal(err)
+	}
+	if issued["expires_in"] != float64(600) {
+		t.Fatalf("access token did not use configured lifetime: %#v", issued)
 	}
 	accessToken, _ := issued["access_token"].(string)
 	metadataForm := url.Values{
@@ -295,6 +304,17 @@ func TestClientLifecycleAPIs(t *testing.T) {
 	if public.Code != http.StatusNotFound {
 		t.Fatalf("disabled client remained publicly visible: %d %s", public.Code, public.Body.String())
 	}
+	notArchived := adminJSONRequest(
+		t,
+		handler,
+		http.MethodDelete,
+		"/api/v1/admin/clients/resource-api/permanent",
+		"",
+	)
+	if notArchived.Code != http.StatusConflict ||
+		!strings.Contains(notArchived.Body.String(), `"client_not_archived"`) {
+		t.Fatalf("non-archived client was permanently deleted: %d %s", notArchived.Code, notArchived.Body.String())
+	}
 
 	archived := adminJSONRequest(t, handler, http.MethodDelete, "/api/v1/admin/clients/resource-api", "")
 	if archived.Code != http.StatusNoContent {
@@ -309,6 +329,20 @@ func TestClientLifecycleAPIs(t *testing.T) {
 	}`)
 	if updateArchived.Code != http.StatusConflict || !strings.Contains(updateArchived.Body.String(), `"client_archived"`) {
 		t.Fatalf("archived client was mutable: %d %s", updateArchived.Code, updateArchived.Body.String())
+	}
+	deleted := adminJSONRequest(
+		t,
+		handler,
+		http.MethodDelete,
+		"/api/v1/admin/clients/resource-api/permanent",
+		"",
+	)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete archived client: %d %s", deleted.Code, deleted.Body.String())
+	}
+	missing := adminJSONRequest(t, handler, http.MethodGet, "/api/v1/admin/clients/resource-api", "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("deleted client remained available: %d %s", missing.Code, missing.Body.String())
 	}
 }
 
