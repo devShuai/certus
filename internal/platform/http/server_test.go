@@ -75,10 +75,59 @@ func TestPortal(t *testing.T) {
 	}
 }
 
-func TestPortalClientsUseUnicodeInitial(t *testing.T) {
-	items := portalClients([]client.Client{{Name: "财务系统"}, {Name: " Specus "}, {}})
+func TestPortalSystemsUseUnicodeInitial(t *testing.T) {
+	items := portalSystems(
+		[]client.System{
+			{ID: "finance", Name: "财务系统", PortalVisible: true},
+			{ID: "specus", Name: " Specus ", PortalVisible: true},
+			{ID: "unknown", PortalVisible: true},
+		},
+		[]client.Client{
+			{SystemID: "finance"},
+			{SystemID: "specus"},
+			{SystemID: "unknown"},
+		},
+	)
 	if len(items) != 3 || items[0].Initial != "财" || items[1].Initial != "S" || items[2].Initial != "?" {
 		t.Fatalf("unexpected portal initials: %#v", items)
+	}
+}
+
+func TestPortalGroupsMultipleClientsIntoOneSystem(t *testing.T) {
+	repository := client.NewMemoryRepository(
+		client.Client{ID: "codeburn-web", SystemID: "codeburn", Name: "Web", Enabled: true},
+		client.Client{ID: "codeburn-sync", SystemID: "codeburn", Name: "Sync", Enabled: true},
+		client.Client{ID: "hidden-client", SystemID: "hidden-system", Name: "Hidden", Enabled: true},
+	)
+	if _, err := repository.ReplaceSystem(context.Background(), client.System{
+		ID:            "codeburn",
+		Name:          "CodeBurn",
+		LaunchURI:     "https://burn.example.com/start",
+		PortalVisible: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ReplaceSystem(context.Background(), client.System{
+		ID:            "hidden-system",
+		Name:          "Hidden",
+		PortalVisible: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewWithClients(
+		config.Config{Issuer: "https://auth.example.com"},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repository,
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/portal", nil))
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		strings.Count(body, "CodeBurn") != 2 ||
+		strings.Contains(body, "codeburn-web") ||
+		strings.Contains(body, "codeburn-sync") ||
+		strings.Contains(body, "Hidden") {
+		t.Fatalf("unexpected grouped portal response: %d %s", response.Code, body)
 	}
 }
 

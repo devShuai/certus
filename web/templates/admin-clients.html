@@ -47,8 +47,8 @@
       <div class="section-heading"><div><p class="eyebrow">运行概况</p><h2>总览</h2></div><button class="secondary" type="button" data-action="refresh-all">刷新</button></div>
       <div class="metric-grid">
         <article class="metric"><span>用户</span><strong id="metric-users">—</strong><small>统一身份目录</small></article>
-        <article class="metric"><span>接入系统</span><strong id="metric-clients">—</strong><small>未归档客户端</small></article>
-        <article class="metric"><span>启用系统</span><strong id="metric-active-clients">—</strong><small>当前可登录</small></article>
+        <article class="metric"><span>接入系统</span><strong id="metric-clients">—</strong><small>业务系统分组</small></article>
+        <article class="metric"><span>门户展示</span><strong id="metric-active-clients">—</strong><small>中转页可见</small></article>
         <article class="metric"><span>身份源</span><strong id="metric-sources">—</strong><small>LDAP 与外部 OIDC</small></article>
         <article class="metric"><span>签名密钥</span><strong id="metric-keys">—</strong><small>含保留的历史公钥</small></article>
       </div>
@@ -148,17 +148,34 @@
     </section>
 
     <section id="clients" class="console-section hidden">
-      <div class="section-heading"><div><p class="eyebrow">协议接入</p><h2>接入系统</h2></div><button id="new-client" type="button">配置新系统</button></div>
-      <div class="table-wrap"><table><thead><tr><th>系统</th><th>类型</th><th>协议</th><th>状态</th><th></th></tr></thead><tbody id="client-rows"></tbody></table></div>
+      <div class="section-heading"><div><p class="eyebrow">应用门户</p><h2>接入系统</h2><p class="muted">系统保存门户名称、图标和主入口；一个系统可以包含多个独立客户端。</p></div><button id="new-system" type="button">新建系统</button></div>
+      <div class="table-wrap"><table><thead><tr><th>系统</th><th>客户端数</th><th>门户</th><th></th></tr></thead><tbody id="system-rows"></tbody></table></div>
 
-      <div id="client-editor" class="panel editor hidden">
-        <div class="section-heading"><div><p class="eyebrow">系统配置</p><h3 id="client-editor-title">配置跳转登录</h3></div><button class="icon-button" type="button" data-action="close-client" aria-label="关闭">×</button></div>
-        <form id="client-form" class="form-grid">
-          <label>Client ID<input name="id" required pattern="[a-z0-9][a-z0-9_-]{1,62}" placeholder="finance"></label>
+      <div id="system-editor" class="panel editor hidden">
+        <div class="section-heading"><div><p class="eyebrow">门户信息</p><h3 id="system-editor-title">配置接入系统</h3></div><button class="icon-button" type="button" data-action="close-system" aria-label="关闭">×</button></div>
+        <form id="system-form" class="form-grid">
+          <label>系统标识<input name="id" required pattern="[a-z0-9][a-z0-9_-]{1,62}" placeholder="finance"></label>
           <label>系统名称<input name="name" required maxlength="128" placeholder="Finance"></label>
           <label class="full">系统说明<input name="description" maxlength="512" placeholder="财务系统"></label>
-          <label class="full">系统启动地址<input name="launch_uri" type="url" maxlength="2048" placeholder="https://finance.example.com/?login=oidc"><small>门户会跳转到这里；该地址应由业务系统创建 OAuth state、nonce 和 PKCE verifier 后再进入 Certus。</small></label>
-          <label class="full">站点 Favicon URL<input name="favicon_url" type="url" maxlength="2048" placeholder="https://finance.example.com/favicon.ico"></label>
+          <label class="full">门户启动地址<input name="launch_uri" type="url" maxlength="2048" placeholder="https://finance.example.com/?login=oidc"></label>
+          <label class="full">系统图标 URL<input name="favicon_url" type="url" maxlength="2048" placeholder="https://finance.example.com/favicon.ico"></label>
+          <label class="check toggle full"><input type="checkbox" name="portal_visible" checked>在中转门户展示</label>
+          <div class="full actions"><button type="submit">保存系统</button><button id="delete-system" class="danger hidden" type="button">删除系统</button><span id="system-form-status" role="status" aria-live="polite"></span></div>
+        </form>
+      </div>
+
+      <div class="section-heading subsection-heading"><div><p class="eyebrow">OAuth / OIDC / CAS</p><h2>客户端配置</h2></div><button id="new-client" type="button">新建客户端</button></div>
+      <div class="table-wrap"><table><thead><tr><th>所属系统 / 客户端</th><th>类型</th><th>协议</th><th>状态</th><th></th></tr></thead><tbody id="client-rows"></tbody></table></div>
+
+      <div id="client-editor" class="panel editor hidden">
+        <div class="section-heading"><div><p class="eyebrow">客户端配置</p><h3 id="client-editor-title">配置认证客户端</h3></div><button class="icon-button" type="button" data-action="close-client" aria-label="关闭">×</button></div>
+        <form id="client-form" class="form-grid">
+          <label>所属系统<select name="system_id" required></select></label>
+          <label>Client ID<input name="id" required pattern="[a-z0-9][a-z0-9_-]{1,62}" placeholder="finance"></label>
+          <label>配置名称<input name="name" required maxlength="128" placeholder="Web / CLI"></label>
+          <label class="full">客户端说明<input name="description" maxlength="512" placeholder="生产 Web 客户端"></label>
+          <label class="full">客户端启动地址<input name="launch_uri" type="url" maxlength="2048" placeholder="https://finance.example.com/?login=oidc"><small>作为接入参数保留；门户主入口在所属系统中统一配置。</small></label>
+          <label class="full">客户端 Favicon URL<input name="favicon_url" type="url" maxlength="2048" placeholder="https://finance.example.com/favicon.ico"></label>
           <div class="full favicon-config"><img id="client-favicon-preview" class="client-favicon-preview hidden" alt="站点图标预览" referrerpolicy="no-referrer"><button id="discover-client-favicon" class="secondary" type="button">自动采集 Favicon</button><small>留空时会从第一条 OAuth 回调或 CAS Service URL 的公开 HTTPS 站点自动识别，也可手动覆盖。</small></div>
           <label>客户端类型<select name="application_type"><option value="confidential">服务端应用（confidential）</option><option value="public">浏览器/移动应用（public）</option></select></label>
           <label>客户端认证<select name="token_endpoint_auth_method"><option value="client_secret_basic">HTTP Basic（推荐）</option><option value="client_secret_post">表单 Client Secret</option><option value="none">无（public）</option></select></label>
@@ -178,7 +195,7 @@
           <label class="check toggle"><input type="checkbox" name="enabled" checked>允许登录</label>
           <label class="full">CAS Service URL，每行一个<textarea name="cas_service_urls" rows="3" placeholder="https://legacy.example.com/login/cas"></textarea></label>
           <fieldset class="full"><legend>CAS 行为</legend><label class="check"><input type="checkbox" name="cas_proxy">代理认证</label><label class="check"><input type="checkbox" name="cas_gateway">Gateway</label><label class="check"><input type="checkbox" name="cas_renew">Renew</label><label class="check"><input type="checkbox" name="cas_single_logout" checked>单点登出</label></fieldset>
-          <div class="full actions"><button type="submit">保存并生成接入参数</button><button id="rotate-client-secret" class="secondary hidden" type="button">轮换密钥</button><button id="archive-client" class="danger hidden" type="button">归档系统</button><button id="delete-client" class="danger hidden" type="button">永久删除</button><span id="client-form-status" role="status" aria-live="polite"></span></div>
+          <div class="full actions"><button type="submit">保存并生成接入参数</button><button id="rotate-client-secret" class="secondary hidden" type="button">轮换密钥</button><button id="archive-client" class="danger hidden" type="button">归档客户端</button><button id="delete-client" class="danger hidden" type="button">永久删除</button><span id="client-form-status" role="status" aria-live="polite"></span></div>
         </form>
       </div>
       <div id="integration-card" class="panel hidden" aria-live="polite"><div class="section-heading"><div><p class="eyebrow">接入参数</p><h3>业务系统配置</h3></div><button id="copy-integration" class="secondary" type="button">复制参数</button></div><p id="secret-warning" class="warning hidden">Client Secret 仅显示一次，请立即保存到业务系统的密钥存储中。</p><pre id="integration-output"></pre></div>

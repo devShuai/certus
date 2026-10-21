@@ -35,12 +35,12 @@
         <p class="muted">从统一入口安全访问已接入 Certus 的应用。</p>
       </div>
       <div class="portal-count" aria-label="接入系统数量">
-        <strong>{{len .Clients}}</strong>
+        <strong>{{len .Systems}}</strong>
         <span>个接入系统</span>
       </div>
     </div>
     <div class="portal-system-grid">
-      {{range .Clients}}
+      {{range .Systems}}
       {{if .LaunchURI}}
       <a class="portal-system-card is-actionable" href="{{.LaunchURI}}" aria-label="进入 {{.Name}}">
         <span class="portal-system-card-top">

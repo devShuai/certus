@@ -508,6 +508,66 @@ func TestClientTokenLifetimesAndArchivedDeletion(t *testing.T) {
 	}
 }
 
+func TestAccessSystemGroupsIndependentClients(t *testing.T) {
+	system, err := NewSystem(CreateSystem{
+		ID:          "finance",
+		Name:        "Finance",
+		Description: "Finance applications",
+		LaunchURI:   "https://finance.example.com/start",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !system.PortalVisible {
+		t.Fatal("new access system was not visible in the portal by default")
+	}
+
+	repository := NewMemoryRepository(
+		Client{ID: "finance-web", SystemID: system.ID, Name: "Web"},
+		Client{ID: "finance-cli", SystemID: system.ID, Name: "CLI"},
+	)
+	if _, err := repository.ReplaceSystem(context.Background(), system); err != nil {
+		t.Fatal(err)
+	}
+	systems, err := repository.ListSystems(context.Background())
+	if err != nil || len(systems) != 1 || systems[0].ID != system.ID {
+		t.Fatalf("unexpected access systems: %#v %v", systems, err)
+	}
+	clients, err := repository.List(context.Background())
+	if err != nil || len(clients) != 2 || clients[0].SystemID != system.ID || clients[1].SystemID != system.ID {
+		t.Fatalf("clients were not grouped: %#v %v", clients, err)
+	}
+	if clients[0].DisplayName() != system.Name || clients[0].DisplayDescription() != system.Description {
+		t.Fatalf("system branding was not applied to client: %#v", clients[0])
+	}
+	if err := repository.DeleteSystem(context.Background(), system.ID); !errors.Is(err, ErrSystemInUse) {
+		t.Fatalf("system with clients was deleted: %v", err)
+	}
+	for _, item := range clients {
+		if err := repository.Archive(context.Background(), item.ID, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.DeleteArchived(context.Background(), item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repository.DeleteSystem(context.Background(), system.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAccessSystemBrandingDoesNotFallBackToClientFields(t *testing.T) {
+	item := Client{
+		Name:        "Web client",
+		Description: "Client-specific description",
+		FaviconURL:  "https://client.example.com/favicon.svg",
+		System:      &System{Name: "Finance"},
+	}
+	if item.DisplayName() != "Finance" || item.DisplayDescription() != "" || item.DisplayFaviconURL() != "" {
+		t.Fatalf("client fields leaked into system branding: %#v", item)
+	}
+}
+
 func bytesEqual(left, right []byte) bool {
 	return string(left) == string(right)
 }

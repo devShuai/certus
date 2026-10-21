@@ -21,9 +21,111 @@ func NewClientRepository(pool *pgxpool.Pool) *ClientRepository {
 	return &ClientRepository{pool: pool}
 }
 
+func (r *ClientRepository) ListSystems(ctx context.Context) ([]client.System, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, name, description, favicon_url, launch_uri, portal_visible
+		FROM access_systems
+		ORDER BY name, id`)
+	if err != nil {
+		return nil, fmt.Errorf("list access systems: %w", err)
+	}
+	defer rows.Close()
+	result := make([]client.System, 0)
+	for rows.Next() {
+		item, scanErr := scanSystem(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate access systems: %w", err)
+	}
+	return result, nil
+}
+
+func (r *ClientRepository) FindSystem(ctx context.Context, id string) (client.System, error) {
+	item, err := scanSystem(r.pool.QueryRow(ctx, `
+		SELECT id, name, description, favicon_url, launch_uri, portal_visible
+		FROM access_systems
+		WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return client.System{}, client.ErrSystemNotFound
+	}
+	if err != nil {
+		return client.System{}, fmt.Errorf("find access system: %w", err)
+	}
+	return item, nil
+}
+
+func (r *ClientRepository) CreateSystem(ctx context.Context, item client.System) (client.System, error) {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO access_systems (id, name, description, favicon_url, launch_uri, portal_visible)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		item.ID, item.Name, item.Description, item.FaviconURL, item.LaunchURI, item.PortalVisible,
+	)
+	if isUniqueViolation(err) {
+		return client.System{}, client.ErrSystemConflict
+	}
+	if err != nil {
+		return client.System{}, fmt.Errorf("create access system: %w", err)
+	}
+	return item, nil
+}
+
+func (r *ClientRepository) ReplaceSystem(ctx context.Context, item client.System) (client.System, error) {
+	command, err := r.pool.Exec(ctx, `
+		UPDATE access_systems
+		SET name = $2,
+		    description = $3,
+		    favicon_url = $4,
+		    launch_uri = $5,
+		    portal_visible = $6,
+		    updated_at = now()
+		WHERE id = $1`,
+		item.ID, item.Name, item.Description, item.FaviconURL, item.LaunchURI, item.PortalVisible,
+	)
+	if err != nil {
+		return client.System{}, fmt.Errorf("replace access system: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return client.System{}, client.ErrSystemNotFound
+	}
+	return item, nil
+}
+
+func (r *ClientRepository) DeleteSystem(ctx context.Context, id string) error {
+	command, err := r.pool.Exec(ctx, `DELETE FROM access_systems WHERE id = $1`, id)
+	if isForeignKeyViolation(err) {
+		return client.ErrSystemInUse
+	}
+	if err != nil {
+		return fmt.Errorf("delete access system: %w", err)
+	}
+	if command.RowsAffected() == 0 {
+		return client.ErrSystemNotFound
+	}
+	return nil
+}
+
+func scanSystem(scanner interface{ Scan(...any) error }) (client.System, error) {
+	var item client.System
+	if err := scanner.Scan(
+		&item.ID,
+		&item.Name,
+		&item.Description,
+		&item.FaviconURL,
+		&item.LaunchURI,
+		&item.PortalVisible,
+	); err != nil {
+		return client.System{}, err
+	}
+	return item, nil
+}
+
 func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, name, description, favicon_url, launch_uri, application_type, protocols, grant_types,
+		SELECT id, system_id, name, description, favicon_url, launch_uri, application_type, protocols, grant_types,
 		       allowed_scopes, enabled, client_secret_hash, cas_version,
 		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 		       backchannel_logout_uri, backchannel_logout_session_required,
@@ -56,7 +158,7 @@ func (r *ClientRepository) List(ctx context.Context) ([]client.Client, error) {
 
 func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, error) {
 	item, err := scanClient(r.pool.QueryRow(ctx, `
-		SELECT id, name, description, favicon_url, launch_uri, application_type, protocols, grant_types,
+		SELECT id, system_id, name, description, favicon_url, launch_uri, application_type, protocols, grant_types,
 		       allowed_scopes, enabled, client_secret_hash, cas_version,
 		       cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 		       backchannel_logout_uri, backchannel_logout_session_required,
@@ -78,6 +180,9 @@ func (r *ClientRepository) Find(ctx context.Context, id string) (client.Client, 
 }
 
 func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (client.Client, error) {
+	if item.SystemID == "" {
+		item.SystemID = item.ID
+	}
 	item.AccessTokenLifetimeSeconds = int64(item.AccessTokenLifetime() / time.Second)
 	item.RefreshTokenLifetimeSeconds = int64(item.RefreshTokenLifetime() / time.Second)
 	tx, err := r.pool.Begin(ctx)
@@ -107,6 +212,7 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 		    launch_uri = $18,
 		    access_token_lifetime_seconds = $19,
 		    refresh_token_lifetime_seconds = $20,
+		    system_id = $21,
 		    updated_at = now()
 		WHERE id = $1 AND archived_at IS NULL`,
 		item.ID,
@@ -129,6 +235,7 @@ func (r *ClientRepository) Replace(ctx context.Context, item client.Client) (cli
 		item.LaunchURI,
 		item.AccessTokenLifetimeSeconds,
 		item.RefreshTokenLifetimeSeconds,
+		item.SystemID,
 	)
 	if err != nil {
 		return client.Client{}, fmt.Errorf("replace client: %w", err)
@@ -267,6 +374,9 @@ func (r *ClientRepository) DeleteArchived(ctx context.Context, id string) error 
 }
 
 func (r *ClientRepository) Create(ctx context.Context, item client.Client) (client.Client, error) {
+	if item.SystemID == "" {
+		item.SystemID = item.ID
+	}
 	item.AccessTokenLifetimeSeconds = int64(item.AccessTokenLifetime() / time.Second)
 	item.RefreshTokenLifetimeSeconds = int64(item.RefreshTokenLifetime() / time.Second)
 	tx, err := r.pool.Begin(ctx)
@@ -276,16 +386,32 @@ func (r *ClientRepository) Create(ctx context.Context, item client.Client) (clie
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, `
+		INSERT INTO access_systems (id, name, description, favicon_url, launch_uri, portal_visible)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (id) DO NOTHING`,
+		item.SystemID,
+		item.Name,
+		item.Description,
+		item.FaviconURL,
+		item.LaunchURI,
+		item.LaunchURI != "",
+	)
+	if err != nil {
+		return client.Client{}, fmt.Errorf("ensure client access system: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
 		INSERT INTO oauth_clients (
-			id, name, description, application_type, protocols, grant_types,
+			id, system_id, name, description, application_type, protocols, grant_types,
 			allowed_scopes, enabled, client_secret_hash, cas_version,
 			cas_service_urls, cas_proxy, cas_gateway, cas_renew, cas_single_logout,
 			backchannel_logout_uri, backchannel_logout_session_required,
 			token_endpoint_auth_method, favicon_url, launch_uri,
 			access_token_lifetime_seconds, refresh_token_lifetime_seconds
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
 		item.ID,
+		item.SystemID,
 		item.Name,
 		item.Description,
 		item.ApplicationType,
@@ -364,6 +490,7 @@ func scanClient(scanner interface{ Scan(...any) error }) (client.Client, error) 
 	var archivedAt pgtype.Timestamptz
 	err := scanner.Scan(
 		&item.ID,
+		&item.SystemID,
 		&item.Name,
 		&item.Description,
 		&item.FaviconURL,
@@ -526,6 +653,11 @@ func (r *ClientRepository) loadRelations(ctx context.Context, item *client.Clien
 	if err != nil {
 		return fmt.Errorf("iterate client introspection permissions: %w", err)
 	}
+	system, err := r.FindSystem(ctx, item.SystemID)
+	if err != nil {
+		return fmt.Errorf("load client access system: %w", err)
+	}
+	item.System = &system
 	return nil
 }
 

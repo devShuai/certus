@@ -8,6 +8,7 @@ const state = {
   ),
   adminRoleDefinitions: [],
   identitySources: [],
+  systems: [],
   clients: [],
   users: [],
   allUsers: [],
@@ -26,6 +27,7 @@ const state = {
 const globalStatus = document.querySelector("#global-status");
 const userForm = document.querySelector("#user-form");
 const identitySourceForm = document.querySelector("#identity-source-form");
+const systemForm = document.querySelector("#system-form");
 const clientForm = document.querySelector("#client-form");
 const integrationCard = document.querySelector("#integration-card");
 const integrationOutput = document.querySelector("#integration-output");
@@ -157,6 +159,8 @@ function applyPermissions() {
     ["#reset-user-mfa", "admin.users.write"],
     ["#new-identity-source", "admin.identity_sources.write"],
     ["#identity-source-form button[type='submit']", "admin.identity_sources.write"],
+    ["#new-system", "admin.clients.write"],
+    ["#system-form button[type='submit']", "admin.clients.write"],
     ["#new-client", "admin.clients.write"],
     ["#role-form", "admin.access.write"],
     ["#permission-form", "admin.access.write"],
@@ -175,6 +179,9 @@ function applyPermissions() {
   }
   const clientFieldsReadOnly = !can("admin.clients.write");
   for (const field of clientForm.elements) {
+    field.disabled = clientFieldsReadOnly;
+  }
+  for (const field of systemForm.elements) {
     field.disabled = clientFieldsReadOnly;
   }
   const sourceFieldsReadOnly = !can("admin.identity_sources.write");
@@ -251,6 +258,7 @@ function refreshSection(name) {
 
 function clearConsole() {
   state.clients = [];
+  state.systems = [];
   state.identitySources = [];
   state.users = [];
   state.allUsers = [];
@@ -264,6 +272,7 @@ function clearConsole() {
   document.querySelector("#metric-keys").textContent = "—";
   document.querySelector("#user-rows").replaceChildren(emptyRow(5, "当前角色无权读取用户"));
   document.querySelector("#client-rows").replaceChildren(emptyRow(5, "当前角色无权读取接入系统"));
+  document.querySelector("#system-rows").replaceChildren(emptyRow(4, "当前角色无权读取接入系统"));
   document.querySelector("#identity-source-rows").replaceChildren(emptyRow(5, "当前角色无权读取身份源"));
   document.querySelector("#audit-rows").replaceChildren(emptyRow(5, "当前角色无权读取审计日志"));
   document.querySelector("#signing-key-list").replaceChildren(element("p", { className: "empty", text: "当前角色无权读取签名密钥" }));
@@ -880,13 +889,49 @@ document.querySelector("#identity-source-rows").addEventListener("click", (event
 });
 
 async function loadClients() {
-  const value = await api("/api/v1/admin/clients");
-  state.clients = value.items || [];
+  const [systemPage, clientPage] = await Promise.all([
+    api("/api/v1/admin/systems"),
+    api("/api/v1/admin/clients"),
+  ]);
+  state.systems = systemPage.items || [];
+  state.clients = clientPage.items || [];
+  renderSystems();
   renderClients();
+  renderClientSystemOptions();
   renderClientSelectors();
-  const available = state.clients.filter((item) => !item.archived_at);
-  document.querySelector("#metric-clients").textContent = String(available.length);
-  document.querySelector("#metric-active-clients").textContent = String(available.filter((item) => item.enabled).length);
+  document.querySelector("#metric-clients").textContent = String(state.systems.length);
+  document.querySelector("#metric-active-clients").textContent = String(state.systems.filter((item) => item.portal_visible).length);
+}
+
+function renderSystems() {
+  const rows = document.querySelector("#system-rows");
+  rows.replaceChildren();
+  if (!state.systems.length) rows.append(emptyRow(4, "尚未配置接入系统"));
+  for (const system of state.systems) {
+    const clients = state.clients.filter((item) => item.system_id === system.id);
+    const identityChildren = [element("div", { className: "table-primary" }, [
+      element("strong", { text: system.name }),
+      element("small", { text: system.id }),
+    ])];
+    if (system.favicon_url) {
+      const favicon = element("img", {
+        className: "client-favicon",
+        src: system.favicon_url,
+        alt: "",
+        width: "32",
+        height: "32",
+        referrerpolicy: "no-referrer",
+      });
+      favicon.addEventListener("error", () => favicon.remove());
+      identityChildren.unshift(favicon);
+    }
+    rows.append(element("tr", {}, [
+      element("td", {}, [element("div", { className: "client-identity" }, identityChildren)]),
+      element("td", { text: String(clients.length) }),
+      element("td", {}, [statusBadge(system.portal_visible ? "展示" : "隐藏", system.portal_visible ? "active" : "disabled")]),
+      element("td", {}, [element("div", { className: "row-actions" }, [button("管理", "edit-system", system.id)])]),
+    ]));
+  }
 }
 
 function renderClients() {
@@ -894,9 +939,10 @@ function renderClients() {
   rows.replaceChildren();
   if (!state.clients.length) rows.append(emptyRow(5, "尚未配置接入系统"));
   for (const client of state.clients) {
+    const system = state.systems.find((item) => item.id === client.system_id);
     const identityText = element("div", { className: "table-primary" }, [
-      element("strong", { text: client.name }),
-      element("small", { text: client.id }),
+      element("strong", { text: `${system?.name || client.system_id} / ${client.name}` }),
+      element("small", { text: `${client.system_id} · ${client.id}` }),
     ]);
     const identityChildren = [identityText];
     if (client.favicon_url) {
@@ -928,12 +974,27 @@ function renderClients() {
   }
 }
 
+function renderClientSystemOptions(selectedValue) {
+  const select = clientForm.elements.system_id;
+  const selected = selectedValue ?? select.value;
+  select.replaceChildren(element("option", { value: "", text: "选择接入系统" }));
+  for (const system of state.systems) {
+    select.append(element("option", { value: system.id, text: system.name }));
+  }
+  if (selected && [...select.options].some((option) => option.value === selected)) {
+    select.value = selected;
+  } else if (select.options.length > 1) {
+    select.selectedIndex = 1;
+  }
+}
+
 function renderClientSelectors() {
   const select = document.querySelector("#access-client");
   const selected = select.value;
-  select.replaceChildren(element("option", { value: "", text: "选择接入系统" }));
+  select.replaceChildren(element("option", { value: "", text: "选择客户端" }));
   for (const client of state.clients.filter((item) => !item.archived_at)) {
-    select.append(element("option", { value: client.id, text: client.name }));
+    const system = state.systems.find((item) => item.id === client.system_id);
+    select.append(element("option", { value: client.id, text: `${system?.name || client.system_id} / ${client.name}` }));
   }
   if (selected && [...select.options].some((option) => option.value === selected)) {
     select.value = selected;
@@ -1048,12 +1109,88 @@ function syncClientAuthenticationMethod(forceDisabled = false) {
   authenticationMethod.disabled = forceDisabled || !can("admin.clients.write");
 }
 
+function resetSystemForm() {
+  systemForm.reset();
+  for (const field of systemForm.elements) field.disabled = !can("admin.clients.write");
+  systemForm.elements.id.readOnly = false;
+  systemForm.elements.portal_visible.checked = true;
+  document.querySelector("#system-editor-title").textContent = "配置接入系统";
+  document.querySelector("#delete-system").classList.add("hidden");
+  document.querySelector("#system-form-status").textContent = "";
+}
+
+function openNewSystem() {
+  resetSystemForm();
+  document.querySelector("#system-editor").classList.remove("hidden");
+  document.querySelector("#system-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openSystem(system) {
+  resetSystemForm();
+  systemForm.elements.id.value = system.id;
+  systemForm.elements.id.readOnly = true;
+  systemForm.elements.name.value = system.name;
+  systemForm.elements.description.value = system.description || "";
+  systemForm.elements.favicon_url.value = system.favicon_url || "";
+  systemForm.elements.launch_uri.value = system.launch_uri || "";
+  systemForm.elements.portal_visible.checked = Boolean(system.portal_visible);
+  document.querySelector("#system-editor-title").textContent = `${system.name} · ${system.id}`;
+  document.querySelector("#delete-system").classList.toggle("hidden", !can("admin.clients.write"));
+  document.querySelector("#system-editor").classList.remove("hidden");
+  document.querySelector("#system-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.querySelector("#new-system").addEventListener("click", openNewSystem);
+document.querySelector('[data-action="close-system"]').addEventListener("click", () => document.querySelector("#system-editor").classList.add("hidden"));
+
+systemForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = new FormData(systemForm);
+  const existing = state.systems.find((item) => item.id === data.get("id"));
+  const payload = {
+    name: data.get("name"),
+    description: data.get("description"),
+    favicon_url: data.get("favicon_url"),
+    launch_uri: data.get("launch_uri"),
+    portal_visible: data.has("portal_visible"),
+  };
+  if (!existing) payload.id = data.get("id");
+  const status = document.querySelector("#system-form-status");
+  status.textContent = "正在保存…";
+  try {
+    const value = await api(existing ? `/api/v1/admin/systems/${existing.id}` : "/api/v1/admin/systems", {
+      method: existing ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    status.textContent = "已保存";
+    await loadClients();
+    openSystem(value);
+    setStatus("接入系统已保存。", "success");
+  } catch (error) {
+    status.textContent = error.message;
+  }
+});
+
+document.querySelector("#delete-system").addEventListener("click", async () => {
+  const systemID = systemForm.elements.id.value;
+  if (!window.confirm(`删除系统 ${systemID} 前必须先删除其全部客户端配置，确定继续吗？`)) return;
+  try {
+    await api(`/api/v1/admin/systems/${systemID}`, { method: "DELETE" });
+    document.querySelector("#system-editor").classList.add("hidden");
+    await loadClients();
+    setStatus("接入系统已删除。", "success");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});
+
 function resetClientForm() {
   clientForm.reset();
   for (const field of clientForm.elements) {
     field.disabled = !can("admin.clients.write");
   }
   clientForm.elements.id.readOnly = false;
+  renderClientSystemOptions();
   clientForm.elements.application_type.disabled = !can("admin.clients.write");
   clientForm.elements.token_endpoint_auth_method.value = "client_secret_basic";
   clientForm.elements.allowed_scopes.value = "openid profile email";
@@ -1068,7 +1205,7 @@ function resetClientForm() {
   renderClientIdentitySourceOptions([]);
   renderClientIntrospectionOptions([]);
   syncClientAuthenticationMethod();
-  document.querySelector("#client-editor-title").textContent = "配置跳转登录";
+  document.querySelector("#client-editor-title").textContent = "配置认证客户端";
   document.querySelector("#rotate-client-secret").classList.add("hidden");
   document.querySelector("#archive-client").classList.add("hidden");
   document.querySelector("#delete-client").classList.add("hidden");
@@ -1077,6 +1214,11 @@ function resetClientForm() {
 }
 
 function openNewClient() {
+  if (!state.systems.length) {
+    setStatus("请先创建接入系统。", "error");
+    openNewSystem();
+    return;
+  }
   resetClientForm();
   document.querySelector("#client-editor").classList.remove("hidden");
   document.querySelector("#client-editor").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1085,6 +1227,7 @@ function openNewClient() {
 function openClient(client) {
   resetClientForm();
   clientForm.elements.id.value = client.id;
+  renderClientSystemOptions(client.system_id);
   clientForm.elements.id.readOnly = true;
   clientForm.elements.name.value = client.name;
   clientForm.elements.description.value = client.description || "";
@@ -1154,6 +1297,7 @@ clientForm.addEventListener("submit", async (event) => {
   const data = new FormData(clientForm);
   const existing = state.clients.find((item) => item.id === data.get("id"));
   const payload = {
+    system_id: data.get("system_id"),
     name: data.get("name"),
     description: data.get("description"),
     favicon_url: data.get("favicon_url"),
@@ -1275,12 +1419,12 @@ document.querySelector("#rotate-client-secret").addEventListener("click", async 
 
 document.querySelector("#archive-client").addEventListener("click", async () => {
   const clientID = clientForm.elements.id.value;
-  if (!window.confirm(`归档 ${clientID} 后不能恢复或修改，确定继续吗？`)) return;
+  if (!window.confirm(`归档客户端 ${clientID} 后不能恢复或修改，确定继续吗？`)) return;
   try {
     await api(`/api/v1/admin/clients/${clientID}`, { method: "DELETE" });
     document.querySelector("#client-editor").classList.add("hidden");
     await loadClients();
-    setStatus("接入系统已归档。", "success");
+    setStatus("客户端已归档。", "success");
   } catch (error) {
     setStatus(error.message, "error");
   }
@@ -1294,7 +1438,7 @@ document.querySelector("#delete-client").addEventListener("click", async () => {
     document.querySelector("#client-editor").classList.add("hidden");
     integrationCard.classList.add("hidden");
     await loadClients();
-    setStatus("已永久删除归档的接入系统。", "success");
+    setStatus("已永久删除归档客户端。", "success");
   } catch (error) {
     setStatus(error.message, "error");
   }
@@ -1594,6 +1738,13 @@ document.querySelector("#user-rows").addEventListener("click", (event) => {
   if (!target) return;
   const user = state.users.find((item) => item.id === target.dataset.value);
   if (user) openUser(user);
+});
+
+document.querySelector("#system-rows").addEventListener("click", (event) => {
+  const target = event.target.closest("[data-action='edit-system']");
+  if (!target) return;
+  const system = state.systems.find((item) => item.id === target.dataset.value);
+  if (system) openSystem(system);
 });
 
 document.querySelector("#client-rows").addEventListener("click", async (event) => {

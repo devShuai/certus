@@ -291,6 +291,11 @@ $env:CERTUS_EXTERNAL_OIDC_LABEL='企业统一身份'
 ```text
 GET  /admin
 GET  /admin/clients
+GET  /api/v1/admin/systems
+POST /api/v1/admin/systems
+GET  /api/v1/admin/systems/{system_id}
+PUT  /api/v1/admin/systems/{system_id}
+DELETE /api/v1/admin/systems/{system_id}
 GET  /api/v1/admin/clients
 POST /api/v1/admin/clients
 GET  /api/v1/admin/clients/{client_id}
@@ -303,13 +308,27 @@ GET  /api/v1/admin/clients/{client_id}/integration
 
 `/admin` 是统一管理控制台，覆盖用户生命周期、管理员角色、密码与会话处置、MFA 重置、接入系统、业务角色权限、审计日志、OIDC 签名密钥和过期数据清理。`/admin/clients` 保留为兼容入口并展示同一控制台。未登录访问会跳转到统一登录；没有管理员角色的用户会被拒绝，未达到 AAL2 的管理员会被引导完成 MFA 或重新登录。后台不再把全局管理员令牌保存到浏览器。
 
-创建配置：
+接入系统保存门户共用信息，一个系统可以关联多个拥有独立凭据和安全策略的客户端。先创建系统：
 
 ```json
 {
   "id": "finance",
   "name": "Finance",
   "description": "财务系统",
+  "favicon_url": "https://finance.example.com/favicon.ico",
+  "launch_uri": "https://finance.example.com/?login=oidc",
+  "portal_visible": true
+}
+```
+
+再创建客户端配置：
+
+```json
+{
+  "id": "finance-web",
+  "system_id": "finance",
+  "name": "Web",
+  "description": "财务系统 Web 客户端",
   "launch_uri": "https://finance.example.com/?login=oidc",
   "application_type": "confidential",
   "token_endpoint_auth_method": "client_secret_basic",
@@ -359,7 +378,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
 }
 ```
 
-`launch_uri` 是 `/portal` 中系统按钮使用的业务入口；它必须先在业务系统侧创建 `state`、`nonce` 与 PKCE verifier，再进入 Certus 授权端点。OAuth/OIDC 客户端不要把回调地址直接当作启动地址。
+系统的 `launch_uri` 是 `/portal` 中系统按钮使用的业务入口；它必须先在业务系统侧创建 `state`、`nonce` 与 PKCE verifier，再进入 Certus 授权端点。`portal_visible:false` 可以隐藏 CLI、同步服务等不应直接启动的系统。客户端上的 `launch_uri` 仅作为接入参数保留，OAuth/OIDC 客户端不要把回调地址直接当作启动地址。
 
 创建成功后响应会同时给出业务系统所需的接入参数：
 
@@ -373,7 +392,7 @@ GET  /api/v1/admin/clients/{client_id}/integration
     ],
     "issuer": "https://auth.example.com",
     "discovery_url": "https://auth.example.com/.well-known/openid-configuration",
-    "client_id": "finance",
+    "client_id": "finance-web",
     "launch_uri": "https://finance.example.com/?login=oidc",
     "client_secret": "<仅本次响应显示>",
     "client_authentication_method": "client_secret_basic",

@@ -126,8 +126,8 @@ func (s *server) listAccountConsents(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt:  value.UpdatedAt,
 		}
 		if registered, findErr := s.clients.Find(r.Context(), value.ClientID); findErr == nil {
-			item.ClientName = registered.Name
-			item.Description = registered.Description
+			item.ClientName = registered.DisplayName()
+			item.Description = registered.DisplayDescription()
 		} else if !errors.Is(findErr, client.ErrNotFound) {
 			s.logger.Warn("find consent client", "client_id", value.ClientID, "error", findErr)
 		}

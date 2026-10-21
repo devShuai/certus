@@ -42,7 +42,7 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adminPool.Close()
+	t.Cleanup(adminPool.Close)
 	schema := fmt.Sprintf("certus_test_%d", time.Now().UnixNano())
 	if !strings.HasPrefix(schema, "certus_test_") {
 		t.Fatal("unsafe integration schema name")
@@ -102,7 +102,7 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		ApplicationType: client.ApplicationConfidential,
 		Protocols:       []client.Protocol{client.ProtocolOAuth21},
 		GrantTypes:      []client.GrantType{client.GrantClientCredentials},
-		AllowedScopes:   []string{"roles"},
+		AllowedScopes:   []string{"openid", "roles"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,9 +124,17 @@ func TestPostgresMigrationsAndRepositories(t *testing.T) {
 		len(storedClient.IntrospectableBy) != 1 ||
 		storedClient.IntrospectableBy[0] != introspector.ID ||
 		storedClient.TokenEndpointAuthMethod != client.TokenEndpointAuthSecretPost ||
+		storedClient.SystemID != registered.ID ||
 		storedClient.AccessTokenLifetime() != 10*time.Minute ||
 		storedClient.RefreshTokenLifetime() != 2*time.Hour {
 		t.Fatalf("client configuration round trip failed: %#v %v", storedClient, err)
+	}
+	storedSystem, err := clientRepository.FindSystem(ctx, registered.ID)
+	if err != nil || storedSystem.Name != registered.Name || !storedSystem.PortalVisible {
+		t.Fatalf("access system round trip failed: %#v %v", storedSystem, err)
+	}
+	if err := clientRepository.DeleteSystem(ctx, registered.ID); !errors.Is(err, client.ErrSystemInUse) {
+		t.Fatalf("PostgreSQL system with clients was deleted: %v", err)
 	}
 
 	sourceKeyRing, err := secrets.ParseKeyRing(

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"certus/internal/client"
@@ -63,11 +64,105 @@ type casIntegration struct {
 	SingleLogout       bool              `json:"single_logout"`
 }
 
+func (s *server) listAdminSystems(w http.ResponseWriter, r *http.Request) {
+	items, err := s.clients.ListSystems(r.Context())
+	if err != nil {
+		s.logger.Error("list access systems", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) getAdminSystem(w http.ResponseWriter, r *http.Request) {
+	item, err := s.clients.FindSystem(r.Context(), r.PathValue("systemID"))
+	if errors.Is(err, client.ErrSystemNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("find access system", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *server) createSystem(w http.ResponseWriter, r *http.Request) {
+	var input client.CreateSystem
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := client.NewSystem(input)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_system", err.Error())
+		return
+	}
+	item, err = s.clients.CreateSystem(r.Context(), item)
+	if errors.Is(err, client.ErrSystemConflict) {
+		writeProblem(w, http.StatusConflict, "system_conflict", "系统标识已存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("create access system", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建接入系统失败")
+		return
+	}
+	w.Header().Set("Location", "/api/v1/admin/systems/"+item.ID)
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *server) replaceSystem(w http.ResponseWriter, r *http.Request) {
+	current, err := s.clients.FindSystem(r.Context(), r.PathValue("systemID"))
+	if errors.Is(err, client.ErrSystemNotFound) {
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		return
+	}
+	if err != nil {
+		s.logger.Error("find access system for replacement", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		return
+	}
+	var input client.ReplaceSystemInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, err := client.ReplaceSystem(current, input)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_system", err.Error())
+		return
+	}
+	item, err = s.clients.ReplaceSystem(r.Context(), item)
+	if err != nil {
+		s.logger.Error("replace access system", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "更新接入系统失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *server) deleteSystem(w http.ResponseWriter, r *http.Request) {
+	err := s.clients.DeleteSystem(r.Context(), r.PathValue("systemID"))
+	switch {
+	case errors.Is(err, client.ErrSystemNotFound):
+		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+	case errors.Is(err, client.ErrSystemInUse):
+		writeProblem(w, http.StatusConflict, "system_in_use", "请先删除该系统下的全部客户端配置")
+	case err != nil:
+		s.logger.Error("delete access system", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "server_error", "删除接入系统失败")
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (s *server) listAdminClients(w http.ResponseWriter, r *http.Request) {
 	items, err := s.clients.List(r.Context())
 	if err != nil {
 		s.logger.Error("list admin clients", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取客户端配置失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -76,12 +171,12 @@ func (s *server) listAdminClients(w http.ResponseWriter, r *http.Request) {
 func (s *server) getAdminClient(w http.ResponseWriter, r *http.Request) {
 	item, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
 	if errors.Is(err, client.ErrNotFound) {
-		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		writeProblem(w, http.StatusNotFound, "not_found", "客户端不存在")
 		return
 	}
 	if err != nil {
 		s.logger.Error("find admin client", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取客户端配置失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, clientRegistrationResponse{
@@ -101,6 +196,12 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "invalid_client", err.Error())
 		return
 	}
+	if strings.TrimSpace(input.SystemID) != "" {
+		if err := s.validateClientSystem(r.Context(), item.SystemID); err != nil {
+			writeClientSystemError(w, err)
+			return
+		}
+	}
 	if err := s.validateClientIdentitySources(r.Context(), item); err != nil {
 		writeClientIdentitySourceError(w, err)
 		return
@@ -116,7 +217,7 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.logger.Error("create client", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "server_error", "创建接入系统失败")
+		writeProblem(w, http.StatusInternalServerError, "server_error", "创建客户端失败")
 		return
 	}
 	w.Header().Set("Location", "/api/v1/admin/clients/"+item.ID)
@@ -129,12 +230,12 @@ func (s *server) createClient(w http.ResponseWriter, r *http.Request) {
 func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 	current, err := s.clients.Find(r.Context(), r.PathValue("clientID"))
 	if errors.Is(err, client.ErrNotFound) {
-		writeProblem(w, http.StatusNotFound, "not_found", "接入系统不存在")
+		writeProblem(w, http.StatusNotFound, "not_found", "客户端不存在")
 		return
 	}
 	if err != nil {
 		s.logger.Error("find client for replacement", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "server_error", "读取接入系统失败")
+		writeProblem(w, http.StatusInternalServerError, "server_error", "读取客户端配置失败")
 		return
 	}
 	var input client.ReplaceClient
@@ -144,11 +245,15 @@ func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := client.Replace(current, input)
 	if errors.Is(err, client.ErrArchived) {
-		writeProblem(w, http.StatusConflict, "client_archived", "已归档的接入系统不能修改")
+		writeProblem(w, http.StatusConflict, "client_archived", "已归档的客户端不能修改")
 		return
 	}
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid_client", err.Error())
+		return
+	}
+	if err := s.validateClientSystem(r.Context(), item.SystemID); err != nil {
+		writeClientSystemError(w, err)
 		return
 	}
 	if err := s.validateClientIdentitySources(r.Context(), item); err != nil {
@@ -161,12 +266,12 @@ func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err = s.clients.Replace(r.Context(), item)
 	if errors.Is(err, client.ErrArchived) {
-		writeProblem(w, http.StatusConflict, "client_archived", "已归档的接入系统不能修改")
+		writeProblem(w, http.StatusConflict, "client_archived", "已归档的客户端不能修改")
 		return
 	}
 	if err != nil {
 		s.logger.Error("replace client", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "server_error", "更新接入系统失败")
+		writeProblem(w, http.StatusInternalServerError, "server_error", "更新客户端失败")
 		return
 	}
 	if !item.Enabled {
@@ -180,6 +285,19 @@ func (s *server) replaceClient(w http.ResponseWriter, r *http.Request) {
 		Client:      item,
 		Integration: s.integrationParameters(item, ""),
 	})
+}
+
+func (s *server) validateClientSystem(ctx context.Context, systemID string) error {
+	_, err := s.clients.FindSystem(ctx, systemID)
+	return err
+}
+
+func writeClientSystemError(w http.ResponseWriter, err error) {
+	if errors.Is(err, client.ErrSystemNotFound) {
+		writeProblem(w, http.StatusBadRequest, "invalid_system", "客户端所属的接入系统不存在")
+		return
+	}
+	writeProblem(w, http.StatusInternalServerError, "server_error", "校验客户端所属系统失败")
 }
 
 func (s *server) validateClientIdentitySources(ctx context.Context, item client.Client) error {

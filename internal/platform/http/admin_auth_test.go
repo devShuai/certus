@@ -100,6 +100,8 @@ func TestAdministratorSessionRBACMFAAndAuditActor(t *testing.T) {
 		!strings.Contains(page.Body.String(), `src="/static/logo-dark.svg"`) ||
 		!strings.Contains(page.Body.String(), `href="#identity-sources"`) ||
 		!strings.Contains(page.Body.String(), `id="verify-user-email"`) ||
+		!strings.Contains(page.Body.String(), `id="system-form"`) ||
+		!strings.Contains(page.Body.String(), `name="system_id"`) ||
 		!strings.Contains(page.Body.String(), `name="access_token_lifetime_minutes"`) ||
 		!strings.Contains(page.Body.String(), `id="delete-client"`) ||
 		strings.Contains(page.Body.String(), "管理员令牌") {

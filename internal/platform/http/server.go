@@ -317,6 +317,11 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, logger *slog.Lo
 	mux.Handle("DELETE /api/v1/admin/identity-sources/{sourceID}", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.archiveIdentitySource)))
 	mux.Handle("POST /api/v1/admin/identity-sources/{sourceID}/probe", s.requireAdmin(administration.PermissionSourcesWrite, http.HandlerFunc(s.probeIdentitySource)))
 	mux.Handle("GET /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.listAdminClients)))
+	mux.Handle("GET /api/v1/admin/systems", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.listAdminSystems)))
+	mux.Handle("POST /api/v1/admin/systems", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.createSystem)))
+	mux.Handle("GET /api/v1/admin/systems/{systemID}", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getAdminSystem)))
+	mux.Handle("PUT /api/v1/admin/systems/{systemID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.replaceSystem)))
+	mux.Handle("DELETE /api/v1/admin/systems/{systemID}", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.deleteSystem)))
 	mux.Handle("POST /api/v1/admin/clients", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.createClient)))
 	mux.Handle("POST /api/v1/admin/clients/favicon", s.requireAdmin(administration.PermissionClientsWrite, http.HandlerFunc(s.discoverClientFavicon)))
 	mux.Handle("GET /api/v1/admin/clients/{clientID}", s.requireAdmin(administration.PermissionClientsRead, http.HandlerFunc(s.getAdminClient)))
@@ -429,12 +434,17 @@ func (s *server) home(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/portal", http.StatusTemporaryRedirect)
 }
 
-type portalClient struct {
-	client.Client
+type portalSystem struct {
+	client.System
 	Initial string
 }
 
 func (s *server) portal(w http.ResponseWriter, r *http.Request) {
+	systems, err := s.clients.ListSystems(r.Context())
+	if err != nil {
+		http.Error(w, "读取系统列表失败", http.StatusInternalServerError)
+		return
+	}
 	clients, err := s.clients.List(r.Context())
 	if err != nil {
 		http.Error(w, "读取系统列表失败", http.StatusInternalServerError)
@@ -454,27 +464,37 @@ func (s *server) portal(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, "portal.html", struct {
 		Title         string
-		Clients       []portalClient
+		Systems       []portalSystem
 		User          *identity.User
 		Administrator bool
 		CSRFToken     string
 	}{
 		Title:         "Certus 统一认证中心",
-		Clients:       portalClients(activeClients(clients)),
+		Systems:       portalSystems(systems, activeClients(clients)),
 		User:          currentUser,
 		Administrator: administrator,
 		CSRFToken:     csrfToken,
 	})
 }
 
-func portalClients(items []client.Client) []portalClient {
-	result := make([]portalClient, 0, len(items))
-	for _, item := range items {
+func portalSystems(systems []client.System, clients []client.Client) []portalSystem {
+	activeSystemIDs := make(map[string]struct{}, len(clients))
+	for _, item := range clients {
+		activeSystemIDs[item.SystemID] = struct{}{}
+	}
+	result := make([]portalSystem, 0, len(systems))
+	for _, item := range systems {
+		if !item.PortalVisible {
+			continue
+		}
+		if _, active := activeSystemIDs[item.ID]; !active {
+			continue
+		}
 		initial := "?"
 		if runes := []rune(strings.TrimSpace(item.Name)); len(runes) > 0 {
 			initial = string(runes[0])
 		}
-		result = append(result, portalClient{Client: item, Initial: initial})
+		result = append(result, portalSystem{System: item, Initial: initial})
 	}
 	return result
 }

@@ -346,6 +346,64 @@ func TestClientLifecycleAPIs(t *testing.T) {
 	}
 }
 
+func TestAccessSystemGroupingAPIs(t *testing.T) {
+	handler := New(config.Config{
+		Issuer:     "https://auth.example.com",
+		AdminToken: "test-admin-token",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	createdSystem := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/systems", `{
+		"id":"teamhub",
+		"name":"Team Hub",
+		"description":"Team applications",
+		"launch_uri":"https://team.example.com/start",
+		"portal_visible":true
+	}`)
+	if createdSystem.Code != http.StatusCreated ||
+		!strings.Contains(createdSystem.Body.String(), `"portal_visible":true`) {
+		t.Fatalf("create access system: %d %s", createdSystem.Code, createdSystem.Body.String())
+	}
+
+	createdClient := adminJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/clients", `{
+		"id":"teamhub-api",
+		"system_id":"teamhub",
+		"name":"API",
+		"application_type":"confidential",
+		"protocols":["oauth2.1"],
+		"grant_types":["client_credentials"],
+		"allowed_scopes":["api.read"]
+	}`)
+	if createdClient.Code != http.StatusCreated ||
+		!strings.Contains(createdClient.Body.String(), `"system_id":"teamhub"`) {
+		t.Fatalf("create grouped client: %d %s", createdClient.Code, createdClient.Body.String())
+	}
+
+	inUse := adminJSONRequest(t, handler, http.MethodDelete, "/api/v1/admin/systems/teamhub", "")
+	if inUse.Code != http.StatusConflict || !strings.Contains(inUse.Body.String(), `"system_in_use"`) {
+		t.Fatalf("system with clients was deleted: %d %s", inUse.Code, inUse.Body.String())
+	}
+
+	hidden := adminJSONRequest(t, handler, http.MethodPut, "/api/v1/admin/systems/teamhub", `{
+		"name":"Team Hub",
+		"description":"Team applications",
+		"launch_uri":"https://team.example.com/start",
+		"portal_visible":false
+	}`)
+	if hidden.Code != http.StatusOK || !strings.Contains(hidden.Body.String(), `"portal_visible":false`) {
+		t.Fatalf("hide access system from portal: %d %s", hidden.Code, hidden.Body.String())
+	}
+
+	if response := adminJSONRequest(t, handler, http.MethodDelete, "/api/v1/admin/clients/teamhub-api", ""); response.Code != http.StatusNoContent {
+		t.Fatalf("archive grouped client: %d %s", response.Code, response.Body.String())
+	}
+	if response := adminJSONRequest(t, handler, http.MethodDelete, "/api/v1/admin/clients/teamhub-api/permanent", ""); response.Code != http.StatusNoContent {
+		t.Fatalf("delete grouped client: %d %s", response.Code, response.Body.String())
+	}
+	if response := adminJSONRequest(t, handler, http.MethodDelete, "/api/v1/admin/systems/teamhub", ""); response.Code != http.StatusNoContent {
+		t.Fatalf("delete empty access system: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func oauthPostFormRequest(
 	t *testing.T,
 	handler http.Handler,

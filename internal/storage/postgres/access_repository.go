@@ -505,5 +505,5 @@ func scanPermission(scanner accessScanner) (access.Permission, error) {
 
 func isForeignKeyViolation(err error) bool {
 	var pgError *pgconn.PgError
-	return errors.As(err, &pgError) && pgError.Code == "23503"
+	return errors.As(err, &pgError) && (pgError.Code == "23503" || pgError.Code == "23001")
 }
